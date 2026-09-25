@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { z } from "zod";
 import { ADAPTERS, DEFAULT_CYCLE } from "./agents/index.js";
 import { AgentDef, type RepoConfig } from "./schemas.js";
 import { projectRoot, runDir } from "./paths.js";
@@ -39,11 +40,38 @@ const QUOTA_PATTERNS = [
 
 export const isQuotaError = (text: string) => QUOTA_PATTERNS.some((p) => p.test(text));
 
+/** Agent 回覆結尾的 <result> 中繼資料（格式定義在各 prompt 的 <reply_format>） */
+export const ResultMeta = z.object({
+  status: z.enum(["done", "blocked"]),
+  summary: z.string().default(""),
+  filesChanged: z.array(z.string()).default([]),
+  concerns: z.string().default(""),
+});
+export type ResultMeta = z.infer<typeof ResultMeta>;
+
+const tagText = (xml: string, tag: string) => xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1]?.trim();
+
+/** 取回覆中最後一個 <result> 區塊；沒有或格式不合時回傳 undefined，不影響關卡判斷 */
+export function parseResultMeta(text: string): ResultMeta | undefined {
+  const block = [...text.matchAll(/<result>([\s\S]*?)<\/result>/g)].at(-1)?.[1];
+  if (block === undefined) return undefined;
+  const files = tagText(block, "files_changed") ?? "";
+  const parsed = ResultMeta.safeParse({
+    status: tagText(block, "status"),
+    summary: tagText(block, "summary"),
+    filesChanged: [...files.matchAll(/<file>([\s\S]*?)<\/file>/g)].map((m) => m[1]!.trim()).filter(Boolean),
+    concerns: tagText(block, "concerns"),
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
 export interface AgentResult {
   /** 因額度或速率限制而失敗 */
   quotaExhausted: boolean;
   ok: boolean;
   summary: string;
+  /** 回覆裡的 XML 中繼資料；agent 沒附上時為 undefined */
+  meta?: ResultMeta;
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
@@ -132,7 +160,8 @@ export async function runAgent(
   const ok = r.code === 0 && (done?.ok ?? true);
   const summary = done?.summary || lastText || tail(r.stdout, 2000) || tail(r.stderr, 2000);
   const quotaExhausted = !ok && isQuotaError(`${summary}\n${done?.summary ?? ""}\n${r.stderr}\n${tail(r.stdout, 4000)}`);
-  return { ok, quotaExhausted, summary, costUsd: costUsd ?? 0, inputTokens, outputTokens };
+  const meta = parseResultMeta(summary) ?? parseResultMeta(lastText);
+  return { ok, quotaExhausted, summary, meta, costUsd: costUsd ?? 0, inputTokens, outputTokens };
 }
 
 /**

@@ -78,12 +78,22 @@ async function agentStep(
       stripApiKeys: cfg.auth === "subscription",
     });
     addCost(run.id, { stage: step, agent, usd: r.costUsd, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
-    if (!r.quotaExhausted) return { r, agent };
+    if (!r.quotaExhausted) {
+      reportMeta(run, agent, r);
+      return { r, agent };
+    }
     info(run, `⛽ ${agent} 的額度已用完`);
     exhausted.add(agent);
     await reset();
     // 迴圈回到開頭：review 會停下，write 會找代打
   }
+}
+
+/** 印出回覆裡的 XML 中繼資料；只供人檢視，關卡仍由程式檢查決定 */
+function reportMeta(run: FlowRun, agent: string, r: AgentResult): void {
+  if (!r.meta) return;
+  if (r.meta.status === "blocked") info(run, `   🚧 ${agent} 回報卡住：${r.meta.summary}`);
+  if (r.meta.concerns) info(run, `   💭 ${agent} 的疑慮：${r.meta.concerns}`);
 }
 
 function readFeedback(run: FlowRun): string {

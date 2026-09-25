@@ -169,6 +169,23 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 
 驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
 
+## Prompt 結構
+
+每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
+
+Agent 的最後回覆要附上 XML 中繼資料：
+
+```xml
+<result>
+  <status>done 或 blocked</status>
+  <summary>做了什麼</summary>
+  <files_changed><file>src/form.ts</file></files_changed>
+  <concerns>對規格或測試的疑慮</concerns>
+</result>
+```
+
+`blocked` 與 `concerns` 會印在終端機上，完整回覆留在 log。這份中繼資料只給人看；缺少或格式錯誤都不影響流程，是否通過仍由上表的程式檢查決定。
+
 ## Adapter
 
 | adapter | 執行方式 | 權限 |

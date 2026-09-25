@@ -1,6 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { exec } from "./proc.js";
-import { isQuotaError } from "./runner.js";
+import { isQuotaError, parseResultMeta } from "./runner.js";
+
+describe("回覆的 XML 中繼資料", () => {
+  it("解析 <result> 區塊", () => {
+    const text = `完成了。
+<result>
+  <status>done</status>
+  <summary>新增 zod 驗證</summary>
+  <files_changed>
+    <file>src/form.ts</file>
+    <file> src/schema.ts </file>
+  </files_changed>
+  <concerns>AC-2 的測試斷言過於寬鬆</concerns>
+</result>`;
+    expect(parseResultMeta(text)).toEqual({
+      status: "done",
+      summary: "新增 zod 驗證",
+      filesChanged: ["src/form.ts", "src/schema.ts"],
+      concerns: "AC-2 的測試斷言過於寬鬆",
+    });
+  });
+
+  it("沒有 <result> 或 status 不合法時回傳 undefined", () => {
+    expect(parseResultMeta("只有純文字")).toBeUndefined();
+    expect(parseResultMeta("<result><status>maybe</status><summary>x</summary></result>")).toBeUndefined();
+  });
+
+  it("有多個區塊時取最後一個，缺少的欄位給預設值", () => {
+    const text =
+      "範例：<result><status>blocked</status><summary>舊的</summary></result>\n" +
+      "<result><status>done</status><summary>新的</summary><files_changed></files_changed></result>";
+    expect(parseResultMeta(text)).toEqual({ status: "done", summary: "新的", filesChanged: [], concerns: "" });
+  });
+});
 
 describe("額度錯誤偵測", () => {
   it("辨識常見的額度與速率限制訊息", () => {
