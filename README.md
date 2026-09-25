@@ -129,6 +129,28 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 
 verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
 
+### 用指令管理 agent
+
+`agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
+
+```bash
+agentflowctl agent list                                   # 內建與自訂 agent、是否已安裝、輪替位置
+agentflowctl agent add claude-strong --adapter claude --model opus
+agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
+agentflowctl agent set codex --model 你要用的模型 --extra-arg=--search
+agentflowctl agent set aider --adapter gemini             # 換 adapter
+agentflowctl agent remove aider
+agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前的順序
+```
+
+修改會連帶更新相關設定，並在終端機列出：
+
+- `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
+- `remove` 刪除自訂 agent 時，會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回自動偵測。對內建 agent 用 `remove`，只會刪掉覆寫設定。
+- `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
+
+已建立的 run 會沿用建立時的輪替順序，不受這些修改影響。
+
 ## 計畫怎麼在沒有人的情況下通過
 
 人工確認計畫是為了擋住方向錯了還一路做下去。預設用三層機制取代它；加上 `--manual-plan` 時，三層都過了仍會停下來等你。

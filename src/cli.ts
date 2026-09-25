@@ -11,6 +11,7 @@ import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
 import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
 import { readJsonFile } from "./util.js";
+import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 
 function mustGetRun(id: string): FlowRun {
   const run = getRun(id);
@@ -184,6 +185,96 @@ program
       const mark = i < run.taskIndex ? "✅" : active ? (run.taskPhase === "tests" ? "🧪" : "🛠️ ") : "⬜";
       console.log(`  ${mark} ${t.id} ${t.title}`);
     });
+  });
+
+// ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────
+
+const configPath = () => join(projectRoot(), "flow.config.json");
+const collect = (value: string, prev: string[] = []) => [...prev, value];
+
+function applyEdit(edit: (cfg: Record<string, unknown>) => Edit, done: string): void {
+  const before = readRawConfig(configPath());
+  const { cfg, changes } = edit(before);
+  writeRawConfig(configPath(), cfg);
+  console.log(`✅ ${done}（${configPath()}）`);
+  for (const c of changes) console.log(`   ↳ ${c}`);
+  if (JSON.stringify(before.cycle) !== JSON.stringify(cfg.cycle)) {
+    console.log("   已建立的 run 會沿用建立時的輪替順序，不受影響");
+  }
+}
+
+const agent = program.command("agent").description("管理 agent 與 adapter 設定（寫入 flow.config.json）");
+
+agent
+  .command("list")
+  .description("列出內建與自訂 agent、是否已安裝、在輪替中的位置")
+  .action(async () => {
+    const cfg = loadRepoConfig();
+    const cycle = await resolveCycle().catch(() => cfg.cycle ?? []);
+    const names = [...new Set([...DEFAULT_CYCLE, ...Object.keys(cfg.agents)])];
+    for (const name of names) {
+      const def = resolveAgent(cfg, name);
+      const ok = await probeAgent(def);
+      const pos = cycle.indexOf(name);
+      const kind = (DEFAULT_CYCLE as readonly string[]).includes(name) ? (name in cfg.agents ? "內建（已覆寫）" : "內建") : "自訂";
+      const detail = [
+        `adapter=${def.adapter}`,
+        def.model && `model=${def.model}`,
+        def.extraArgs.length && `extraArgs=${def.extraArgs.join(" ")}`,
+        def.command && `command=${def.command.join(" ")}`,
+      ].filter(Boolean);
+      console.log(`${ok ? "✅" : "❌"} ${name.padEnd(14)} ${kind.padEnd(8)} ${pos >= 0 ? `輪替 #${pos + 1}` : "不在輪替"}  ${detail.join(" ")}`);
+    }
+    console.log(`
+輪替順序：${cycle.length ? cycle.join(" → ") : "（沒有可用的 agent）"}${cfg.cycle ? "" : "（自動偵測）"}`);
+  });
+
+agent
+  .command("add <name> [command...]")
+  .description("新增 agent；command adapter 的指令寫在 -- 後面")
+  .requiredOption("--adapter <adapter>", "claude、codex、gemini 或 command")
+  .option("--model <model>", "模型名稱")
+  .option("--extra-arg <arg>", "額外參數，可重複；以 - 開頭時寫成 --extra-arg=--sandbox", collect)
+  .action((name: string, command: string[], opts: { adapter: string; model?: string; extraArg?: string[] }) => {
+    applyEdit(
+      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, command: command.length ? command : undefined }),
+      `已新增 ${name}；要加進輪替請用 agent cycle`,
+    );
+  });
+
+agent
+  .command("set <name> [command...]")
+  .description("修改 agent；更換 adapter 時會清掉舊 adapter 的 model、extraArgs、command")
+  .option("--adapter <adapter>", "claude、codex、gemini 或 command")
+  .option("--model <model>", "模型名稱")
+  .option("--extra-arg <arg>", "額外參數，可重複，會整個取代原本的設定", collect)
+  .action((name: string, command: string[], opts: { adapter?: string; model?: string; extraArg?: string[] }) => {
+    applyEdit(
+      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, command: command.length ? command : undefined }),
+      `已更新 ${name}`,
+    );
+  });
+
+agent
+  .command("remove <name>")
+  .description("刪除自訂 agent（一併從輪替移除），或刪除內建 agent 的覆寫設定")
+  .action((name: string) => applyEdit((cfg) => removeAgent(cfg, name), `已刪除 ${name} 的設定`));
+
+agent
+  .command("cycle [names]")
+  .description("顯示輪替順序，或用逗號分隔設定新的順序")
+  .action(async (names?: string) => {
+    if (!names) {
+      const cfg = loadRepoConfig();
+      console.log(`${(await resolveCycle()).join(" → ")}${cfg.cycle ? "" : "（自動偵測）"}`);
+      return;
+    }
+    const list = names.split(",").map((s) => s.trim()).filter(Boolean);
+    applyEdit((cfg) => setCycle(cfg, list), `輪替順序設為 ${list.join(" → ")}`);
+    const cfg = loadRepoConfig();
+    for (const n of list) {
+      if (!(await probeAgent(resolveAgent(cfg, n)))) console.log(`⚠️  ${n} 目前找不到可執行的 CLI，run 會失敗，請先安裝或用 agent set 修正`);
+    }
   });
 
 program
