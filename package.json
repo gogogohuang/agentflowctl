@@ -3,12 +3,32 @@
   "license": "MIT",
   "version": "0.1.0",
   "description": "跨廠商 AI 開發 harness：Claude Code、Codex、Gemini 輪流實作、審查、修正",
+  "keywords": [
+    "ai",
+    "agent",
+    "claude-code",
+    "codex",
+    "gemini",
+    "code-review",
+    "tdd",
+    "cli"
+  ],
+  "author": "Jin-Ze Huang",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gogogohuang/agentflowctl.git"
+  },
+  "homepage": "https://github.com/gogogohuang/agentflowctl#readme",
+  "bugs": {
+    "url": "https://github.com/gogogohuang/agentflowctl/issues"
+  },
   "type": "module",
   "bin": {
     "agentflowctl": "dist/cli.js"
   },
   "files": [
     "dist",
+    "!dist/**/*.map",
     "prompts",
     "examples"
   ],
@@ -20,7 +40,8 @@
     "dev": "tsx src/cli.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run typecheck && pnpm test && pnpm run build"
   },
   "dependencies": {
     "commander": "^12.1.0",

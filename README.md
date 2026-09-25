@@ -59,6 +59,14 @@ agentflowctl doctor
 ## 安裝
 
 ```bash
+npm install -g agentflowctl
+```
+
+從原始碼安裝：
+
+```bash
+git clone https://github.com/gogogohuang/agentflowctl.git
+cd agentflowctl
 pnpm install
 pnpm run build
 pnpm link --global
