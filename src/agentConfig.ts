@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
-import { DEFAULT_CYCLE } from "./agents/index.js";
+import { builtinAgents, DEFAULT_CYCLE } from "./agents/index.js";
 import { AgentDef, RepoConfig } from "./schemas.js";
 
 /**
@@ -28,7 +28,15 @@ const ADAPTER_FIELDS = ["model", "extraArgs", "command"] as const;
 
 const isBuiltin = (name: string) => (DEFAULT_CYCLE as readonly string[]).includes(name);
 const agentsOf = (cfg: RawConfig) => ({ ...((cfg.agents ?? {}) as Record<string, RawAgent>) });
-const isDefined = (cfg: RawConfig, name: string) => isBuiltin(name) || name in agentsOf(cfg);
+const removedOf = (cfg: RawConfig) => (cfg.removedAgents ?? []) as string[];
+const isDefined = (cfg: RawConfig, name: string) => builtinAgents(removedOf(cfg)).includes(name) || name in agentsOf(cfg);
+
+/** 寫回 removedAgents；清單變空就刪掉欄位 */
+function withRemoved(cfg: RawConfig, removed: string[]): RawConfig {
+  const next: RawConfig = { ...cfg, removedAgents: removed };
+  if (!removed.length) delete next.removedAgents;
+  return next;
+}
 
 /** 只留下有值的欄位，驗證後回傳 */
 function buildAgent(base: RawAgent, patch: AgentPatch): RawAgent {
@@ -47,7 +55,10 @@ export function addAgent(cfg: RawConfig, name: string, def: AgentPatch & { adapt
   if (!/^[\w-]+$/.test(name)) throw new Error(`agent 名稱只能用英數字、底線與連字號：${name}`);
   if (isDefined(cfg, name)) throw new Error(`agent ${name} 已存在，要修改請用 agent set`);
   const { adapter, ...patch } = def;
-  return { cfg: { ...cfg, agents: { ...agentsOf(cfg), [name]: buildAgent({ adapter }, patch) } }, changes: [] };
+  const next = { ...cfg, agents: { ...agentsOf(cfg), [name]: buildAgent({ adapter }, patch) } };
+  // 加回先前移除的內建 agent
+  const removed = removedOf(cfg);
+  return { cfg: removed.includes(name) ? withRemoved(next, removed.filter((n) => n !== name)) : next, changes: [] };
 }
 
 export function setAgent(cfg: RawConfig, name: string, patch: AgentPatch): Edit {
@@ -68,16 +79,15 @@ export function setAgent(cfg: RawConfig, name: string, patch: AgentPatch): Edit 
 }
 
 export function removeAgent(cfg: RawConfig, name: string): Edit {
+  if (!isDefined(cfg, name)) throw new Error(`未定義的 agent：${name}`);
   const agents = agentsOf(cfg);
-  if (!(name in agents)) {
-    throw new Error(isBuiltin(name) ? `${name} 是內建 agent，沒有覆寫設定可以刪除` : `未定義的 agent：${name}`);
-  }
   delete agents[name];
-  const next: RawConfig = { ...cfg, agents };
+  // 內建 agent 沒有設定也存在，要記在 removedAgents 才算移除；覆寫設定一併刪掉
+  let next: RawConfig = { ...cfg, agents };
+  if (isBuiltin(name)) next = withRemoved(next, [...removedOf(cfg), name]);
   const changes: string[] = [];
   const cycle = cfg.cycle as string[] | undefined;
-  // 自訂 agent 刪掉後就不存在了，一併從輪替順序移除；內建 agent 只是恢復預設，仍可留在輪替裡
-  if (cycle?.includes(name) && !isBuiltin(name)) {
+  if (cycle?.includes(name)) {
     const rest = cycle.filter((n) => n !== name);
     if (rest.length) {
       next.cycle = rest;

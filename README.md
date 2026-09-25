@@ -97,6 +97,21 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 
 `status` 會列出任務。進行中的任務會標出正在寫測試還是正在寫實作。
 
+### 執行中的終端機輸出
+
+agent 每次使用工具，都會印出完整的指令或主要參數，不截斷。多行指令的後續行會縮排對齊。install、測試、verify 這些專案指令也會以 `$ ` 開頭印出來：
+
+```
+    💬 [claude] 先讀現有的表單元件
+    🔧 [claude] Read: /repo/.agentflowctl/worktrees/f-xxxx/src/LoginForm.tsx
+    🔧 [claude] Bash: pnpm vitest run src/LoginForm.test.tsx
+    🔧 [codex] shell: bash -lc 'pnpm test'
+    🔧 [gemini] run_shell_command: npm run lint
+    $ pnpm install
+```
+
+工具參數依序取 command、檔案路徑、path、pattern、url、query，都沒有時印出整包 JSON。每次執行的完整輸出都在 `agentflowctl logs <id>`。
+
 ## 設定
 
 專案根目錄的 `flow.config.json`。完整範例見 `examples/flow.config.json`。未提供的欄位使用內建預設（安裝指令、測試指令、檢查清單預設對應 Vite + TypeScript + Vitest）。
@@ -126,6 +141,7 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
 | `install` / `test` / `checks` | 見 `src/schemas.ts` | verify 階段實際執行的指令 |
 | `agents` | 內建 claude、codex、gemini | 覆寫內建 agent，或用 `command` adapter 接上其他 CLI |
+| `removedAgents` | `[]` | 移除的內建 agent，不會被自動偵測、不能放進輪替。通常用 `agent remove` 寫入 |
 
 verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
 
@@ -140,13 +156,15 @@ agentflowctl agent add aider --adapter command -- aider --yes-always --message {
 agentflowctl agent set codex --model 你要用的模型 --extra-arg=--search
 agentflowctl agent set aider --adapter gemini             # 換 adapter
 agentflowctl agent remove aider
+agentflowctl agent remove gemini                          # 內建的也能移除
 agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前的順序
 ```
 
 修改會連帶更新相關設定，並在終端機列出：
 
 - `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
-- `remove` 刪除自訂 agent 時，會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回自動偵測。對內建 agent 用 `remove`，只會刪掉覆寫設定。
+- `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回自動偵測。
+- 內建的 claude、codex、gemini 也能 `remove`：覆寫設定會一起刪掉，名稱記在 `removedAgents`，之後自動偵測會跳過它，也不能放進 `cycle`。要加回來用 `agent add gemini --adapter gemini`。
 - `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
 
 已建立的 run 會沿用建立時的輪替順序，不受這些修改影響。
