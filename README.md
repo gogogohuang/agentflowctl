@@ -97,6 +97,21 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 
 `status` 會列出任務。進行中的任務會標出正在寫測試還是正在寫實作。
 
+### 執行中的終端機輸出
+
+agent 每次使用工具，都會印出完整的指令或主要參數，不截斷。多行指令的後續行會縮排對齊。install、測試、verify 這些專案指令也會以 `$ ` 開頭印出來：
+
+```
+    💬 [claude] 先讀現有的表單元件
+    🔧 [claude] Read: /repo/.agentflowctl/worktrees/f-xxxx/src/LoginForm.tsx
+    🔧 [claude] Bash: pnpm vitest run src/LoginForm.test.tsx
+    🔧 [codex] shell: bash -lc 'pnpm test'
+    🔧 [gemini] run_shell_command: npm run lint
+    $ pnpm install
+```
+
+工具參數依序取 command、檔案路徑、path、pattern、url、query，都沒有時印出整包 JSON。每次執行的完整輸出都在 `agentflowctl logs <id>`。
+
 ## 設定
 
 專案根目錄的 `flow.config.json`。完整範例見 `examples/flow.config.json`。未提供的欄位使用內建預設（安裝指令、測試指令、檢查清單預設對應 Vite + TypeScript + Vitest）。
