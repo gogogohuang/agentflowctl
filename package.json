@@ -1,7 +1,7 @@
 {
   "name": "agentflowctl",
   "license": "MIT",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "跨廠商 AI 開發 harness：Claude Code、Codex、Gemini 輪流實作、審查、修正",
   "keywords": [
     "ai",
