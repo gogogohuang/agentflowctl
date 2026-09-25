@@ -1,4 +1,4 @@
-import { num, str, tryJson, type Adapter, type AgentEvent } from "./types.js";
+import { num, str, toolDetail, tryJson, type Adapter, type AgentEvent } from "./types.js";
 
 /**
  * Google Gemini CLI：`gemini -p ... --output-format stream-json`。
@@ -20,7 +20,7 @@ export const gemini: Adapter = {
     if (ev.type === "message" && ev.role === "assistant" && str(ev.content)?.trim()) {
       out.push({ kind: "text", text: str(ev.content)! });
     } else if (ev.type === "tool_use") {
-      out.push({ kind: "tool", name: str(ev.tool_name) ?? "tool" });
+      out.push({ kind: "tool", name: str(ev.tool_name) ?? "tool", detail: toolDetail(ev.parameters) });
     } else if (ev.type === "result") {
       const stats = (ev.stats ?? {}) as Record<string, unknown>;
       out.push({

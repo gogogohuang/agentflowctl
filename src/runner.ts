@@ -81,6 +81,13 @@ function appendLog(file: string, text: string): void {
   appendFileSync(file, text.endsWith("\n") ? text : `${text}\n`);
 }
 
+/** 一行工具事件的畫面輸出：完整顯示指令或參數，多行時後續行縮排對齊 */
+export function formatToolLine(agent: string, tool: { name: string; detail?: string }): string {
+  const head = `    🔧 [${agent}] ${tool.name}`;
+  const detail = tool.detail?.trim();
+  return detail ? `${head}: ${detail.split("\n").join("\n       ")}` : head;
+}
+
 /** 內建的 claude、codex、gemini 定義，可在 flow.config.json 覆寫或新增其他 agent */
 export function resolveAgent(cfg: RepoConfig, name: string): AgentDef {
   const custom = cfg.agents[name];
@@ -137,7 +144,7 @@ export async function runAgent(
           lastText = ev.text;
           console.log(`    💬 [${name}] ${ev.text.trim().split("\n")[0]?.slice(0, 110)}`);
         } else if (ev.kind === "tool") {
-          console.log(`    🔧 [${name}] ${ev.name}`);
+          console.log(formatToolLine(name, ev));
         } else if (ev.kind === "usage") {
           inputTokens += ev.inputTokens ?? 0;
           outputTokens += ev.outputTokens ?? 0;
@@ -162,6 +169,7 @@ export async function runAgent(
  */
 export async function runCommand(t: AgentTarget, cmd: string): Promise<{ ok: boolean; output: string }> {
   appendLog(t.logFile, `$ ${cmd}`);
+  console.log(`    $ ${cmd.trim().split("\n").join("\n      ")}`);
   const r = await execShell(cmd, { cwd: t.cwd });
   const output = `${r.stdout}\n${r.stderr}`.trim();
   appendLog(t.logFile, output);

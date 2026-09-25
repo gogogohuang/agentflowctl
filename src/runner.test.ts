@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { exec } from "./proc.js";
-import { isQuotaError, parseResultMeta } from "./runner.js";
+import { formatToolLine, isQuotaError, parseResultMeta } from "./runner.js";
 
 describe("回覆的 XML 中繼資料", () => {
   it("解析 <result> 區塊", () => {
@@ -55,5 +55,21 @@ describe("移除環境變數", () => {
     const r = await exec("node", ["-e", "console.log(process.env.ANTHROPIC_API_KEY ?? 'none')"], { unsetEnv: ["ANTHROPIC_API_KEY"] });
     expect(r.stdout.trim()).toBe("none");
     delete process.env.ANTHROPIC_API_KEY;
+  });
+});
+
+describe("工具事件的畫面輸出", () => {
+  it("完整顯示指令，不截斷", () => {
+    const cmd = `pnpm vitest run ${"z".repeat(200)}`;
+    expect(formatToolLine("codex", { name: "shell", detail: cmd })).toBe(`    🔧 [codex] shell: ${cmd}`);
+  });
+
+  it("多行指令逐行縮排對齊", () => {
+    expect(formatToolLine("claude", { name: "Bash", detail: "cat <<EOF\nhi\nEOF" }))
+      .toBe("    🔧 [claude] Bash: cat <<EOF\n       hi\n       EOF");
+  });
+
+  it("沒有細節時只顯示工具名稱", () => {
+    expect(formatToolLine("gemini", { name: "write_file" })).toBe("    🔧 [gemini] write_file");
   });
 });

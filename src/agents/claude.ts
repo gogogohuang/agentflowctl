@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { num, str, tryJson, type Adapter, type AgentEvent, type InvokeOptions } from "./types.js";
+import { num, str, toolDetail, tryJson, type Adapter, type AgentEvent, type InvokeOptions } from "./types.js";
 
 /**
  * Claude Code 的權限設定：acceptEdits 只自動允許工作目錄內的修改，
@@ -45,7 +45,7 @@ export const claude: Adapter = {
       const content = (ev.message as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? [];
       for (const b of content) {
         if (b.type === "text" && str(b.text)?.trim()) out.push({ kind: "text", text: str(b.text)! });
-        if (b.type === "tool_use") out.push({ kind: "tool", name: str(b.name) ?? "tool" });
+        if (b.type === "tool_use") out.push({ kind: "tool", name: str(b.name) ?? "tool", detail: toolDetail(b.input) });
       }
     } else if (ev.type === "result") {
       const usage = (ev.usage ?? {}) as Record<string, unknown>;

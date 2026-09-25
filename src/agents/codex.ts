@@ -19,8 +19,12 @@ export const codex: Adapter = {
     if (ev.type === "item.completed") {
       const item = (ev.item ?? {}) as Record<string, unknown>;
       if (item.type === "agent_message" && str(item.text)?.trim()) out.push({ kind: "text", text: str(item.text)! });
-      else if (item.type === "command_execution") out.push({ kind: "tool", name: `shell: ${str(item.command) ?? ""}`.slice(0, 80) });
-      else if (item.type === "file_change") out.push({ kind: "tool", name: "edit" });
+      else if (item.type === "command_execution") out.push({ kind: "tool", name: "shell", detail: str(item.command) });
+      else if (item.type === "file_change") {
+        const changes = Array.isArray(item.changes) ? (item.changes as Array<Record<string, unknown>>) : [];
+        const paths = changes.map((c) => str(c.path)).filter(Boolean);
+        out.push({ kind: "tool", name: "edit", detail: paths.length ? paths.join(", ") : undefined });
+      }
     } else if (ev.type === "turn.completed") {
       const usage = (ev.usage ?? {}) as Record<string, unknown>;
       out.push({ kind: "usage", inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens) });
