@@ -6,14 +6,10 @@
   "planReviewQuorum": 1,
   "planArbiter": true,
   "tieBreak": "proceed",
-  "auth": "subscription",
   "maxAgentRuns": 60,
   "agents": {
     "claude": { "adapter": "claude" },
-    "codex": {
-      "adapter": "codex",
-      "pricing": { "inputPerMTok": 1.25, "outputPerMTok": 10 }
-    }
+    "codex": { "adapter": "codex" }
   },
   "install": "pnpm ci",
   "test": "npx vitest run",

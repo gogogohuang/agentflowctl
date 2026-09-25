@@ -9,8 +9,9 @@ import { API_KEY_VARS, probeAgent, resolveAgent, runCommand } from "./runner.js"
 import { addWorktree, git, removeWorktree } from "./git.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
-import { agentRuns, costByAgent, getCost, getRun, listRuns, listSubstitutions, saveRun } from "./store.js";
+import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
 import { readJsonFile } from "./util.js";
+import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 
 function mustGetRun(id: string): FlowRun {
   const run = getRun(id);
@@ -31,7 +32,7 @@ function printSummary(run: FlowRun): void {
   console.log("");
   console.log(`run      ${run.id}`);
   console.log(`階段     ${run.stage}`);
-  console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次（估計花費 $${getCost(run.id).toFixed(2)}${run.budgetUsd ? ` / $${run.budgetUsd}` : "，訂閱登入時僅供參考"}）`);
+  console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次`);
   console.log(`agent    ${run.cycle.join(" → ")}${run.lastWriter ? `（最後作者：${run.lastWriter}）` : ""}`);
   console.log(`分支     ${run.branch}`);
   console.log(`worktree ${worktreeDir(run.id)}`);
@@ -77,10 +78,9 @@ program
   .option("--req-file <file>", "從檔案讀取需求")
   .option("--base <branch>", "基底分支（預設為目前的分支）")
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
-  .option("--budget <usd>", "選用：估計花費上限（美元），使用 API 計費時才需要")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
   .option("--cycle <agents>", "agent 輪替順序，例如 claude,codex,gemini")
-  .action(async (opts: { req?: string; reqFile?: string; base?: string; budget?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string }) => {
+  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
     const root = projectRoot();
@@ -104,7 +104,6 @@ program
       requirement: requirement.trim(),
       stage: "spec",
       autopilot: !opts.manualPlan,
-      budgetUsd: opts.budget ? Number(opts.budget) : undefined,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
       cycle,
       attempts: {},
@@ -129,10 +128,8 @@ program
   .command("resume <id>")
   .description("從暫停、中斷或失敗的階段接續")
   .option("--max-agent-runs <n>", "調整 agent 執行次數上限")
-  .option("--budget <usd>", "調整估計花費上限（美元）")
-  .action(async (id: string, opts: { budget?: string; maxAgentRuns?: string }) => {
+  .action(async (id: string, opts: { maxAgentRuns?: string }) => {
     let run = mustGetRun(id);
-    if (opts.budget) run = { ...run, budgetUsd: Number(opts.budget) };
     if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
@@ -168,11 +165,11 @@ program
   .action((id: string) => {
     const run = mustGetRun(id);
     printSummary(run);
-    const byAgent = costByAgent(id);
+    const byAgent = usageByAgent(id);
     if (Object.keys(byAgent).length) {
       console.log("\n各 agent 用量");
       for (const [agent, c] of Object.entries(byAgent)) {
-        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} tokens  $${c.usd.toFixed(2)}`);
+        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} tokens`);
       }
     }
     const subs = listSubstitutions(id);
@@ -188,6 +185,96 @@ program
       const mark = i < run.taskIndex ? "✅" : active ? (run.taskPhase === "tests" ? "🧪" : "🛠️ ") : "⬜";
       console.log(`  ${mark} ${t.id} ${t.title}`);
     });
+  });
+
+// ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────
+
+const configPath = () => join(projectRoot(), "flow.config.json");
+const collect = (value: string, prev: string[] = []) => [...prev, value];
+
+function applyEdit(edit: (cfg: Record<string, unknown>) => Edit, done: string): void {
+  const before = readRawConfig(configPath());
+  const { cfg, changes } = edit(before);
+  writeRawConfig(configPath(), cfg);
+  console.log(`✅ ${done}（${configPath()}）`);
+  for (const c of changes) console.log(`   ↳ ${c}`);
+  if (JSON.stringify(before.cycle) !== JSON.stringify(cfg.cycle)) {
+    console.log("   已建立的 run 會沿用建立時的輪替順序，不受影響");
+  }
+}
+
+const agent = program.command("agent").description("管理 agent 與 adapter 設定（寫入 flow.config.json）");
+
+agent
+  .command("list")
+  .description("列出內建與自訂 agent、是否已安裝、在輪替中的位置")
+  .action(async () => {
+    const cfg = loadRepoConfig();
+    const cycle = await resolveCycle().catch(() => cfg.cycle ?? []);
+    const names = [...new Set([...DEFAULT_CYCLE, ...Object.keys(cfg.agents)])];
+    for (const name of names) {
+      const def = resolveAgent(cfg, name);
+      const ok = await probeAgent(def);
+      const pos = cycle.indexOf(name);
+      const kind = (DEFAULT_CYCLE as readonly string[]).includes(name) ? (name in cfg.agents ? "內建（已覆寫）" : "內建") : "自訂";
+      const detail = [
+        `adapter=${def.adapter}`,
+        def.model && `model=${def.model}`,
+        def.extraArgs.length && `extraArgs=${def.extraArgs.join(" ")}`,
+        def.command && `command=${def.command.join(" ")}`,
+      ].filter(Boolean);
+      console.log(`${ok ? "✅" : "❌"} ${name.padEnd(14)} ${kind.padEnd(8)} ${pos >= 0 ? `輪替 #${pos + 1}` : "不在輪替"}  ${detail.join(" ")}`);
+    }
+    console.log(`
+輪替順序：${cycle.length ? cycle.join(" → ") : "（沒有可用的 agent）"}${cfg.cycle ? "" : "（自動偵測）"}`);
+  });
+
+agent
+  .command("add <name> [command...]")
+  .description("新增 agent；command adapter 的指令寫在 -- 後面")
+  .requiredOption("--adapter <adapter>", "claude、codex、gemini 或 command")
+  .option("--model <model>", "模型名稱")
+  .option("--extra-arg <arg>", "額外參數，可重複；以 - 開頭時寫成 --extra-arg=--sandbox", collect)
+  .action((name: string, command: string[], opts: { adapter: string; model?: string; extraArg?: string[] }) => {
+    applyEdit(
+      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, command: command.length ? command : undefined }),
+      `已新增 ${name}；要加進輪替請用 agent cycle`,
+    );
+  });
+
+agent
+  .command("set <name> [command...]")
+  .description("修改 agent；更換 adapter 時會清掉舊 adapter 的 model、extraArgs、command")
+  .option("--adapter <adapter>", "claude、codex、gemini 或 command")
+  .option("--model <model>", "模型名稱")
+  .option("--extra-arg <arg>", "額外參數，可重複，會整個取代原本的設定", collect)
+  .action((name: string, command: string[], opts: { adapter?: string; model?: string; extraArg?: string[] }) => {
+    applyEdit(
+      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, command: command.length ? command : undefined }),
+      `已更新 ${name}`,
+    );
+  });
+
+agent
+  .command("remove <name>")
+  .description("刪除自訂 agent（一併從輪替移除），或刪除內建 agent 的覆寫設定")
+  .action((name: string) => applyEdit((cfg) => removeAgent(cfg, name), `已刪除 ${name} 的設定`));
+
+agent
+  .command("cycle [names]")
+  .description("顯示輪替順序，或用逗號分隔設定新的順序")
+  .action(async (names?: string) => {
+    if (!names) {
+      const cfg = loadRepoConfig();
+      console.log(`${(await resolveCycle()).join(" → ")}${cfg.cycle ? "" : "（自動偵測）"}`);
+      return;
+    }
+    const list = names.split(",").map((s) => s.trim()).filter(Boolean);
+    applyEdit((cfg) => setCycle(cfg, list), `輪替順序設為 ${list.join(" → ")}`);
+    const cfg = loadRepoConfig();
+    for (const n of list) {
+      if (!(await probeAgent(resolveAgent(cfg, n)))) console.log(`⚠️  ${n} 目前找不到可執行的 CLI，run 會失敗，請先安裝或用 agent set 修正`);
+    }
   });
 
 program
@@ -207,13 +294,9 @@ program
       console.log(`\n${(e as Error).message}`);
     }
     const leaked = API_KEY_VARS.filter((k) => process.env[k]);
-    console.log(`\n登入方式：${cfg.auth === "subscription" ? "訂閱登入（執行 agent 時會移除 API key）" : "API key"}`);
+    console.log("\n登入方式：訂閱登入（執行 agent 時會移除 API key）");
     if (leaked.length) {
-      console.log(
-        cfg.auth === "subscription"
-          ? `⚠️  環境中有 ${leaked.join("、")}，agentflowctl 執行 agent 時會移除，但你自己直接執行 CLI 時仍可能改走 API 計費`
-          : `使用中的 API key：${leaked.join("、")}`,
-      );
+      console.log(`⚠️  環境中有 ${leaked.join("、")}，agentflowctl 執行 agent 時會移除，但你自己直接執行 CLI 時仍可能改走 API 計費`);
     }
     console.log(`單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
     console.log(`修正策略：${cfg.fixStrategy}　測試與實作分開：${cfg.tddSplit ? "是" : "否"}`);
@@ -226,7 +309,7 @@ program
   .action(() => {
     for (const r of listRuns()) {
       const req = r.requirement.split("\n")[0]!.slice(0, 40);
-      console.log(`${r.id}  ${r.stage.padEnd(17)}  $${getCost(r.id).toFixed(2).padStart(6)}  ${r.updatedAt.slice(0, 16)}  ${req}`);
+      console.log(`${r.id}  ${r.stage.padEnd(17)}  ${String(agentRuns(r.id)).padStart(3)} 次  ${r.updatedAt.slice(0, 16)}  ${req}`);
     }
   });
 

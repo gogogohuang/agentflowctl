@@ -58,8 +58,6 @@ export const AgentDef = z.object({
   extraArgs: z.array(z.string()).default([]),
   /** 只有 command adapter 使用，`{prompt}` 會被替換成 prompt */
   command: z.array(z.string()).optional(),
-  /** CLI 沒有回報花費時，用 token 數估算（每百萬 token 美元） */
-  pricing: z.object({ inputPerMTok: z.number(), outputPerMTok: z.number() }).optional(),
 });
 export type AgentDef = z.infer<typeof AgentDef>;
 
@@ -84,12 +82,7 @@ export const RepoConfig = z.object({
    * proceed＝繼續實作，爭議記錄在計畫裡，後面還有測試、驗證與程式碼審查把關；stop＝停下來等人
    */
   tieBreak: z.enum(["proceed", "stop"]).default("proceed"),
-  /**
-   * subscription：使用各家 CLI 的訂閱登入，執行 agent 時會移除環境中的 API key，避免意外改走 API 計費；
-   * api：保留 API key（例如在 CI 中）
-   */
-  auth: z.enum(["subscription", "api"]).default("subscription"),
-  /** 單一 run 最多執行幾次 agent；訂閱制下用這個取代金額預算 */
+  /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive().default(60),
   install: z.string().default("npm install --no-audit --no-fund"),
   test: z.string().default("npx vitest run"),
@@ -112,8 +105,6 @@ export const FlowRun = z.object({
   requirement: z.string(),
   stage: Stage,
   autopilot: z.boolean(),
-  /** 選用：以估計花費（美元）為上限；訂閱登入時通常不設定 */
-  budgetUsd: z.number().positive().optional(),
   /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive(),
   /** 暫停前所在的階段與原因（額度用完時） */

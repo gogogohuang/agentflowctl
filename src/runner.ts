@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { z } from "zod";
 import { ADAPTERS, DEFAULT_CYCLE } from "./agents/index.js";
 import { AgentDef, type RepoConfig } from "./schemas.js";
 import { projectRoot, runDir } from "./paths.js";
@@ -12,7 +13,7 @@ export interface AgentTarget {
   logFile: string;
 }
 
-/** 會讓各家 CLI 改走 API 計費的環境變數；訂閱登入模式下執行 agent 時會移除 */
+/** 會讓各家 CLI 改走 API 計費的環境變數；只用訂閱登入，執行 agent 時一律移除 */
 export const API_KEY_VARS = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -39,12 +40,38 @@ const QUOTA_PATTERNS = [
 
 export const isQuotaError = (text: string) => QUOTA_PATTERNS.some((p) => p.test(text));
 
+/** Agent 回覆結尾的 <result> 中繼資料（格式定義在各 prompt 的 <reply_format>） */
+export const ResultMeta = z.object({
+  status: z.enum(["done", "blocked"]),
+  summary: z.string().default(""),
+  filesChanged: z.array(z.string()).default([]),
+  concerns: z.string().default(""),
+});
+export type ResultMeta = z.infer<typeof ResultMeta>;
+
+const tagText = (xml: string, tag: string) => xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1]?.trim();
+
+/** 取回覆中最後一個 <result> 區塊；沒有或格式不合時回傳 undefined，不影響關卡判斷 */
+export function parseResultMeta(text: string): ResultMeta | undefined {
+  const block = [...text.matchAll(/<result>([\s\S]*?)<\/result>/g)].at(-1)?.[1];
+  if (block === undefined) return undefined;
+  const files = tagText(block, "files_changed") ?? "";
+  const parsed = ResultMeta.safeParse({
+    status: tagText(block, "status"),
+    summary: tagText(block, "summary"),
+    filesChanged: [...files.matchAll(/<file>([\s\S]*?)<\/file>/g)].map((m) => m[1]!.trim()).filter(Boolean),
+    concerns: tagText(block, "concerns"),
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
 export interface AgentResult {
   /** 因額度或速率限制而失敗 */
   quotaExhausted: boolean;
   ok: boolean;
   summary: string;
-  costUsd: number;
+  /** 回覆裡的 XML 中繼資料；agent 沒附上時為 undefined */
+  meta?: ResultMeta;
   inputTokens: number;
   outputTokens: number;
 }
@@ -80,7 +107,6 @@ export async function runAgent(
   def: AgentDef,
   t: AgentTarget,
   prompt: string,
-  opts: { stripApiKeys: boolean },
 ): Promise<AgentResult> {
   const adapter = ADAPTERS[def.adapter];
   const inv = adapter.invoke({
@@ -96,13 +122,12 @@ export async function runAgent(
 
   let done: { ok: boolean; summary?: string } | undefined;
   let lastText = "";
-  let costUsd: number | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
   const r = await exec(inv.cmd, inv.args, {
     cwd: t.cwd,
     env: inv.env,
-    unsetEnv: opts.stripApiKeys ? API_KEY_VARS : [],
+    unsetEnv: API_KEY_VARS,
     input: inv.input,
     onStdoutLine: (line) => {
       if (!line.trim()) return;
@@ -116,7 +141,6 @@ export async function runAgent(
         } else if (ev.kind === "usage") {
           inputTokens += ev.inputTokens ?? 0;
           outputTokens += ev.outputTokens ?? 0;
-          if (ev.costUsd !== undefined) costUsd = (costUsd ?? 0) + ev.costUsd;
         } else if (ev.kind === "done") {
           done = { ok: ev.ok, summary: ev.summary };
         }
@@ -125,14 +149,11 @@ export async function runAgent(
   });
   if (r.stderr.trim()) appendLog(t.logFile, `[stderr]\n${r.stderr}`);
 
-  // CLI 沒回報花費時，用設定的價格從 token 數估算
-  if (costUsd === undefined && def.pricing) {
-    costUsd = (inputTokens * def.pricing.inputPerMTok + outputTokens * def.pricing.outputPerMTok) / 1_000_000;
-  }
   const ok = r.code === 0 && (done?.ok ?? true);
   const summary = done?.summary || lastText || tail(r.stdout, 2000) || tail(r.stderr, 2000);
   const quotaExhausted = !ok && isQuotaError(`${summary}\n${done?.summary ?? ""}\n${r.stderr}\n${tail(r.stdout, 4000)}`);
-  return { ok, quotaExhausted, summary, costUsd: costUsd ?? 0, inputTokens, outputTokens };
+  const meta = parseResultMeta(summary) ?? parseResultMeta(lastText);
+  return { ok, quotaExhausted, summary, meta, inputTokens, outputTokens };
 }
 
 /**

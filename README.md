@@ -93,7 +93,6 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 | `--base` | 基底分支，預設為目前分支 |
 | `--cycle` | 這次 run 的輪替順序，例如 `claude,codex,gemini`；建立後就固定，`resume` 沿用 |
 | `--max-agent-runs` | 這次 run 的 agent 執行次數上限 |
-| `--budget` | 估計花費上限（美元）；使用 API 計費時才需要 |
 | `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
 
 `status` 會列出任務。進行中的任務會標出正在寫測試還是正在寫實作。
@@ -109,7 +108,7 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
   "tddSplit": true,
   "tieBreak": "proceed",
   "agents": {
-    "codex": { "adapter": "codex", "model": "你要用的模型", "pricing": { "inputPerMTok": 1.25, "outputPerMTok": 10 } },
+    "codex": { "adapter": "codex", "model": "你要用的模型" },
     "aider": { "adapter": "command", "command": ["aider", "--yes-always", "--no-auto-commits", "--message", "{prompt}"] }
   }
 }
@@ -124,12 +123,33 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
 | `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
-| `auth` | `subscription` | `subscription` 移除子程序裡的 API key；`api` 保留，給 CI 用 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
 | `install` / `test` / `checks` | 見 `src/schemas.ts` | verify 階段實際執行的指令 |
 | `agents` | 內建 claude、codex、gemini | 覆寫內建 agent，或用 `command` adapter 接上其他 CLI |
 
 verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
+
+### 用指令管理 agent
+
+`agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
+
+```bash
+agentflowctl agent list                                   # 內建與自訂 agent、是否已安裝、輪替位置
+agentflowctl agent add claude-strong --adapter claude --model opus
+agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
+agentflowctl agent set codex --model 你要用的模型 --extra-arg=--search
+agentflowctl agent set aider --adapter gemini             # 換 adapter
+agentflowctl agent remove aider
+agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前的順序
+```
+
+修改會連帶更新相關設定，並在終端機列出：
+
+- `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
+- `remove` 刪除自訂 agent 時，會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回自動偵測。對內建 agent 用 `remove`，只會刪掉覆寫設定。
+- `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
+
+已建立的 run 會沿用建立時的輪替順序，不受這些修改影響。
 
 ## 計畫怎麼在沒有人的情況下通過
 
@@ -169,6 +189,23 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 
 驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
 
+## Prompt 結構
+
+每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
+
+Agent 的最後回覆要附上 XML 中繼資料：
+
+```xml
+<result>
+  <status>done 或 blocked</status>
+  <summary>做了什麼</summary>
+  <files_changed><file>src/form.ts</file></files_changed>
+  <concerns>對規格或測試的疑慮</concerns>
+</result>
+```
+
+`blocked` 與 `concerns` 會印在終端機上，完整回覆留在 log。這份中繼資料只給人看；缺少或格式錯誤都不影響流程，是否通過仍由上表的程式檢查決定。
+
 ## Adapter
 
 | adapter | 執行方式 | 權限 |
@@ -184,11 +221,11 @@ Codex 沙箱預設不能連網，所以建立 worktree 時會先跑 `install`。
 
 ## 登入、額度與代打
 
-預設 `auth: "subscription"`，只用各家 CLI 的訂閱登入。
+只支援各家 CLI 的訂閱登入。
 
-執行 agent 時，會從子程序環境移除 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CODEX_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY`、`GOOGLE_API_KEY`，避免環境裡的 key 蓋過訂閱登入。`doctor` 發現這些變數時會提醒。專案指令（install、test、build）不受影響。
+執行 agent 時，一律從子程序環境移除 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CODEX_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY`、`GOOGLE_API_KEY`，避免環境裡的 key 蓋過訂閱登入。`doctor` 發現這些變數時會提醒。專案指令（install、test、build）不受影響。
 
-上限是執行次數（`maxAgentRuns`，預設 60），不是金額。Claude Code 回報的美元金額是 API 價格的估計值。
+上限是執行次數（`maxAgentRuns`，預設 60），不是金額。`status` 會列出各 agent 的執行次數與 token 數。
 
 額度用完時：
 
@@ -204,8 +241,6 @@ Codex 沙箱預設不能連網，所以建立 worktree 時會先跑 `install`。
 
 額度錯誤靠錯誤訊息辨識（usage limit、rate limit、quota、429 等），只在 agent 執行失敗時判斷。辨識不到時，會當成一般失敗重試。
 
-CI 無法使用訂閱登入時，設 `"auth": "api"` 保留 API key，並用 `--budget` 設估計花費上限。Codex、Gemini 只回報 token，要在 `agents.<name>.pricing` 設定價格才會算進預算。GitHub Actions 範例見 `examples/github-actions.yml`。
-
 ## 在哪裡跑
 
 agentflowctl 本身只依賴 Node.js 與 git。專案指令透過系統 shell 執行。
@@ -213,7 +248,7 @@ agentflowctl 本身只依賴 Node.js 與 git。專案指令透過系統 shell �
 | 環境 | 適合的用法 |
 |---|---|
 | 自己的電腦 | 自己的專案、自己寫的需求。剛開始可以加 `--manual-plan`，確認審查品質後再拿掉 |
-| CI、容器、遠端開發機 | 無人值守。見 `examples/github-actions.yml`：issue 加上標籤就跑完並開 PR |
+| 容器、遠端開發機 | 無人值守。先在該環境內完成各家 CLI 的訂閱登入 |
 | Claude Code、Codex 裡面 | 讓它們用 shell 執行 `npx agentflowctl` |
 
 沒有容器隔離時，verify 會在你的電腦上執行 agent 寫出來的程式碼。Gemini 在無人值守時是 yolo 模式。處理外部 issue，或需求文字不是你自己寫的，放到可丟棄的環境。AI 審查計畫擋不住夾在需求裡的指示。
@@ -228,7 +263,7 @@ src/
   runner.ts         執行 agent、正規化結果、執行專案指令
   agents/           claude、codex、gemini、command
   git.ts            worktree 與 git 操作
-  store.ts          狀態、花費、代打紀錄
+  store.ts          狀態、用量、代打紀錄
   tasks.ts          任務 DAG
   schemas.ts        zod schema
 prompts/            各階段 prompt

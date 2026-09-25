@@ -9,7 +9,7 @@ describe("adapter 事件解析", () => {
     expect(parse(j({ type: "assistant", message: { content: [{ type: "text", text: "hi" }, { type: "tool_use", name: "Edit" }] } })))
       .toEqual([{ kind: "text", text: "hi" }, { kind: "tool", name: "Edit" }]);
     expect(parse(j({ type: "result", is_error: false, result: "ok", total_cost_usd: 0.3, usage: { input_tokens: 10, output_tokens: 2 } })))
-      .toEqual([{ kind: "usage", inputTokens: 10, outputTokens: 2, costUsd: 0.3 }, { kind: "done", ok: true, summary: "ok" }]);
+      .toEqual([{ kind: "usage", inputTokens: 10, outputTokens: 2 }, { kind: "done", ok: true, summary: "ok" }]);
   });
 
   it("codex：exec --json", () => {
