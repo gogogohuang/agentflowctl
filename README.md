@@ -10,13 +10,12 @@
 
 ## 快速開始
 
-需要 Node.js 22 以上與 git。先讓各家 CLI 完成訂閱登入，再檢查環境：
+需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成訂閱登入，再檢查環境：
 
 ```bash
-npm install -g agentflowctl
 claude    # 完成登入
 codex     # 完成登入
-agentflowctl doctor
+npx agentflowctl doctor
 ```
 
 `doctor` 會列出已安裝的 CLI，並印出即將使用的輪替順序。沒有 `flow.config.json` 時，會自動採用偵測到的 CLI。
@@ -24,8 +23,16 @@ agentflowctl doctor
 在專案資料夾內開始一次 run：
 
 ```bash
-agentflowctl run --req "登入表單加上 zod 驗證與錯誤訊息"
+npx agentflowctl run --req "登入表單加上 zod 驗證與錯誤訊息"
 ```
+
+想把指令縮成 `agentflowctl` 時，再全域安裝：
+
+```bash
+npm install -g agentflowctl
+```
+
+下面的指令都寫成 `agentflowctl`；沒有全域安裝時，在前面加上 `npx` 即可。
 
 這次 run 在專用 git worktree（`.agentflowctl/worktrees/<id>`）裡工作，基底是你目前的分支，新分支名是 `flow/<id>`。你正在編輯的工作目錄不會被改到。
 
@@ -207,7 +214,7 @@ agentflowctl 本身只依賴 Node.js 與 git。專案指令透過系統 shell �
 |---|---|
 | 自己的電腦 | 自己的專案、自己寫的需求。剛開始可以加 `--manual-plan`，確認審查品質後再拿掉 |
 | CI、容器、遠端開發機 | 無人值守。見 `examples/github-actions.yml`：issue 加上標籤就跑完並開 PR |
-| Claude Code、Codex 裡面 | 讓它們用 shell 執行 `agentflowctl` |
+| Claude Code、Codex 裡面 | 讓它們用 shell 執行 `npx agentflowctl` |
 
 沒有容器隔離時，verify 會在你的電腦上執行 agent 寫出來的程式碼。Gemini 在無人值守時是 yolo 模式。處理外部 issue，或需求文字不是你自己寫的，放到可丟棄的環境。AI 審查計畫擋不住夾在需求裡的指示。
 

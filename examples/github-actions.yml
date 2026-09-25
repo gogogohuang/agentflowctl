@@ -23,10 +23,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: 安裝 agent CLI 與 agentflowctl
-        run: |
-          npm install -g @anthropic-ai/claude-code @openai/codex
-          npm install -g agentflowctl
+      - name: 安裝 agent CLI
+        run: npm install -g @anthropic-ai/claude-code @openai/codex
       - name: 執行 flow
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -38,7 +36,7 @@ jobs:
           git config user.name "agentflowctl"
           git config user.email "agentflowctl@users.noreply.github.com"
           printf '%s\n\n%s\n' "$ISSUE_TITLE" "$ISSUE_BODY" > /tmp/req.md
-          agentflowctl run --req-file /tmp/req.md --budget 10 --cycle claude,codex
+          npx agentflowctl run --req-file /tmp/req.md --budget 10 --cycle claude,codex
       - name: 保存紀錄
         if: always()
         uses: actions/upload-artifact@v4
