@@ -27,6 +27,12 @@ describe("addAgent", () => {
   it("只有 command adapter 可以設定 command", () => {
     expect(() => addAgent({}, "x", { adapter: "claude", command: ["foo"] })).toThrow(/command/);
   });
+
+  it("加回已移除的內建 agent", () => {
+    const r = addAgent({ removedAgents: ["gemini", "codex"] }, "gemini", { adapter: "gemini" });
+    expect(r.cfg).toEqual({ removedAgents: ["codex"], agents: { gemini: { adapter: "gemini" } } });
+    expect(addAgent({ removedAgents: ["gemini"] }, "gemini", { adapter: "gemini" }).cfg).toEqual({ agents: { gemini: { adapter: "gemini" } } });
+  });
 });
 
 describe("setAgent", () => {
@@ -54,13 +60,24 @@ describe("setAgent", () => {
   it("未定義的 agent 或沒有要改的欄位時報錯", () => {
     expect(() => setAgent({}, "nope", { model: "x" })).toThrow(/未定義/);
     expect(() => setAgent({}, "claude", {})).toThrow(/沒有要修改/);
+    expect(() => setAgent({ removedAgents: ["claude"] }, "claude", { model: "x" })).toThrow(/未定義/);
   });
 });
 
 describe("removeAgent", () => {
-  it("刪除自訂 agent 或內建 agent 的覆寫設定", () => {
+  it("刪除自訂 agent", () => {
     expect(removeAgent({ agents: { x: { adapter: "codex" } } }, "x").cfg).toEqual({ agents: {} });
-    expect(removeAgent({ agents: { claude: { adapter: "claude", model: "m" } } }, "claude").cfg).toEqual({ agents: {} });
+  });
+
+  it("移除內建 agent：連同覆寫設定一起刪，並記在 removedAgents", () => {
+    expect(removeAgent({}, "gemini").cfg).toEqual({ agents: {}, removedAgents: ["gemini"] });
+    expect(removeAgent({ agents: { claude: { adapter: "claude", model: "m" } }, removedAgents: ["codex"] }, "claude").cfg)
+      .toEqual({ agents: {}, removedAgents: ["codex", "claude"] });
+  });
+
+  it("移除內建 agent 也會從輪替順序移除", () => {
+    const r = removeAgent({ cycle: ["claude", "gemini"] }, "gemini");
+    expect(r.cfg).toEqual({ cycle: ["claude"], agents: {}, removedAgents: ["gemini"] });
   });
 
   it("一併從輪替順序移除", () => {
@@ -75,9 +92,9 @@ describe("removeAgent", () => {
     expect(r.changes.join("\n")).toMatch(/自動偵測/);
   });
 
-  it("沒有設定可以刪除時報錯", () => {
-    expect(() => removeAgent({}, "claude")).toThrow(/內建/);
+  it("未定義或已移除的 agent 報錯", () => {
     expect(() => removeAgent({}, "nope")).toThrow(/未定義/);
+    expect(() => removeAgent({ removedAgents: ["gemini"] }, "gemini")).toThrow(/未定義/);
   });
 });
 
@@ -91,6 +108,7 @@ describe("setCycle", () => {
     expect(() => setCycle({}, [])).toThrow(/至少/);
     expect(() => setCycle({}, ["claude", "claude"])).toThrow(/重複/);
     expect(() => setCycle({}, ["claude", "nope"])).toThrow(/未定義/);
+    expect(() => setCycle({ removedAgents: ["gemini"] }, ["claude", "gemini"])).toThrow(/未定義/);
   });
 });
 

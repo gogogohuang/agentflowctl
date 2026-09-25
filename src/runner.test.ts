@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { exec } from "./proc.js";
-import { formatToolLine, isQuotaError, parseResultMeta } from "./runner.js";
+import { formatToolLine, isQuotaError, parseResultMeta, resolveAgent } from "./runner.js";
+import { RepoConfig } from "./schemas.js";
 
 describe("回覆的 XML 中繼資料", () => {
   it("解析 <result> 區塊", () => {
@@ -71,5 +72,12 @@ describe("工具事件的畫面輸出", () => {
 
   it("沒有細節時只顯示工具名稱", () => {
     expect(formatToolLine("gemini", { name: "write_file" })).toBe("    🔧 [gemini] write_file");
+  });
+});
+
+describe("resolveAgent", () => {
+  it("內建 agent 不用設定就能用，移除後就不能用", () => {
+    expect(resolveAgent(RepoConfig.parse({}), "gemini").adapter).toBe("gemini");
+    expect(() => resolveAgent(RepoConfig.parse({ removedAgents: ["gemini"] }), "gemini")).toThrow(/已從設定移除/);
   });
 });

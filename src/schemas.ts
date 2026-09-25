@@ -65,6 +65,8 @@ export type AgentDef = z.infer<typeof AgentDef>;
 export const RepoConfig = z.object({
   /** 自訂或覆寫 agent；claude、codex、gemini 三個名稱內建 */
   agents: z.record(z.string(), AgentDef).default({}),
+  /** 移除的內建 agent：不再自動偵測，也不能放進輪替；用 agent add 加回 */
+  removedAgents: z.array(z.string()).default([]),
   /** 輪替順序；未設定時自動偵測已安裝的 CLI */
   cycle: z.array(z.string()).min(1).optional(),
   /** review 後的修正由誰做：ring＝輪到下一位；author＝最後寫程式的 agent */

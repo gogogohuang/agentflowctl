@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { ADAPTERS, DEFAULT_CYCLE } from "./agents/index.js";
+import { ADAPTERS, builtinAgents } from "./agents/index.js";
 import { AgentDef, type RepoConfig } from "./schemas.js";
 import { projectRoot, runDir } from "./paths.js";
 import { exec, execShell } from "./proc.js";
@@ -92,9 +92,10 @@ export function formatToolLine(agent: string, tool: { name: string; detail?: str
 export function resolveAgent(cfg: RepoConfig, name: string): AgentDef {
   const custom = cfg.agents[name];
   if (custom) return custom;
-  if ((DEFAULT_CYCLE as readonly string[]).includes(name)) {
+  if (builtinAgents(cfg.removedAgents).includes(name)) {
     return AgentDef.parse({ adapter: name });
   }
+  if (cfg.removedAgents.includes(name)) throw new Error(`${name} 已從設定移除（removedAgents），要使用請先 agent add ${name} --adapter ${name}`);
   throw new Error(`未定義的 agent：${name}（請在 flow.config.json 的 agents 裡設定）`);
 }
 
