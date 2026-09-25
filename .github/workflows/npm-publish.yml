@@ -3,8 +3,8 @@
 #   git push --follow-tags
 #
 # 使用 npm Trusted Publishing（OIDC），不需要 NPM_TOKEN；
-# 需先在 npmjs.com 的套件設定中把這個 repo 與 release.yml 加為 Trusted Publisher。
-name: Release
+# 需先在 npmjs.com 的套件設定中把這個 repo 與 npm-publish.yml 加為 Trusted Publisher。
+name: npm publish
 
 on:
   push:
