@@ -9,7 +9,7 @@ import { API_KEY_VARS, probeAgent, resolveAgent, runCommand } from "./runner.js"
 import { addWorktree, git, removeWorktree } from "./git.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
-import { agentRuns, costByAgent, getCost, getRun, listRuns, listSubstitutions, saveRun } from "./store.js";
+import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
 import { readJsonFile } from "./util.js";
 
 function mustGetRun(id: string): FlowRun {
@@ -31,7 +31,7 @@ function printSummary(run: FlowRun): void {
   console.log("");
   console.log(`run      ${run.id}`);
   console.log(`階段     ${run.stage}`);
-  console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次（估計花費 $${getCost(run.id).toFixed(2)}${run.budgetUsd ? ` / $${run.budgetUsd}` : "，訂閱登入時僅供參考"}）`);
+  console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次`);
   console.log(`agent    ${run.cycle.join(" → ")}${run.lastWriter ? `（最後作者：${run.lastWriter}）` : ""}`);
   console.log(`分支     ${run.branch}`);
   console.log(`worktree ${worktreeDir(run.id)}`);
@@ -77,10 +77,9 @@ program
   .option("--req-file <file>", "從檔案讀取需求")
   .option("--base <branch>", "基底分支（預設為目前的分支）")
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
-  .option("--budget <usd>", "選用：估計花費上限（美元），使用 API 計費時才需要")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
   .option("--cycle <agents>", "agent 輪替順序，例如 claude,codex,gemini")
-  .action(async (opts: { req?: string; reqFile?: string; base?: string; budget?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string }) => {
+  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
     const root = projectRoot();
@@ -104,7 +103,6 @@ program
       requirement: requirement.trim(),
       stage: "spec",
       autopilot: !opts.manualPlan,
-      budgetUsd: opts.budget ? Number(opts.budget) : undefined,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
       cycle,
       attempts: {},
@@ -129,10 +127,8 @@ program
   .command("resume <id>")
   .description("從暫停、中斷或失敗的階段接續")
   .option("--max-agent-runs <n>", "調整 agent 執行次數上限")
-  .option("--budget <usd>", "調整估計花費上限（美元）")
-  .action(async (id: string, opts: { budget?: string; maxAgentRuns?: string }) => {
+  .action(async (id: string, opts: { maxAgentRuns?: string }) => {
     let run = mustGetRun(id);
-    if (opts.budget) run = { ...run, budgetUsd: Number(opts.budget) };
     if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
@@ -168,11 +164,11 @@ program
   .action((id: string) => {
     const run = mustGetRun(id);
     printSummary(run);
-    const byAgent = costByAgent(id);
+    const byAgent = usageByAgent(id);
     if (Object.keys(byAgent).length) {
       console.log("\n各 agent 用量");
       for (const [agent, c] of Object.entries(byAgent)) {
-        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} tokens  $${c.usd.toFixed(2)}`);
+        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} tokens`);
       }
     }
     const subs = listSubstitutions(id);
@@ -207,13 +203,9 @@ program
       console.log(`\n${(e as Error).message}`);
     }
     const leaked = API_KEY_VARS.filter((k) => process.env[k]);
-    console.log(`\n登入方式：${cfg.auth === "subscription" ? "訂閱登入（執行 agent 時會移除 API key）" : "API key"}`);
+    console.log("\n登入方式：訂閱登入（執行 agent 時會移除 API key）");
     if (leaked.length) {
-      console.log(
-        cfg.auth === "subscription"
-          ? `⚠️  環境中有 ${leaked.join("、")}，agentflowctl 執行 agent 時會移除，但你自己直接執行 CLI 時仍可能改走 API 計費`
-          : `使用中的 API key：${leaked.join("、")}`,
-      );
+      console.log(`⚠️  環境中有 ${leaked.join("、")}，agentflowctl 執行 agent 時會移除，但你自己直接執行 CLI 時仍可能改走 API 計費`);
     }
     console.log(`單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
     console.log(`修正策略：${cfg.fixStrategy}　測試與實作分開：${cfg.tddSplit ? "是" : "否"}`);
@@ -226,7 +218,7 @@ program
   .action(() => {
     for (const r of listRuns()) {
       const req = r.requirement.split("\n")[0]!.slice(0, 40);
-      console.log(`${r.id}  ${r.stage.padEnd(17)}  $${getCost(r.id).toFixed(2).padStart(6)}  ${r.updatedAt.slice(0, 16)}  ${req}`);
+      console.log(`${r.id}  ${r.stage.padEnd(17)}  ${String(agentRuns(r.id)).padStart(3)} 次  ${r.updatedAt.slice(0, 16)}  ${req}`);
     }
   });
 

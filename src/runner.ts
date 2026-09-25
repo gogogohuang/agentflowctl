@@ -13,7 +13,7 @@ export interface AgentTarget {
   logFile: string;
 }
 
-/** 會讓各家 CLI 改走 API 計費的環境變數；訂閱登入模式下執行 agent 時會移除 */
+/** 會讓各家 CLI 改走 API 計費的環境變數；只用訂閱登入，執行 agent 時一律移除 */
 export const API_KEY_VARS = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
@@ -72,7 +72,6 @@ export interface AgentResult {
   summary: string;
   /** 回覆裡的 XML 中繼資料；agent 沒附上時為 undefined */
   meta?: ResultMeta;
-  costUsd: number;
   inputTokens: number;
   outputTokens: number;
 }
@@ -108,7 +107,6 @@ export async function runAgent(
   def: AgentDef,
   t: AgentTarget,
   prompt: string,
-  opts: { stripApiKeys: boolean },
 ): Promise<AgentResult> {
   const adapter = ADAPTERS[def.adapter];
   const inv = adapter.invoke({
@@ -124,13 +122,12 @@ export async function runAgent(
 
   let done: { ok: boolean; summary?: string } | undefined;
   let lastText = "";
-  let costUsd: number | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
   const r = await exec(inv.cmd, inv.args, {
     cwd: t.cwd,
     env: inv.env,
-    unsetEnv: opts.stripApiKeys ? API_KEY_VARS : [],
+    unsetEnv: API_KEY_VARS,
     input: inv.input,
     onStdoutLine: (line) => {
       if (!line.trim()) return;
@@ -144,7 +141,6 @@ export async function runAgent(
         } else if (ev.kind === "usage") {
           inputTokens += ev.inputTokens ?? 0;
           outputTokens += ev.outputTokens ?? 0;
-          if (ev.costUsd !== undefined) costUsd = (costUsd ?? 0) + ev.costUsd;
         } else if (ev.kind === "done") {
           done = { ok: ev.ok, summary: ev.summary };
         }
@@ -153,15 +149,11 @@ export async function runAgent(
   });
   if (r.stderr.trim()) appendLog(t.logFile, `[stderr]\n${r.stderr}`);
 
-  // CLI 沒回報花費時，用設定的價格從 token 數估算
-  if (costUsd === undefined && def.pricing) {
-    costUsd = (inputTokens * def.pricing.inputPerMTok + outputTokens * def.pricing.outputPerMTok) / 1_000_000;
-  }
   const ok = r.code === 0 && (done?.ok ?? true);
   const summary = done?.summary || lastText || tail(r.stdout, 2000) || tail(r.stderr, 2000);
   const quotaExhausted = !ok && isQuotaError(`${summary}\n${done?.summary ?? ""}\n${r.stderr}\n${tail(r.stdout, 4000)}`);
   const meta = parseResultMeta(summary) ?? parseResultMeta(lastText);
-  return { ok, quotaExhausted, summary, meta, costUsd: costUsd ?? 0, inputTokens, outputTokens };
+  return { ok, quotaExhausted, summary, meta, inputTokens, outputTokens };
 }
 
 /**

@@ -53,7 +53,6 @@ export const claude: Adapter = {
         kind: "usage",
         inputTokens: num(usage.input_tokens),
         outputTokens: num(usage.output_tokens),
-        costUsd: num(ev.total_cost_usd),
       });
       out.push({ kind: "done", ok: ev.is_error !== true, summary: str(ev.result) });
     }

@@ -4,7 +4,8 @@ import { agentflowctlDir, runDir } from "./paths.js";
 import { FlowRun } from "./schemas.js";
 
 const statePath = (id: string) => join(runDir(id), "state.json");
-const costPath = (id: string) => join(runDir(id), "costs.jsonl");
+/** 檔名沿用舊版的 costs.jsonl，進行中的 run 升級後執行次數不會歸零 */
+const usagePath = (id: string) => join(runDir(id), "costs.jsonl");
 
 /** 先寫暫存檔再 rename，確保 state.json 不會因中斷而只寫一半 */
 function writeAtomic(path: string, content: string): void {
@@ -34,48 +35,37 @@ export function listRuns(): FlowRun[] {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-/** 花費只 append、不改寫，多個寫入者同時寫也不會互相覆蓋 */
-export interface CostEntry {
+/** 用量只 append、不改寫，多個寫入者同時寫也不會互相覆蓋 */
+export interface UsageEntry {
   stage: string;
   agent: string;
-  usd: number;
   inputTokens: number;
   outputTokens: number;
 }
 
-export function addCost(id: string, entry: CostEntry): void {
+export function addUsage(id: string, entry: UsageEntry): void {
   mkdirSync(runDir(id), { recursive: true });
-  appendFileSync(costPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+  appendFileSync(usagePath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 
-/** 依 agent 加總花費與 token，方便比較各家模型 */
-export function costByAgent(id: string): Record<string, { usd: number; tokens: number; runs: number }> {
-  const p = costPath(id);
-  const out: Record<string, { usd: number; tokens: number; runs: number }> = {};
+/** 依 agent 加總 token 與執行次數，方便比較各家模型 */
+export function usageByAgent(id: string): Record<string, { tokens: number; runs: number }> {
+  const p = usagePath(id);
+  const out: Record<string, { tokens: number; runs: number }> = {};
   if (!existsSync(p)) return out;
   for (const line of readFileSync(p, "utf8").split("\n").filter(Boolean)) {
-    const e = JSON.parse(line) as Partial<CostEntry>;
+    const e = JSON.parse(line) as Partial<UsageEntry>;
     const key = e.agent ?? "?";
-    const acc = (out[key] ??= { usd: 0, tokens: 0, runs: 0 });
-    acc.usd += e.usd ?? 0;
+    const acc = (out[key] ??= { tokens: 0, runs: 0 });
     acc.tokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
     acc.runs += 1;
   }
   return out;
 }
 
-export function getCost(id: string): number {
-  const p = costPath(id);
-  if (!existsSync(p)) return 0;
-  return readFileSync(p, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .reduce((sum, line) => sum + ((JSON.parse(line) as { usd: number }).usd ?? 0), 0);
-}
-
-/** 這個 run 已執行 agent 的次數（每次執行都會記一筆花費，即使是 0） */
+/** 這個 run 已執行 agent 的次數（每次執行都會記一筆用量） */
 export function agentRuns(id: string): number {
-  const p = costPath(id);
+  const p = usagePath(id);
   return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).length : 0;
 }
 

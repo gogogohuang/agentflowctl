@@ -2,7 +2,7 @@
 export type AgentEvent =
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string }
-  | { kind: "usage"; inputTokens?: number; outputTokens?: number; costUsd?: number }
+  | { kind: "usage"; inputTokens?: number; outputTokens?: number }
   | { kind: "done"; ok: boolean; summary?: string };
 
 export interface InvokeOptions {

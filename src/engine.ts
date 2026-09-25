@@ -15,7 +15,7 @@ import {
   type FlowRun,
   type Stage,
 } from "./schemas.js";
-import { addCost, addSubstitution, agentRuns, getCost, saveRun } from "./store.js";
+import { addSubstitution, addUsage, agentRuns, saveRun } from "./store.js";
 import { orderTasks } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 
@@ -74,10 +74,8 @@ async function agentStep(
       info(run, `🔁 ${agent} 額度已用完，${step} 由 ${sub} 代打${note ? `（注意：${note}）` : ""}`);
       agent = sub;
     }
-    const r = await runAgent(agent, resolveAgent(cfg, agent), target(run, `${step}-${agent}`), prompt, {
-      stripApiKeys: cfg.auth === "subscription",
-    });
-    addCost(run.id, { stage: step, agent, usd: r.costUsd, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
+    const r = await runAgent(agent, resolveAgent(cfg, agent), target(run, `${step}-${agent}`), prompt);
+    addUsage(run.id, { stage: step, agent, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
     if (!r.quotaExhausted) {
       reportMeta(run, agent, r);
       return { r, agent };
@@ -547,7 +545,7 @@ async function prStage(run: FlowRun): Promise<FlowRun> {
   const bodyPath = join(runDir(run.id), "pr-body.md");
   writeFileSync(
     bodyPath,
-    `> 由 agentflowctl 自動產生（run: ${run.id}，參與的 agent：${run.cycle.join("、")}，花費約 $${getCost(run.id).toFixed(2)}）\n\n${spec}`,
+    `> 由 agentflowctl 自動產生（run: ${run.id}，參與的 agent：${run.cycle.join("、")}，執行 agent ${agentRuns(run.id)} 次）\n\n${spec}`,
   );
   const r = await exec(
     "gh",
@@ -590,15 +588,6 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
         stage: "failed",
         failedStage: stage,
         failureReason: `已執行 agent ${runs} 次，達到上限 ${run.maxAgentRuns}（可用 resume --max-agent-runs 調高）`,
-      });
-    }
-    const cost = getCost(run.id);
-    if (run.budgetUsd !== undefined && cost >= run.budgetUsd) {
-      return saveRun({
-        ...run,
-        stage: "failed",
-        failedStage: stage,
-        failureReason: `估計花費 $${cost.toFixed(2)}，超過預算 $${run.budgetUsd}`,
       });
     }
     try {
