@@ -1,0 +1,26 @@
+{
+  "cycle": ["claude", "codex"],
+  "fixStrategy": "ring",
+  "tddSplit": true,
+  "reviewQuorum": 1,
+  "planReviewQuorum": 1,
+  "planArbiter": true,
+  "tieBreak": "proceed",
+  "auth": "subscription",
+  "maxAgentRuns": 60,
+  "agents": {
+    "claude": { "adapter": "claude" },
+    "codex": {
+      "adapter": "codex",
+      "pricing": { "inputPerMTok": 1.25, "outputPerMTok": 10 }
+    }
+  },
+  "install": "pnpm ci",
+  "test": "npx vitest run",
+  "checks": [
+    { "name": "typecheck", "cmd": "npx tsc --noEmit" },
+    { "name": "lint", "cmd": "npx eslint ." },
+    { "name": "test", "cmd": "npx vitest run" },
+    { "name": "build", "cmd": "npx vite build" }
+  ]
+}

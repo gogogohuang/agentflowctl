@@ -1,0 +1,34 @@
+{
+  "name": "agentflowctl",
+  "version": "0.1.0",
+  "description": "跨廠商 AI 開發 harness：Claude Code、Codex、Gemini 輪流實作、審查、修正",
+  "type": "module",
+  "bin": {
+    "agentflowctl": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "prompts",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@9.11.0",
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
