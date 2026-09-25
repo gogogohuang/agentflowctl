@@ -221,3 +221,7 @@ examples/           flow.config.json 與 GitHub Actions 範例
 pnpm run typecheck
 pnpm test   # 輪替規則、各 adapter 的事件解析、worktree、儲存、任務 DAG
 ```
+
+## 授權
+
+MIT，詳見 [LICENSE](LICENSE)。
