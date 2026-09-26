@@ -13,16 +13,6 @@ export interface AgentTarget {
   logFile: string;
 }
 
-/** 會讓各家 CLI 改走 API 計費的環境變數；只用訂閱登入，執行 agent 時一律移除 */
-export const API_KEY_VARS = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-];
-
 /**
  * 判斷 agent 失敗是否因為方案額度或速率限制。
  * 各家的錯誤訊息會隨版本變動，這裡用寬鬆的樣式比對，且只在執行失敗時才檢查，避免誤判正常輸出。
@@ -135,7 +125,6 @@ export async function runAgent(
   const r = await exec(inv.cmd, inv.args, {
     cwd: t.cwd,
     env: inv.env,
-    unsetEnv: API_KEY_VARS,
     input: inv.input,
     onStdoutLine: (line) => {
       if (!line.trim()) return;

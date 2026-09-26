@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { config } from "./config.js";
 import { builtinAgents } from "./agents/index.js";
 import { advance, loadRepoConfig } from "./engine.js";
-import { API_KEY_VARS, probeAgent, resolveAgent, runCommand } from "./runner.js";
+import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git, removeWorktree } from "./git.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
@@ -294,12 +294,7 @@ program
     } catch (e) {
       console.log(`\n${(e as Error).message}`);
     }
-    const leaked = API_KEY_VARS.filter((k) => process.env[k]);
-    console.log("\n登入方式：訂閱登入（執行 agent 時會移除 API key）");
-    if (leaked.length) {
-      console.log(`⚠️  環境中有 ${leaked.join("、")}，agentflowctl 執行 agent 時會移除，但你自己直接執行 CLI 時仍可能改走 API 計費`);
-    }
-    console.log(`單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
+    console.log(`\n單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
     console.log(`修正策略：${cfg.fixStrategy}　測試與實作分開：${cfg.tddSplit ? "是" : "否"}`);
     console.log(`程式碼審查人數：${cfg.reviewQuorum}　計畫審查人數：${cfg.planReviewQuorum}　計畫仲裁：${cfg.planArbiter ? "開啟" : "關閉"}`);
   });

@@ -9,8 +9,6 @@ export interface ExecResult {
 export interface ExecOptions {
   cwd?: string;
   env?: Record<string, string>;
-  /** 從子程序環境中移除的變數（例如避免 API key 蓋過訂閱登入） */
-  unsetEnv?: string[];
   /** 寫入子程序的 stdin；一律會關閉 stdin，避免 CLI 一直等待輸入而卡住 */
   input?: string;
   /** 透過系統 shell 執行（macOS／Linux 為 sh，Windows 為 cmd） */
@@ -20,11 +18,9 @@ export interface ExecOptions {
 
 export function exec(cmd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
-    for (const key of opts.unsetEnv ?? []) delete env[key];
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
-      env,
+      env: { ...process.env, ...opts.env },
       shell: opts.shell ?? false,
     });
     let stdout = "";

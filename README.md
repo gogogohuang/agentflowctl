@@ -10,7 +10,7 @@
 
 ## 快速開始
 
-需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成訂閱登入，再檢查環境：
+需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入，再檢查環境：
 
 ```bash
 claude    # 完成登入
@@ -237,11 +237,7 @@ Codex 沙箱預設不能連網，所以建立 worktree 時會先跑 `install`。
 
 各家讀的專案說明檔不同：Claude Code 讀 `CLAUDE.md`，Codex 讀 `AGENTS.md`，Gemini 讀 `GEMINI.md`。把專案慣例寫在 `AGENTS.md`，另外兩個檔案各用一行引用它。agentflowctl 的 prompt 在 `prompts/`，不依賴任何一家的 skills 或 plugins。
 
-## 登入、額度與代打
-
-只支援各家 CLI 的訂閱登入。
-
-執行 agent 時，一律從子程序環境移除 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CODEX_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY`、`GOOGLE_API_KEY`，避免環境裡的 key 蓋過訂閱登入。`doctor` 發現這些變數時會提醒。專案指令（install、test、build）不受影響。
+## 額度與代打
 
 上限是執行次數（`maxAgentRuns`，預設 60），不是金額。`status` 會列出各 agent 的執行次數與 token 數。
 
@@ -266,7 +262,7 @@ agentflowctl 本身只依賴 Node.js 與 git。專案指令透過系統 shell �
 | 環境 | 適合的用法 |
 |---|---|
 | 自己的電腦 | 自己的專案、自己寫的需求。剛開始可以加 `--manual-plan`，確認審查品質後再拿掉 |
-| 容器、遠端開發機 | 無人值守。先在該環境內完成各家 CLI 的訂閱登入 |
+| 容器、遠端開發機 | 無人值守。先在該環境內完成各家 CLI 的登入 |
 | Claude Code、Codex 裡面 | 讓它們用 shell 執行 `npx agentflowctl` |
 
 沒有容器隔離時，verify 會在你的電腦上執行 agent 寫出來的程式碼。Gemini 在無人值守時是 yolo 模式。處理外部 issue，或需求文字不是你自己寫的，放到可丟棄的環境。AI 審查計畫擋不住夾在需求裡的指示。
