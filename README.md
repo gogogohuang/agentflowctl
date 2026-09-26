@@ -228,6 +228,7 @@ stderr：
   "fixStrategy": "ring",
   "tddSplit": true,
   "tieBreak": "proceed",
+  "defaultModels": { "claude": "Claude 模型名稱", "codex": "Codex 模型名稱", "gemini": "Gemini 模型名稱" },
   "agents": {
     "claude": { "adapter": "claude" },
     "codex": { "adapter": "codex", "model": "你要用的模型" },
@@ -239,6 +240,7 @@ stderr：
 | 設定 | 預設 | 說明 |
 |---|---|---|
 | `cycle` | 自動偵測 | 參與的 agent，順序不影響分工（人選隨機決定）。未設定時依 `agents` 的順序取已安裝的 CLI。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
+| `defaultModels` | `{}` | 依 `claude`、`codex`、`gemini` adapter 指定全域預設 model；agent 的 `model` 優先，兩者都沒設時使用各 CLI 的預設。`command` adapter 不套用 |
 | `fixStrategy` | `ring` | `ring`：審查意見隨機交給審查者以外的一家；`author`：交回最後作者 |
 | `tddSplit` | `true` | 測試與實作是否分開 |
 | `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve` |

@@ -65,6 +65,12 @@ export type AgentDef = z.infer<typeof AgentDef>;
 export const RepoConfig = z.object({
   /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 agent add） */
   agents: z.record(z.string(), AgentDef).default({}),
+  /** 各 CLI adapter 的預設模型；agent 自己指定 model 時優先使用個別設定 */
+  defaultModels: z.strictObject({
+    claude: z.string().trim().min(1).optional(),
+    codex: z.string().trim().min(1).optional(),
+    gemini: z.string().trim().min(1).optional(),
+  }).default({}),
   /** 參與的 agent（順序不影響分工）；未設定時取 agents 裡已安裝的 CLI */
   cycle: z.array(z.string()).min(1).optional(),
   /** review 後的修正由誰做：ring＝輪到下一位；author＝最後寫程式的 agent */

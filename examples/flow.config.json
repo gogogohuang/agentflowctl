@@ -7,6 +7,7 @@
   "planArbiter": true,
   "tieBreak": "proceed",
   "maxAgentRuns": 60,
+  "defaultModels": { "claude": "Claude 模型名稱", "codex": "Codex 模型名稱" },
   "agents": {
     "claude": { "adapter": "claude" },
     "codex": { "adapter": "codex" }
