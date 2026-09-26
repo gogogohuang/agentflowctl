@@ -70,4 +70,27 @@ describe("resolveAgent", () => {
     expect(() => resolveAgent(RepoConfig.parse({}), "gemini")).toThrow(/未定義/);
     expect(resolveAgent(RepoConfig.parse({ agents: { g: { adapter: "gemini" } } }), "g").adapter).toBe("gemini");
   });
+
+  it("依 adapter 套用全域預設 model，個別設定優先", () => {
+    const cfg = RepoConfig.parse({
+      defaultModels: { claude: "opus", codex: "gpt-5", gemini: "gemini-pro" },
+      agents: {
+        c: { adapter: "claude" },
+        x: { adapter: "codex", model: "gpt-5-mini" },
+        g: { adapter: "gemini" },
+        custom: { adapter: "command", command: ["my-agent"] },
+      },
+    });
+    expect(resolveAgent(cfg, "c").model).toBe("opus");
+    expect(resolveAgent(cfg, "x").model).toBe("gpt-5-mini");
+    expect(resolveAgent(cfg, "g").model).toBe("gemini-pro");
+    expect(resolveAgent(cfg, "custom").model).toBeUndefined();
+    expect(cfg.agents.c?.model).toBeUndefined();
+  });
+
+  it("沒有全域預設時沿用 CLI 預設，空白 model 設定不合法", () => {
+    expect(resolveAgent(RepoConfig.parse({ agents: { c: { adapter: "claude" } } }), "c").model).toBeUndefined();
+    expect(() => RepoConfig.parse({ defaultModels: { codex: "  " } })).toThrow();
+    expect(() => RepoConfig.parse({ defaultModels: { unknown: "model" } })).toThrow();
+  });
 });

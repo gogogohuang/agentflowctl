@@ -87,7 +87,8 @@ export function formatToolLine(agent: string, tool: { name: string; detail?: str
 export function resolveAgent(cfg: RepoConfig, name: string): AgentDef {
   const def = cfg.agents[name];
   if (!def) throw new Error(`未定義的 agent：${name}（請先用 agent add ${name} --adapter <adapter> 新增）`);
-  return def;
+  const defaultModel = def.adapter === "command" ? undefined : cfg.defaultModels[def.adapter];
+  return { ...def, model: def.model ?? defaultModel };
 }
 
 /** 確認某個 agent 的 CLI 是否可以執行 */
