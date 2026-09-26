@@ -16,8 +16,10 @@ export function projectRoot(): string {
 }
 
 export const agentflowctlDir = () => join(projectRoot(), ".agentflowctl");
-export const runDir = (id: string) => join(agentflowctlDir(), "runs", id);
+export const runsDir = () => join(agentflowctlDir(), "runs");
+export const runDir = (id: string) => join(runsDir(), id);
 export const logDir = (id: string) => join(runDir(id), "logs");
 /** 每個 run 一個 git worktree，Agent 只在這裡工作，不碰你正在編輯的檔案 */
-export const worktreeDir = (id: string) => join(agentflowctlDir(), "worktrees", id);
+export const worktreesDir = () => join(agentflowctlDir(), "worktrees");
+export const worktreeDir = (id: string) => join(worktreesDir(), id);
 export const flowDir = (id: string) => join(worktreeDir(id), ".flow");

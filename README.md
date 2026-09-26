@@ -10,15 +10,33 @@
 
 ## 快速開始
 
-需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成訂閱登入，再檢查環境：
+需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入：
 
 ```bash
 claude    # 完成登入
 codex     # 完成登入
+```
+
+沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。用 `agent setup` 互動設定：它會偵測本機的 `claude`、`codex`、`gemini`，逐一詢問要不要加入、名稱與 model，再設定輪替順序；確認後才一次寫入，最後自動跑一次 `doctor`：
+
+```bash
+npx agentflowctl agent setup
+```
+
+也可以不經互動，直接用指令新增：
+
+```bash
+npx agentflowctl agent add claude --adapter claude
+npx agentflowctl agent add codex --adapter codex
+```
+
+之後改了設定或換了環境，用 `doctor` 檢查。它會列出設定的 agent 的 CLI 是否已安裝，並印出即將使用的輪替順序。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
+
+```bash
 npx agentflowctl doctor
 ```
 
-`doctor` 會列出已安裝的 CLI，並印出即將使用的輪替順序。沒有 `flow.config.json` 時，會自動採用偵測到的 CLI。
+從舊版升級：以前沒寫 `agents` 時會自動使用內建的 claude、codex、gemini，現在不會了，要先用 `agent setup` 或 `agent add` 補上。舊設定裡的 `removedAgents` 已不再使用，可以刪掉。
 
 在專案資料夾內開始一次 run：
 
@@ -87,6 +105,7 @@ agentflowctl logs f-xxxx 7 --raw   # 原始內容（agent 的 JSON 行）
 agentflowctl resume f-xxxx         # 從暫停、Ctrl-C 或失敗處接續
 agentflowctl cancel f-xxxx
 agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保留
+agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留下的 worktree
 ```
 
 | 選項 | 作用 |
@@ -99,6 +118,15 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 | `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可設 `AGENTFLOWCTL_VERBOSE=1` |
 
 `status` 會列出任務。進行中的任務會標出正在寫測試還是正在寫實作。
+
+### 清除 worktree
+
+`run` 建好 worktree 就會寫入 run 紀錄，所以不論在哪一步中斷（包括安裝相依套件時），都能用 `resume` 接續，或用 `clean` 清掉。
+
+- `clean <id>`：移除該 run 的 worktree 與 `.agentflowctl/runs/<id>/`，並清掉 git 裡已失效的 worktree 登記。沒有 run 紀錄的 worktree 也能清，worktree 資料夾被手動刪掉時也一樣。
+- `clean --all`：清掉所有 `done`、`failed` 的 run，以及沒有 run 紀錄的 worktree。進行中、`paused`、`awaiting_approval` 的不動；Ctrl-C 中斷、之後不打算接續的 run，先 `cancel` 再 `clean --all`，或直接 `clean <id>`。
+
+兩者都保留 `flow/<id>` 分支，不需要時用 `git branch -D` 刪除。
 
 ### 執行中的終端機輸出
 
@@ -190,7 +218,7 @@ stderr：
 
 ## 設定
 
-專案根目錄的 `flow.config.json`。完整範例見 `examples/flow.config.json`。未提供的欄位使用內建預設（安裝指令、測試指令、檢查清單預設對應 Vite + TypeScript + Vitest）。
+專案根目錄的 `flow.config.json`。完整範例見 `examples/flow.config.json`。未提供的欄位使用內建預設；`install`、`test`、`checks` 沒寫時，會依專案現況偵測（見下方「專案指令的偵測」）。
 
 ```json
 {
@@ -199,6 +227,7 @@ stderr：
   "tddSplit": true,
   "tieBreak": "proceed",
   "agents": {
+    "claude": { "adapter": "claude" },
     "codex": { "adapter": "codex", "model": "你要用的模型" },
     "aider": { "adapter": "command", "command": ["aider", "--yes-always", "--no-auto-commits", "--message", "{prompt}"] }
   }
@@ -207,7 +236,7 @@ stderr：
 
 | 設定 | 預設 | 說明 |
 |---|---|---|
-| `cycle` | 自動偵測 | 輪替順序。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
+| `cycle` | 自動偵測 | 輪替順序。未設定時依 `agents` 的順序取已安裝的 CLI。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
 | `fixStrategy` | `ring` | `ring`：審查意見交給審查者的下一位；`author`：交回最後作者 |
 | `tddSplit` | `true` | 測試與實作是否分開 |
 | `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve` |
@@ -215,33 +244,49 @@ stderr：
 | `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
-| `install` / `test` / `checks` | 見 `src/schemas.ts` | verify 階段實際執行的指令 |
-| `agents` | 內建 claude、codex、gemini | 覆寫內建 agent，或用 `command` adapter 接上其他 CLI |
-| `removedAgents` | `[]` | 移除的內建 agent，不會被自動偵測、不能放進輪替。通常用 `agent remove` 寫入 |
+| `install` / `test` / `checks` | 依專案偵測 | 安裝、測試與 verify 階段實際執行的指令 |
+| `agents` | `{}` | 可用的 agent，沒有內建的。每個都要指定 adapter（`claude`、`codex`、`gemini`，或用 `command` 接上其他 CLI） |
 
 verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
+
+### 專案指令的偵測
+
+`install`、`test`、`checks` 沒寫在 `flow.config.json` 時，每次讀設定都會依專案現況推出指令，不寫檔。有寫的欄位一律照你的設定。
+
+- 套件管理器：先看 `package.json` 的 `packageManager`，再看 lockfile（`pnpm-lock.yaml`、`yarn.lock`、`bun.lock`／`bun.lockb`、`package-lock.json`），都沒有就用 npm。
+- `install`：`pnpm install`、`yarn install`、`bun install` 或 `npm install --no-audit --no-fund`。不鎖 lockfile，因為實作時 agent 可能新增依賴。
+- `checks`：typecheck、lint、test、build 四項。`package.json` 有對應的 script（`typecheck`／`type-check`、`lint`、`test`、`build`）就用 `<pm> run <script>`，否則用 `tsc --noEmit`、`eslint .`、`vitest run`、`vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`。
+- `test`：`vitest run`，前綴同上。
+
+`run` 建立 worktree 後會印出這次偵測到的指令：
+
+```
+[f-xxxx] 🔧 依專案偵測指令：pnpm（依 package.json 的 packageManager）
+[f-xxxx]    install：pnpm install
+[f-xxxx]    checks.typecheck：pnpm run type-check
+```
 
 ### 用指令管理 agent
 
 `agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
 
 ```bash
-agentflowctl agent list                                   # 內建與自訂 agent、是否已安裝、輪替位置
+agentflowctl agent setup                                  # 互動設定 claude、codex、gemini 與輪替順序
+agentflowctl agent list                                   # 設定的 agent、是否已安裝、輪替位置
 agentflowctl agent add claude-strong --adapter claude --model opus
 agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
 agentflowctl agent set codex --model 你要用的模型 --extra-arg=--search
 agentflowctl agent set aider --adapter gemini             # 換 adapter
 agentflowctl agent remove aider
-agentflowctl agent remove gemini                          # 內建的也能移除
 agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前的順序
 ```
 
 修改會連帶更新相關設定，並在終端機列出：
 
 - `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
-- `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回自動偵測。
-- 內建的 claude、codex、gemini 也能 `remove`：覆寫設定會一起刪掉，名稱記在 `removedAgents`，之後自動偵測會跳過它，也不能放進 `cycle`。要加回來用 `agent add gemini --adapter gemini`。
+- `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回從 `agents` 自動偵測。
 - `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
+- `setup` 遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍放進這次的輪替順序。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
 
 已建立的 run 會沿用建立時的輪替順序，不受這些修改影響。
 
@@ -313,11 +358,7 @@ Codex 沙箱預設不能連網，所以建立 worktree 時會先跑 `install`。
 
 各家讀的專案說明檔不同：Claude Code 讀 `CLAUDE.md`，Codex 讀 `AGENTS.md`，Gemini 讀 `GEMINI.md`。把專案慣例寫在 `AGENTS.md`，另外兩個檔案各用一行引用它。agentflowctl 的 prompt 在 `prompts/`，不依賴任何一家的 skills 或 plugins。
 
-## 登入、額度與代打
-
-只支援各家 CLI 的訂閱登入。
-
-執行 agent 時，一律從子程序環境移除 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CODEX_API_KEY`、`OPENAI_API_KEY`、`GEMINI_API_KEY`、`GOOGLE_API_KEY`，避免環境裡的 key 蓋過訂閱登入。`doctor` 發現這些變數時會提醒。專案指令（install、test、build）不受影響。
+## 額度與代打
 
 上限是執行次數（`maxAgentRuns`，預設 60），不是金額。`status` 會列出各 agent 的執行次數與 token 數。
 
@@ -342,7 +383,7 @@ agentflowctl 本身只依賴 Node.js 與 git。專案指令透過系統 shell �
 | 環境 | 適合的用法 |
 |---|---|
 | 自己的電腦 | 自己的專案、自己寫的需求。剛開始可以加 `--manual-plan`，確認審查品質後再拿掉 |
-| 容器、遠端開發機 | 無人值守。先在該環境內完成各家 CLI 的訂閱登入 |
+| 容器、遠端開發機 | 無人值守。先在該環境內完成各家 CLI 的登入 |
 | Claude Code、Codex 裡面 | 讓它們用 shell 執行 `npx agentflowctl` |
 
 沒有容器隔離時，verify 會在你的電腦上執行 agent 寫出來的程式碼。Gemini 在無人值守時是 yolo 模式。處理外部 issue，或需求文字不是你自己寫的，放到可丟棄的環境。AI 審查計畫擋不住夾在需求裡的指示。
@@ -357,7 +398,9 @@ src/
   runner.ts         執行 agent、正規化結果、執行專案指令
   logs.ts           log 檔名、檔頭檔尾、列表與解析
   agents/           claude、codex、gemini、command
+  setup.ts          agent setup 互動精靈
   git.ts            worktree 與 git 操作
+  cleanup.ts        clean：移除 worktree 與 run 紀錄
   store.ts          狀態、用量、代打紀錄
   tasks.ts          任務 DAG
   schemas.ts        zod schema
