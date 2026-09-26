@@ -18,9 +18,9 @@
 </handoff>
 
 <inputs>
-- 規格：.flow/spec.md
-- 驗收條件：.flow/acceptance.json
-- 本次變更：.flow/diff.patch
+- 驗收條件：.flow/acceptance.json（逐條核對）
+- 本次變更：.flow/diff.patch（先看變更，再按需讀相關程式碼與測試）
+- 規格：.flow/spec.md（驗收條件不清楚或互相矛盾時，才查相關段落）
 - 自動化檢查結果：.flow/verify.json（已全部通過）
 </inputs>
 
@@ -28,6 +28,8 @@
 1. 逐條確認每個驗收條件是否真的被實作，而且有對應的測試真正驗證它（不是空洞的測試）。
 2. 是否有明顯的錯誤、邊界情況遺漏、安全問題或效能問題。
 3. 是否符合專案既有的架構與慣例。
+
+先根據 diff 與驗收條件定位需要查閱的檔案；只在證據不足時讀取其他檔案。自動化檢查已由外部流程執行，不必為了審查重跑全套檢查。
 
 風格偏好與無關緊要的小問題不需要要求修改。
 </review_focus>
@@ -37,16 +39,16 @@
 
 ```json
 {
-  "verdict": "approve",
+  "verdict": "changes_requested",
   "items": [
-    { "criterion": "AC-1", "status": "met", "note": "" },
-    { "criterion": "錯誤處理", "status": "not_met", "note": "API 失敗時沒有顯示錯誤訊息，見 src/form.tsx" }
+    { "criterion": "AC-1", "status": "not_met", "note": "src/form.tsx 缺少 API 失敗時的錯誤訊息，請在 catch 中顯示錯誤並補測試" }
   ]
 }
 ```
 
-- `verdict`：全部驗收條件都 `met` 且沒有嚴重問題時為 `approve`，否則為 `changes_requested`。
-- 每個驗收條件都要有一筆；額外發現的問題也各自列一筆，`note` 請寫出具體位置與修正方向。
+- `verdict`：逐條核對所有驗收條件後，全部通過且沒有嚴重問題時為 `approve`，否則為 `changes_requested`。
+- `items` 只列未通過的驗收條件與額外發現的重要問題，每筆的 `status` 為 `not_met` 或 `partial`，`note` 請寫出具體位置與修正方向。
+- `approve` 時 `items` 為空陣列；`changes_requested` 時至少要有一筆。兩者不一致會被視為格式錯誤並重新審查。
 </output_format>
 
 <constraints>

@@ -23,8 +23,15 @@
 ```
 </task>
 
+<acceptance>
+這個任務負責的驗收條件：
+```json
+{{acceptance}}
+```
+</acceptance>
+
 <inputs>
-完整規格與計畫請參考 .flow/spec.md、.flow/plan.md。
+先依上面的任務、驗收條件與現有測試工作。只有資訊不足或互相矛盾時，再閱讀 .flow/spec.md、.flow/plan.md 的相關段落，並在交接中指出問題；不必通讀整份文件。
 </inputs>
 
 <red_output>
@@ -36,13 +43,14 @@
 <steps>
 1. 若 .flow/feedback.md 存在，先閱讀，並依內容修正。
 2. 撰寫讓測試通過的最小實作，符合專案既有的程式風格與架構。
-3. 執行 `{{testCmd}}` 確認全部測試通過（包含既有測試）。
+3. 先執行本任務相關的測試，確認實作方向。外部流程會再執行 `{{testCmd}}` 驗證全部測試（包含既有測試），不需要自行重跑全套測試。
 4. 測試通過後，在不改變行為的前提下整理程式碼。
 </steps>
 
 <constraints>
 - **不可修改任何測試檔**，修改會被自動還原並視為失敗。若認為測試本身有誤，請寫在回覆的 `<concerns>`。
 - 不要執行 git commit（權限設定已禁止）。
+- **不可修改** .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json、.flow/tasks.ordered.json，修改會被自動還原並視為失敗。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。
 </constraints>
 
 <reply_format>

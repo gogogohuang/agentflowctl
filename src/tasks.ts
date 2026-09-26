@@ -1,7 +1,17 @@
-import type { TaskItem } from "./schemas.js";
+import type { AcceptanceItem, TaskItem } from "./schemas.js";
 
 /** 一個任務最多做兩件事：對應的驗收條件超過這個數量就要再拆 */
 export const MAX_TASK_ACCEPTANCE = 2;
+
+/** 只取目前任務負責的驗收條件，避免每次實作都重讀整份清單。 */
+export function taskAcceptance(task: TaskItem, acceptance: AcceptanceItem[]): AcceptanceItem[] {
+  const byId = new Map(acceptance.map((item) => [item.id, item]));
+  return task.acceptance.map((id) => {
+    const item = byId.get(id);
+    if (!item) throw new Error(`${task.id} 對應的驗收條件 ${id} 不存在`);
+    return item;
+  });
+}
 
 /**
  * 檢查任務清單並依相依關係排序（Kahn 演算法）。

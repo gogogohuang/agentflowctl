@@ -79,6 +79,7 @@ export const AcceptanceList = z
     }),
   )
   .min(1);
+export type AcceptanceItem = z.infer<typeof AcceptanceList>[number];
 
 export const TaskItem = z.object({
   id: z.string().regex(/^T-\d+$/, "id 格式必須是 T-<數字>"),
@@ -102,6 +103,15 @@ export const ReviewResult = z.object({
       note: z.string().default(""),
     }),
   ),
+});
+
+/** 計畫與程式碼審查的結果：verdict 必須和 items 一致，否則視為格式錯誤重試 */
+export const ConsistentReviewResult = ReviewResult.superRefine((review, ctx) => {
+  const unmet = review.items.filter((i) => i.status !== "met");
+  if (review.verdict === "approve" && unmet.length)
+    ctx.addIssue({ code: "custom", message: `verdict 為 approve，但 items 仍有未通過的項目：${unmet.map((i) => i.criterion).join("、")}` });
+  if (review.verdict === "changes_requested" && !unmet.length)
+    ctx.addIssue({ code: "custom", message: "verdict 為 changes_requested，但 items 沒有列出任何未通過的項目" });
 });
 
 /** 仲裁者可能用 reject 表示否決；讀取時正規化，保留相同的理由欄位。 */

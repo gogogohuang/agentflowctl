@@ -22,12 +22,8 @@
 </requirement>
 
 <inputs>
-- .flow/spec.md：規格
-- .flow/acceptance.json：驗收條件
-- .flow/plan.md：實作方式
-- .flow/tasks.json：任務拆解
-
-請同時閱讀相關的既有程式碼，確認計畫符合專案的實際架構。
+- 先核對原始需求、.flow/spec.md、.flow/acceptance.json、.flow/plan.md 與 .flow/tasks.json，確認需求、驗收條件與任務的對應。
+- 依 .flow/tasks.json 各任務 `description` 列出要動的檔案，查閱其中既有的檔案，確認計畫符合專案的架構與慣例；有疑慮時再擴大查閱範圍。
 </inputs>
 
 <review_focus>
@@ -37,6 +33,7 @@
 4. **技術方向**：是否符合專案既有的架構與慣例？有沒有更簡單的做法，或明顯的風險？
 
 措辭、格式這類不影響實作結果的小問題，不需要要求修改。
+只在證據不足時擴大查閱範圍；檔案格式、任務對驗收條件的覆蓋與任務相依已有程式關卡檢查，不必自行重跑完整檢查。仍須自行判斷原始需求是否被規格與驗收條件涵蓋。
 </review_focus>
 
 <output_format>
@@ -44,15 +41,16 @@
 
 ```json
 {
-  "verdict": "approve",
+  "verdict": "changes_requested",
   "items": [
-    { "criterion": "需求覆蓋", "status": "met", "note": "" },
     { "criterion": "AC-2", "status": "not_met", "note": "沒有涵蓋 API 逾時的情況，建議新增一條驗收條件並由 T-3 負責" }
   ]
 }
 ```
 
 - `verdict`：沒有會影響實作結果的問題時為 `approve`，否則為 `changes_requested`。
+- `items` 只列會影響實作結果的問題，每筆 `status` 為 `not_met` 或 `partial`；已通過的項目不必逐條記錄。
+- `approve` 時 `items` 為空陣列；`changes_requested` 時至少要有一筆。兩者不一致會被視為格式錯誤並重新審查。
 - 每個問題的 `note` 請寫出具體要改哪個檔案的哪個部分，以及建議怎麼改。
 </output_format>
 
