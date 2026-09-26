@@ -79,6 +79,7 @@ export const AcceptanceList = z
     }),
   )
   .min(1);
+export type AcceptanceItem = z.infer<typeof AcceptanceList>[number];
 
 export const TaskItem = z.object({
   id: z.string().regex(/^T-\d+$/, "id 格式必須是 T-<數字>"),

@@ -358,6 +358,7 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | pr | — | push 成功；有 `gh` 就開 PR | — |
 
 驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
+每個任務的寫測試與寫實作 prompt 只帶入該任務對應的驗收條件；agent 優先讀任務與相關程式碼，遇到資訊不足或矛盾才查規格、計畫的相關段落。agent 可先跑相關測試，紅燈與完整測試仍由外部流程執行與判定，減少重複讀取文件和全套測試輸出所用的 token。
 
 ## Prompt 結構
 

@@ -13,6 +13,7 @@ const vars = {
   author: "claude",
   authors: "claude",
   task: "{}",
+  acceptance: "[]",
   testPattern: "\\.test\\.ts$",
   testCmd: "npx vitest run",
   redOutput: "FAIL",

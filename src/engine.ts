@@ -23,7 +23,7 @@ import {
   type Stage,
 } from "./schemas.js";
 import { addSubstitution, addUsage, agentRuns, saveRun } from "./store.js";
-import { orderTasks } from "./tasks.js";
+import { orderTasks, taskAcceptance } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
@@ -473,6 +473,9 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const testCmd = `${cfg.install} && ${cfg.test}`;
   const progress = `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
   const taskJson = JSON.stringify(task, null, 2);
+  const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  if (!acceptance.ok) throw new Error(acceptance.error);
+  const acceptanceJson = JSON.stringify(taskAcceptance(task, acceptance.data), null, 2);
   const agents = taskAgents(run.cycle, run.taskIndex, cfg.tddSplit, run.id);
 
   // ── 紅燈：只寫測試，而且測試必須失敗 ──
@@ -482,7 +485,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const before = await headCommit(repo);
     const outcome = await agentStep(
       run, agents.tests, `${task.id}-tests`,
-      renderPrompt("implement-tests", { task: taskJson, testPattern: cfg.testPattern, testCmd }),
+      renderPrompt("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd }),
       { kind: "write", reset: () => resetTo(repo, before) },
     );
     const { r, agent: testsAuthor } = outcome;
@@ -520,7 +523,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const redOutput = existsSync(flowFile(run, "red-output.txt")) ? readFileSync(flowFile(run, "red-output.txt"), "utf8") : "";
   const outcome = await agentStep(
     run, agents.code, `${task.id}-code`,
-    renderPrompt("implement-code", { task: taskJson, testCmd, redOutput: tail(redOutput, 3000) }),
+    renderPrompt("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) }),
     { kind: "write", reset: () => resetTo(repo, testsCommit) },
   );
   const { r, agent: codeAuthor } = outcome;
