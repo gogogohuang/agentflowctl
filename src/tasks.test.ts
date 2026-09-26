@@ -26,4 +26,10 @@ describe("orderTasks", () => {
   it("偵測重複 id", () => {
     expect(orderTasks([task("T-1"), task("T-1")], new Set(["AC-1"]))).toContain("重複");
   });
+
+  it("一個任務最多對應兩條驗收條件", () => {
+    const acs = new Set(["AC-1", "AC-2", "AC-3"]);
+    expect(Array.isArray(orderTasks([task("T-1", [], ["AC-1", "AC-2"]), task("T-2", [], ["AC-3"])], acs))).toBe(true);
+    expect(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3"])], acs)).toContain("T-1 對應 3 條驗收條件");
+  });
 });

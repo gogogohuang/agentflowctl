@@ -31,6 +31,7 @@
 <output_format>
 - acceptance.json 與 tasks.json 的格式必須維持不變（見檔案內現有內容）。
 - 每一條驗收條件都至少要有一個任務負責；`dependsOn` 不可有循環。
+- 一個任務只做一件事，最多兩件：`acceptance` 最多列兩條驗收條件；驗收條件一條只描述一個行為。修改時若任務變大，請拆開，不要合併。
 - 測試檔名必須符合正規表示式 `{{testPattern}}`。
 </output_format>
 
