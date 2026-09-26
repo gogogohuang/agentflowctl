@@ -138,7 +138,55 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 
 檔案保留 agent 的原始輸出，也就是各家 CLI 的 JSON 行。第一行 `# agentflowctl {...}` 記錄階段、步驟、agent 與開始時間；stderr 接在 `[stderr]` 之後；最後一行 `# exit {...}` 記錄結束碼與是否成功，沒有這行就代表還在執行或被中斷。
 
-`agentflowctl logs <id> <編號>` 會把原始 JSON 解析成易讀的格式：💬 agent 的完整文字、🔧 工具呼叫、📊 用量、🏁 最後結果、⚠️ 工具回報的錯誤、❌ adapter 不認得的錯誤事件、📄 非 JSON 的輸出。最後一段「錯誤」整理出結束碼、agent 回報的失敗、錯誤事件和 stderr。run 失敗時，`status` 也會指出最後一份 log 和最近失敗的那份。
+`agentflowctl logs <id>` 列出所有 log。結果欄的 ✓ 是成功，✗ 是失敗，… 代表沒有結束紀錄：
+
+```
+  #  結果  階段          步驟                 agent       開始時間
+  1  ✓     setup         install              cmd         2026-09-26 11:29:04
+  2  ✓     spec          spec                 claude      2026-09-26 11:29:05
+  3  ✗     plan          plan                 codex       2026-09-26 11:31:40
+```
+
+`agentflowctl logs <id> <編號>` 會把原始 JSON 解析成易讀的格式：
+
+| 標記 | 內容 |
+|---|---|
+| 💬 | agent 的完整文字，不截斷 |
+| 🔧 | 工具呼叫與完整參數 |
+| 📊 | token 用量 |
+| 🏁 | 最後結果 |
+| ⚠️ | 工具回報的錯誤。agent 通常會自己換方法繼續，所以不列進錯誤整理 |
+| ❌ | adapter 不認得的錯誤事件 |
+| 📄 | 不是 JSON 的輸出行 |
+
+adapter 不認得、也看不出錯誤跡象的 JSON 行不會顯示，只列出行數，要看全部請加 `--raw`。專案指令的 log 本來就是純文字，會原樣顯示。
+
+最後一段「錯誤」整理出結束碼、agent 回報的失敗、錯誤事件與 stderr：
+
+```
+#3  plan / plan / codex
+開始 2026-09-26 11:31:40　結束 2026-09-26 11:31:52　結束碼 1　✗ 失敗
+檔案 /repo/.agentflowctl/runs/f-xxxx/logs/003-plan-plan-codex.log
+
+💬 先讀 spec.md 與 acceptance.json
+🔧 shell: bash -lc 'cat .flow/spec.md'
+🏁 失敗：stream disconnected before completion
+
+── 錯誤 ──
+結束碼 1
+agent 回報失敗：stream disconnected before completion
+stderr：
+   Error: stream disconnected before completion
+```
+
+執行成功時，stderr 會放在「其他輸出」段落，不算錯誤。
+
+### 出錯時怎麼查
+
+1. run 停下時印出的摘要，或 `agentflowctl status <id>`，會列出失敗的階段、原因、最後一份 log，以及最近失敗的那一份。
+2. `agentflowctl logs <id> <編號>` 看那份 log 的錯誤段落。
+3. 解析結果看不出原因時，加 `--raw` 看原始輸出。
+4. 必要時直接在 worktree（`.agentflowctl/worktrees/<id>`）裡修正，再執行 `agentflowctl resume <id>`。
 
 ## 設定
 
@@ -250,7 +298,7 @@ Agent 的最後回覆要附上 XML 中繼資料：
 </result>
 ```
 
-`blocked` 與 `concerns` 會印在終端機上，完整回覆留在 log。這份中繼資料只給人看；缺少或格式錯誤都不影響流程，是否通過仍由上表的程式檢查決定。
+`blocked` 與 `concerns` 會印在終端機上，完整回覆留在 log，可用 `agentflowctl logs` 查看。這份中繼資料只給人看；缺少或格式錯誤都不影響流程，是否通過仍由上表的程式檢查決定。
 
 ## Adapter
 
