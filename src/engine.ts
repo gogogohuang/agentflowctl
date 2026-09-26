@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { CMD_AGENT, nextLogFile } from "./logs.js";
 import { exec } from "./proc.js";
 import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
@@ -24,12 +25,12 @@ import { readJsonFile, renderPrompt, tail } from "./util.js";
 // ───────────────────────── 共用工具 ─────────────────────────
 
 const info = (run: FlowRun, msg: string) => console.log(`[${run.id}] ${msg}`);
+const logHint = (run: FlowRun, seq: number) => `（agentflowctl logs ${run.id} ${seq}）`;
 const flowFile = (run: FlowRun, name: string) => join(flowDir(run.id), name);
 const to = (run: FlowRun, stage: Stage): FlowRun => ({ ...run, stage });
 
-function target(run: FlowRun, name: string): AgentTarget {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return { runId: run.id, cwd: worktreeDir(run.id), logFile: join(logDir(run.id), `${stamp}-${name}.log`) };
+function target(run: FlowRun, step: string, agent: string): AgentTarget {
+  return { runId: run.id, cwd: worktreeDir(run.id), logFile: nextLogFile(logDir(run.id), run.stage, step, agent), stage: run.stage, step };
 }
 
 /** 額度用完而必須停下：審查類步驟，或所有 agent 的額度都用完 */
@@ -76,7 +77,7 @@ async function agentStep(
       info(run, `🔁 ${agent} 額度已用完，${step} 由 ${sub} 代打${note ? `（注意：${note}）` : ""}`);
       agent = sub;
     }
-    const r = await runAgent(agent, resolveAgent(cfg, agent), target(run, `${step}-${agent}`), prompt);
+    const r = await runAgent(agent, resolveAgent(cfg, agent), target(run, step, agent), prompt);
     addUsage(run.id, { stage: step, agent, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
     if (!r.quotaExhausted) {
       reportMeta(run, agent, r);
@@ -105,6 +106,7 @@ function readFeedback(run: FlowRun): string {
 function retry(run: FlowRun, key: string, reason: string, backTo: Stage): FlowRun {
   const n = (run.attempts[key] ?? 0) + 1;
   const attempts = { ...run.attempts, [key]: n };
+  mkdirSync(flowDir(run.id), { recursive: true });
   writeFileSync(flowFile(run, "feedback.md"), `# 前次嘗試未通過（第 ${n} 次）\n\n${reason}\n`);
   if (n >= config.maxAttempts) {
     return { ...run, attempts, stage: "failed", failedStage: backTo, failureReason: `${key} 連續失敗 ${n} 次：${tail(reason, 500)}` };
@@ -406,7 +408,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, `沒有新增或修改任何符合 /${cfg.testPattern}/ 的測試檔。`, "implement");
     }
-    const red = await runCommand(target(run, `${task.id}-red`), testCmd);
+    const red = await runCommand(target(run, `${task.id}-red`, CMD_AGENT), testCmd);
     if (red.ok) {
       await resetTo(repo, before);
       return retry(run, key, "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。", "implement");
@@ -434,8 +436,11 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     await resetTo(repo, testsCommit);
     return retry(run, key, `實作階段不可修改測試檔，已還原你的變更：${touched.join(", ")}`, "implement");
   }
-  const green = await runCommand(target(run, `${task.id}-green`), testCmd);
-  if (!green.ok) return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement");
+  const green = await runCommand(target(run, `${task.id}-green`, CMD_AGENT), testCmd);
+  if (!green.ok) {
+    info(run, `   ✗ 測試仍未通過${logHint(run, green.seq)}`);
+    return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement");
+  }
   info(run, `🟢 [${progress}] 完成`);
   return {
     ...succeed(run, key, "implement"),
@@ -451,13 +456,14 @@ async function verifyStage(run: FlowRun): Promise<FlowRun> {
   info(run, "🔍 執行驗證");
   const cfg = loadRepoConfig();
   const results: { name: string; ok: boolean; output: string }[] = [];
-  const install = await runCommand(target(run, "verify-install"), cfg.install);
+  const install = await runCommand(target(run, "install", CMD_AGENT), cfg.install);
   if (!install.ok) {
+    info(run, `   ✗ install${logHint(run, install.seq)}`);
     results.push({ name: "install", ok: false, output: tail(install.output) });
   } else {
     for (const check of cfg.checks) {
-      const r = await runCommand(target(run, `verify-${check.name}`), check.cmd);
-      info(run, `   ${r.ok ? "✓" : "✗"} ${check.name}`);
+      const r = await runCommand(target(run, check.name, CMD_AGENT), check.cmd);
+      info(run, `   ${r.ok ? "✓" : "✗"} ${check.name}${r.ok ? "" : logHint(run, r.seq)}`);
       results.push({ name: check.name, ok: r.ok, output: tail(r.output, 3000) });
     }
   }

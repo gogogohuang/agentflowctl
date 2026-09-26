@@ -5,4 +5,6 @@ export const config = {
   maxTurns: Number(process.env.AGENTFLOWCTL_MAX_TURNS ?? 80),
   /** 同一個關卡連續失敗幾次後停止 */
   maxAttempts: Number(process.env.AGENTFLOWCTL_MAX_ATTEMPTS ?? 3),
+  /** 終端機是否印出 agent 的文字、工具呼叫與專案指令；預設安靜，-v 或 AGENTFLOWCTL_VERBOSE=1 開啟 */
+  verbose: process.env.AGENTFLOWCTL_VERBOSE === "1",
 };
