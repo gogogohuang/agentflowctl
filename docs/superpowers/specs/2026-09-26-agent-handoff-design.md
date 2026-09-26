@@ -16,7 +16,7 @@
 
 ## 資料模型
 
-正式紀錄是帶版本的 JSON 文件：`{ version: 1, issues: [...] }`。每個事項包含穩定 `id`、`source`（階段、步驟、實際 agent、邏輯呼叫識別碼）、`kind`（`action` 或 `info`）、`summary`、`evidence`、`targetStage`、`status`（`open`、`proposed_resolved`、`resolved` 或 `accepted`）、`resolution` 與更新時間。`action` 表示後續必須處理或作出明確判斷；`info` 只供參考。作者可以提出 `proposed_resolved` 並附具體檔案、commit 或檢查結果，但只有後續審查者能將它改為 `resolved`，或以理由標成 `accepted`（確認無須修改）。沒有證據的「已解決」不能結案。程式驗證 ID、狀態轉移、必填欄位和所引用的既有事項；文字理由的技術正確性仍交給下一輪審查判斷。
+正式紀錄是帶版本的 JSON 文件：`{ version: 1, issues: [...], appliedCalls: [...] }`。`appliedCalls` 用來辨識空回覆與處置回覆的重播；舊紀錄可以沒有此欄位。每個事項包含穩定 `id`、`source`（階段、步驟、實際 agent、邏輯呼叫識別碼）、`kind`（`action` 或 `info`）、`summary`、`evidence`、`targetStage`、`status`（`open`、`proposed_resolved`、`resolved` 或 `accepted`）、`resolution` 與更新時間。`action` 表示後續必須處理或作出明確判斷；`info` 會投影給目標階段參考，但不阻擋通關。作者可以提出 `proposed_resolved` 並附具體檔案、commit 或檢查結果，但只有後續審查者能將它改為 `resolved`，或以理由標成 `accepted`（確認無須修改）。沒有證據的「已解決」不能結案。程式驗證 ID、狀態轉移、必填欄位和所引用的既有事項；文字理由的技術正確性仍交給下一輪審查判斷。
 
 `handoff-response.json` 為 `{ newIssues: [...], dispositions: [...] }`。新增事項不由 agent 指定正式 ID，程式依成功的邏輯呼叫識別碼和項目序號產生，避免碰撞。邏輯呼叫識別碼由 run、階段、任務與 phase、審查輪次、panel 位置和實際 agent 組成；同一步驟因中斷重跑時保持不變，進入下一輪時改變。處置引用既有 ID，包含處理方式、理由及證據。`info` 事項只需保存與呈現，不阻擋 PR；`action` 事項必須在目標階段或最終審查獲得處置。相同問題由多位審查者提出時，程式不憑自然語言猜測相同；可由後續處置明確引用同一事項，原始來源仍各自保留。
 

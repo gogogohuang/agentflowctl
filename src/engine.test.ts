@@ -16,10 +16,10 @@ writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
 const mode = readFileSync(".flow/review-mode.txt", "utf8").trim();
 const context = readFileSync(".flow/handoff-context.md", "utf8");
 const id = context.match(/## ([a-f0-9]+)：/)?.[1];
-writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+writeFileSync(mode.startsWith("plan-") ? ".flow/plan-review.json" : ".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
 writeFileSync(".flow/handoff-response.json", JSON.stringify({
   newIssues: [],
-  dispositions: mode === "close" && id ? [{ id, status: "resolved", reason: "已核對測試", evidence: "src/api.test.ts:25" }] : [],
+  dispositions: mode.endsWith("close") && id ? [{ id, status: "resolved", reason: "已核對測試", evidence: "src/api.test.ts:25" }] : [],
 }));
 `);
 writeFileSync(join(root, "flow.config.json"), JSON.stringify({
@@ -73,5 +73,24 @@ describe("審查交接關卡", () => {
     const ledger = readHandoff(run.id);
     expect(ledger.issues[0]?.status).toBe("resolved");
     expect(ledger.appliedCalls).toHaveLength(3); // 一位作者、兩位審查者
+  });
+
+  it("計畫審查核准仍有未結事項時不能開始實作", async () => {
+    const id = "f-plan-open";
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "review-mode.txt"), "plan-open");
+    const source = { stage: "spec" as const, step: "spec", agent: "a", callKey: `${id}:spec` };
+    mergeHandoff(id, source.callKey, source, { newIssues: [{ kind: "action", summary: "計畫待核對", evidence: "spec.md:2", targetStage: "plan" }], dispositions: [] }, "writer");
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
+      autopilot: true, maxAgentRuns: 10, cycle: ["a", "b", "c"], planWriter: "a", attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.stage).toBe("failed");
+    expect(run.failedStage).toBe("plan_review");
+    expect(readFileSync(join(flowDir(id), "feedback.md"), "utf8")).toMatch(/未結/);
   });
 });
