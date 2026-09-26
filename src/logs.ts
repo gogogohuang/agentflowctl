@@ -130,23 +130,16 @@ function findError(ev: Record<string, unknown>): { message: string; fatal: boole
 const relativeToWorktree = (s: string) =>
   s.replace(/[^\s'"=]*\/\.agentflowctl\/worktrees\/[^/\s'"]+(\/)?/g, (_m, slash?: string) => (slash ? "" : "."));
 
-/** 去掉 codex 這類 CLI 包在指令外面的 `/bin/zsh -lc '...'` */
-function unwrapShell(cmd: string): string {
-  const m = cmd.match(/^\/bin\/(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/);
-  if (!m) return cmd;
-  const [, quote, inner] = m;
-  // 單引號包裝裡的 '"'"' 或 '\'' 是被跳脫的單引號，內容太複雜時保留原樣
-  if (quote === "'" && inner!.includes("'")) return cmd;
-  if (quote === '"' && /(^|[^\\])"/.test(inner!)) return cmd;
-  return inner!;
-}
-
 /** 精簡顯示的工具內容：只留第一行，並註明原本有幾行 */
 function compactDetail(detail: string): string {
-  const lines = relativeToWorktree(unwrapShell(detail.trim())).split("\n");
+  const lines = relativeToWorktree(detail.trim()).split("\n");
   const first = clip(lines[0]!, 200);
   return lines.length > 1 ? `${first}　…（共 ${lines.length} 行）` : first;
 }
+
+/** 各家 CLI 執行 shell 指令的工具名稱：codex 的 shell、claude 的 Bash、gemini 的 run_shell_command */
+const SHELL_TOOLS = new Set(["shell", "bash", "run_shell_command"]);
+const isShellTool = (ev: AgentEvent) => ev.kind === "tool" && SHELL_TOOLS.has(ev.name.toLowerCase());
 
 function renderEvent(ev: AgentEvent, full: boolean, lastText?: string): string | undefined {
   switch (ev.kind) {
@@ -199,11 +192,22 @@ function analyzeLog(text: string, full: boolean): LogAnalysis {
     lastText = body.slice(-15).join("\n").trim() || undefined;
   } else {
     let skipped = 0;
+    // 精簡模式下連續的 shell 指令（多半是讀檔、搜尋）收成一行，只留數量
+    let shells = 0;
+    const flushShells = () => {
+      if (shells) lines.push(`🔧 shell 指令 ×${shells}（--full 查看）`);
+      shells = 0;
+    };
     for (const line of body) {
       if (!line.trim()) continue;
       const events = adapter.parse(line);
       if (events.length) {
         for (const ev of events) {
+          if (!full && isShellTool(ev)) {
+            shells++;
+            continue;
+          }
+          if (ev.kind !== "usage") flushShells();
           const s = renderEvent(ev, full, lastText);
           if (s) lines.push(s);
           if (ev.kind === "text") lastText = ev.text.trim();
@@ -214,6 +218,7 @@ function analyzeLog(text: string, full: boolean): LogAnalysis {
       }
       const json = tryJson(line);
       if (!json) {
+        flushShells();
         lines.push(`📄 ${line}`);
         continue;
       }
@@ -222,9 +227,11 @@ function analyzeLog(text: string, full: boolean): LogAnalysis {
         skipped++;
         continue;
       }
+      flushShells();
       lines.push(`${err.fatal ? "❌" : "⚠️ "} ${indent(err.message)}`);
       if (err.fatal) errors.push(`錯誤事件：${indent(err.message)}`);
     }
+    flushShells();
     if (skipped) lines.push(`（另有 ${skipped} 行其他事件未顯示，可用 --raw 查看）`);
   }
 

@@ -53,7 +53,7 @@ describe("log 解析", () => {
     expect(out).toContain("#7  implement / T1-code / claude");
     expect(out).toContain("結束碼 1　✗ 失敗");
     expect(out).toContain("💬 先跑測試");
-    expect(out).toContain("🔧 Bash: pnpm test");
+    expect(out).toContain("🔧 shell 指令 ×1（--full 查看）\n⚠️  command not found: pnpm");
     expect(out).toContain("⚠️  command not found: pnpm");
     expect(out).toContain("🏁 失敗：API Error: 500 overloaded");
     expect(out).toContain("（另有 1 行其他事件未顯示");
@@ -92,7 +92,7 @@ describe("log 解析", () => {
     expect(renderLog(headerLine({ stage: "spec", step: "spec", agent: "codex", adapter: "codex", startedAt }))).toContain("沒有結束紀錄");
   });
 
-  it("預設精簡：工具只顯示第一行、去掉 shell 包裝與 worktree 絕對路徑，最後回覆不重複", () => {
+  it("預設精簡：連續的 shell 指令收成一行，其他工具只顯示第一行並去掉 worktree 絕對路徑，最後回覆不重複", () => {
     const wt = "/home/u/app/.agentflowctl/worktrees/f-1";
     const reply = "全部改好了\n1. 第一點";
     const claude = [
@@ -105,10 +105,8 @@ describe("log 解析", () => {
       footerLine({ code: 0, ok: true, endedAt }),
     ].join("\n");
     const out = renderLog(claude);
-    expect(out).toContain("🔧 Bash: python3 - <<'EOF'　…（共 4 行）");
-    expect(out).not.toContain("import json");
-    expect(out).toContain("🔧 Edit: .flow/spec.md");
-    expect(out).toContain("🔧 Bash: cd . && ls");
+    expect(out).toContain("🔧 shell 指令 ×1（--full 查看）\n🔧 Edit: .flow/spec.md\n🔧 shell 指令 ×1（--full 查看）");
+    expect(out).not.toContain("python3");
     expect(out).not.toContain(wt);
     expect(out.split("全部改好了").length).toBe(2);
     expect(out).toContain("🏁 完成");
@@ -116,12 +114,23 @@ describe("log 解析", () => {
     const codex = [
       headerLine({ stage: "plan_review", step: "plan-review", agent: "codex", adapter: "codex", startedAt }),
       j({ type: "item.completed", item: { type: "command_execution", command: "/bin/zsh -lc 'cat .flow/plan.md'" } }),
+      j({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
       j({ type: "item.completed", item: { type: "command_execution", command: `/bin/bash -c "sed -n '1,9p' a.ts"` } }),
+      j({ type: "item.completed", item: { type: "agent_message", text: "看完了" } }),
       footerLine({ code: 0, ok: true, endedAt }),
     ].join("\n");
     const c = renderLog(codex);
-    expect(c).toContain("🔧 shell: cat .flow/plan.md");
-    expect(c).toContain("🔧 shell: sed -n '1,9p' a.ts");
+    expect(c).toContain("🔧 shell 指令 ×2（--full 查看）\n💬 看完了");
+    expect(c).not.toContain("cat .flow/plan.md");
+  });
+
+  it("--full 逐條顯示原始的 shell 指令", () => {
+    const codex = [
+      headerLine({ stage: "plan_review", step: "plan-review", agent: "codex", adapter: "codex", startedAt }),
+      j({ type: "item.completed", item: { type: "command_execution", command: "/bin/zsh -lc 'cat .flow/plan.md'" } }),
+      footerLine({ code: 0, ok: true, endedAt }),
+    ].join("\n");
+    expect(renderLog(codex, "", { full: true })).toContain("🔧 shell: /bin/zsh -lc 'cat .flow/plan.md'");
   });
 
   it("--full 顯示完整工具內容與最後回覆", () => {

@@ -67,10 +67,13 @@ function handoffTarget(run: FlowRun): "plan" | "code" {
   return ["spec", "plan", "plan_review", "plan_fix"].includes(run.stage) ? "plan" : "code";
 }
 
-/** 同一輪重跑使用相同 key；重試次數或 panel 位置改變時使用新 key。 */
+/**
+ * 每次執行 agent 都用新的 key。重試次數會在後面的輪次重複出現，只靠它組 key 會撞到先前已套用的呼叫，
+ * 讓這次的處置被當成重播而略過，所以加上這個 run 已執行 agent 的次數。
+ */
 function handoffKey(run: FlowRun, step: string, slot: number, agent: string): string {
   const attempts = Object.entries(run.attempts).sort(([a], [b]) => a.localeCompare(b));
-  return JSON.stringify([run.id, run.stage, step, run.taskIndex, run.taskPhase, attempts, slot, agent]);
+  return JSON.stringify([run.id, run.stage, step, run.taskIndex, run.taskPhase, attempts, slot, agent, agentRuns(run.id)]);
 }
 
 async function agentStep(

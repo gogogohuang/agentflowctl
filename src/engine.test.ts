@@ -93,4 +93,31 @@ describe("審查交接關卡", () => {
     expect(run.failedStage).toBe("plan_review");
     expect(readFileSync(join(flowDir(id), "feedback.md"), "utf8")).toMatch(/未結/);
   });
+
+  it("後面輪次的重試次數與先前輪次相同時，審查者的結案仍會套用", async () => {
+    const id = "f-plan-rekey";
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+      cycle: ["a", "b", "c"],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "review-mode.txt"), "plan-close");
+    const source = { stage: "spec" as const, step: "spec", agent: "a", callKey: `${id}:spec` };
+    mergeHandoff(id, source.callKey, source, { newIssues: [{ kind: "action", summary: "計畫待核對", evidence: "spec.md:2", targetStage: "plan" }], dispositions: [] }, "writer");
+    // 先前某一輪計畫審查時的重試次數剛好也是 {}：只靠重試次數組成的識別碼會和這次相同
+    for (const agent of ["b", "c"]) {
+      const key = JSON.stringify([id, "plan_review", "plan-review", 0, "tests", [], 0, agent]);
+      mergeHandoff(id, key, { stage: "plan_review", step: "plan-review", agent, callKey: key }, { newIssues: [], dispositions: [] }, "reviewer");
+    }
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
+      autopilot: true, maxAgentRuns: 1, cycle: ["a", "b", "c"], planWriter: "a", attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.failureReason).not.toMatch(/矛盾/);
+    expect(readHandoff(id).issues[0]?.status).toBe("resolved");
+  });
 });

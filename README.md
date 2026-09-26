@@ -103,7 +103,7 @@ agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事�
 agentflowctl list
 agentflowctl logs f-xxxx           # 列出每一份 log 的編號、結果、階段、步驟、agent
 agentflowctl logs f-xxxx 7         # 解析第 7 份 log，最後附上錯誤整理（--latest 看最新一份）
-agentflowctl logs f-xxxx 7 --full  # 完整顯示多行指令與絕對路徑
+agentflowctl logs f-xxxx 7 --full  # 逐條顯示 shell 指令，完整顯示多行內容與絕對路徑
 agentflowctl logs f-xxxx 7 --raw   # 原始內容（agent 的 JSON 行）
 agentflowctl resume f-xxxx         # 從暫停、Ctrl-C 或失敗處接續
 agentflowctl cancel f-xxxx
@@ -183,14 +183,14 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 | 標記 | 內容 |
 |---|---|
 | 💬 | agent 的完整文字，不截斷 |
-| 🔧 | 工具呼叫。只顯示第一行，多行時註明共幾行；去掉 `/bin/zsh -lc '…'` 這類 shell 包裝，worktree 內的絕對路徑改成相對路徑 |
+| 🔧 | 工具呼叫。連續的 shell 指令（多半是讀檔、搜尋）收成一行 `🔧 shell 指令 ×N`；其他工具只顯示第一行，多行時註明共幾行，worktree 內的絕對路徑改成相對路徑 |
 | 📊 | token 用量 |
 | 🏁 | 最後結果。與最後一則 💬 相同時不再重印 |
 | ⚠️ | 工具回報的錯誤。agent 通常會自己換方法繼續，所以不列進錯誤整理 |
 | ❌ | adapter 不認得的錯誤事件 |
 | 📄 | 不是 JSON 的輸出行 |
 
-要看完整的工具內容與重複的最後結果，加 `--full`。adapter 不認得、也看不出錯誤跡象的 JSON 行不會顯示，只列出行數，要看全部請加 `--raw`。專案指令的 log 本來就是純文字，會原樣顯示。
+要逐條看 shell 指令、完整的工具內容與重複的最後結果，加 `--full`。adapter 不認得、也看不出錯誤跡象的 JSON 行不會顯示，只列出行數，要看全部請加 `--raw`。專案指令的 log 本來就是純文字，會原樣顯示。
 
 最後一段「錯誤」整理出結束碼、agent 回報的失敗、錯誤事件與 stderr：
 
@@ -200,7 +200,7 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 檔案 /repo/.agentflowctl/runs/f-xxxx/logs/003-plan-plan-codex.log
 
 💬 先讀 spec.md 與 acceptance.json
-🔧 shell: cat .flow/spec.md
+🔧 shell 指令 ×1（--full 查看）
 🏁 失敗：stream disconnected before completion
 
 ── 錯誤 ──
