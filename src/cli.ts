@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { builtinAgents } from "./agents/index.js";
 import { advance, loadRepoConfig } from "./engine.js";
 import { API_KEY_VARS, probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git, removeWorktree } from "./git.js";
+import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
 import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
@@ -41,7 +42,12 @@ function printSummary(run: FlowRun): void {
   if (run.stage === "failed") {
     console.log(`失敗於   ${run.failedStage ?? "?"}`);
     console.log(`原因     ${run.failureReason ?? "?"}`);
-    console.log(`\n可檢查 ${logDir(run.id)}，必要時直接在 worktree 裡修正，再執行 agentflowctl resume ${run.id}`);
+    const logs = listLogs(logDir(run.id));
+    const last = logs.at(-1);
+    const lastFailed = logs.filter((e) => e.footer && !e.footer.ok).at(-1);
+    if (last) console.log(`最後的 log #${last.seq} ${logMark(last)}（agentflowctl logs ${run.id} ${last.seq}）`);
+    if (lastFailed && lastFailed !== last) console.log(`最近失敗的 log #${lastFailed.seq}（agentflowctl logs ${run.id} ${lastFailed.seq}）`);
+    console.log(`\n必要時直接在 worktree 裡修正，再執行 agentflowctl resume ${run.id}`);
   }
   if (run.stage === "paused") {
     console.log(`暫停於   ${run.pausedStage ?? "?"}`);
@@ -69,7 +75,11 @@ async function resolveCycle(flag?: string): Promise<string[]> {
 
 const program = new Command()
   .name("agentflowctl")
-  .description("在專案資料夾內執行的 Agent 開發流程：規格 → 計畫 → TDD 實作 → 驗證 → 審查 → PR");
+  .description("在專案資料夾內執行的 Agent 開發流程：規格 → 計畫 → TDD 實作 → 驗證 → 審查 → PR")
+  .option("-v, --verbose", "執行時印出 agent 的文字、工具呼叫與專案指令（預設只印階段進度）")
+  .hook("preAction", (cmd) => {
+    if (cmd.opts().verbose) config.verbose = true;
+  });
 
 program
   .command("run")
@@ -94,8 +104,8 @@ program
     console.log(`[${id}] 🤝 agent 輪替順序：${cycle.join(" → ")}`);
     // 先裝好相依套件：有些 agent 的沙箱不能連網，無法自己安裝
     const cfg = loadRepoConfig();
-    const install = await runCommand({ runId: id, cwd: worktreeDir(id), logFile: join(logDir(id), "install.log") }, cfg.install);
-    if (!install.ok) console.log(`[${id}] ⚠️  安裝相依套件失敗，稍後 verify 階段會再試一次（見 ${join(logDir(id), "install.log")}）`);
+    const install = await runCommand({ runId: id, cwd: worktreeDir(id), logFile: nextLogFile(logDir(id), "setup", "install", CMD_AGENT), stage: "setup", step: "install" }, cfg.install);
+    if (!install.ok) console.log(`[${id}] ⚠️  安裝相依套件失敗，稍後 verify 階段會再試一次（agentflowctl logs ${id} ${install.seq}）`);
     const now = new Date().toISOString();
     const run = saveRun({
       id,
@@ -315,16 +325,29 @@ program
   });
 
 program
-  .command("logs <id>")
-  .description("列出 log 檔，或顯示最新一份")
-  .option("--latest", "顯示最新一份 log 的內容", false)
-  .action((id: string, opts: { latest: boolean }) => {
+  .command("logs <id> [seq]")
+  .description("列出 log；指定編號（或 --latest）時顯示解析後的內容，最後附上錯誤整理")
+  .option("--latest", "顯示最新一份 log", false)
+  .option("--raw", "顯示原始內容（agent 的 JSON 行）", false)
+  .action((id: string, seq: string | undefined, opts: { latest: boolean; raw: boolean }) => {
     mustGetRun(id);
-    const dir = logDir(id);
-    const files = existsSync(dir) ? readdirSync(dir).sort() : [];
-    if (!files.length) return console.log("還沒有 log");
-    if (!opts.latest) return files.forEach((f) => console.log(join(dir, f)));
-    console.log(readFileSync(join(dir, files.at(-1)!), "utf8"));
+    const logs = listLogs(logDir(id));
+    if (!logs.length) return console.log("還沒有 log");
+    if (!seq && !opts.latest) {
+      console.log("  #  結果  階段          步驟                 agent       開始時間");
+      for (const e of logs) {
+        const h = e.header;
+        console.log(
+          `${String(e.seq).padStart(3)}  ${logMark(e).padEnd(4)}  ${(h?.stage ?? "?").padEnd(12)}  ${(h?.step ?? "?").padEnd(19)}  ${(h?.agent ?? "?").padEnd(10)}  ${localTime(h?.startedAt)}`,
+        );
+      }
+      console.log(`\n查看內容：agentflowctl logs ${id} <編號>（加 --raw 看原始 JSON）`);
+      return;
+    }
+    const entry = seq ? logs.find((e) => e.seq === Number(seq)) : logs.at(-1);
+    if (!entry) throw new Error(`找不到 log #${seq}（共 ${logs.length} 份，可用 agentflowctl logs ${id} 列出）`);
+    const text = readFileSync(entry.file, "utf8");
+    console.log(opts.raw ? text : renderLog(text, entry.file));
   });
 
 program.parseAsync().catch((err: unknown) => {

@@ -4,13 +4,18 @@ import { z } from "zod";
 import { ADAPTERS, builtinAgents } from "./agents/index.js";
 import { AgentDef, type RepoConfig } from "./schemas.js";
 import { projectRoot, runDir } from "./paths.js";
+import { config } from "./config.js";
+import { CMD_AGENT, footerLine, headerLine, logSeq, STDERR_MARK } from "./logs.js";
 import { exec, execShell } from "./proc.js";
 import { tail } from "./util.js";
 
 export interface AgentTarget {
   runId: string;
   cwd: string;
+  /** 由 nextLogFile 產生；檔頭會記下 stage 與 step */
   logFile: string;
+  stage: string;
+  step: string;
 }
 
 /** 會讓各家 CLI 改走 API 計費的環境變數；只用訂閱登入，執行 agent 時一律移除 */
@@ -126,7 +131,7 @@ export async function runAgent(
     projectRoot: projectRoot(),
     command: def.command,
   });
-  appendLog(t.logFile, `# agent=${name} adapter=${def.adapter} cmd=${inv.cmd}`);
+  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: name, adapter: def.adapter, startedAt: new Date().toISOString() }));
 
   let done: { ok: boolean; summary?: string } | undefined;
   let lastText = "";
@@ -143,9 +148,9 @@ export async function runAgent(
       for (const ev of adapter.parse(line)) {
         if (ev.kind === "text") {
           lastText = ev.text;
-          console.log(`    💬 [${name}] ${ev.text.trim().split("\n")[0]?.slice(0, 110)}`);
+          if (config.verbose) console.log(`    💬 [${name}] ${ev.text.trim().split("\n")[0]?.slice(0, 110)}`);
         } else if (ev.kind === "tool") {
-          console.log(formatToolLine(name, ev));
+          if (config.verbose) console.log(formatToolLine(name, ev));
         } else if (ev.kind === "usage") {
           inputTokens += ev.inputTokens ?? 0;
           outputTokens += ev.outputTokens ?? 0;
@@ -155,9 +160,11 @@ export async function runAgent(
       }
     },
   });
-  if (r.stderr.trim()) appendLog(t.logFile, `[stderr]\n${r.stderr}`);
+  if (r.stderr.trim()) appendLog(t.logFile, `${STDERR_MARK}\n${r.stderr}`);
 
   const ok = r.code === 0 && (done?.ok ?? true);
+  appendLog(t.logFile, footerLine({ code: r.code, ok, endedAt: new Date().toISOString() }));
+  if (!ok) console.log(`    ✗ ${name} 執行失敗（結束碼 ${r.code}），可用 agentflowctl logs ${t.runId} ${logSeq(t.logFile)} 查看`);
   const summary = done?.summary || lastText || tail(r.stdout, 2000) || tail(r.stderr, 2000);
   const quotaExhausted = !ok && isQuotaError(`${summary}\n${done?.summary ?? ""}\n${r.stderr}\n${tail(r.stdout, 4000)}`);
   const meta = parseResultMeta(summary) ?? parseResultMeta(lastText);
@@ -168,11 +175,13 @@ export async function runAgent(
  * 在 worktree 內執行專案指令（安裝、測試、建置）。
  * 注意：這些指令會執行 agent 寫出來的程式碼，而且不在任何沙箱內。
  */
-export async function runCommand(t: AgentTarget, cmd: string): Promise<{ ok: boolean; output: string }> {
+export async function runCommand(t: AgentTarget, cmd: string): Promise<{ ok: boolean; output: string; seq: number }> {
+  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: CMD_AGENT, startedAt: new Date().toISOString() }));
   appendLog(t.logFile, `$ ${cmd}`);
-  console.log(`    $ ${cmd.trim().split("\n").join("\n      ")}`);
+  if (config.verbose) console.log(`    $ ${cmd.trim().split("\n").join("\n      ")}`);
   const r = await execShell(cmd, { cwd: t.cwd });
   const output = `${r.stdout}\n${r.stderr}`.trim();
-  appendLog(t.logFile, output);
-  return { ok: r.code === 0, output };
+  if (output) appendLog(t.logFile, output);
+  appendLog(t.logFile, footerLine({ code: r.code, ok: r.code === 0, endedAt: new Date().toISOString() }));
+  return { ok: r.code === 0, output, seq: logSeq(t.logFile) };
 }

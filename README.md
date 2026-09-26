@@ -81,7 +81,9 @@ agentflowctl run --req "..." --manual-plan   # 計畫通過 AI 審查後，仍�
 agentflowctl approve f-xxxx        # 搭配 --manual-plan
 agentflowctl status f-xxxx         # 階段、任務進度、各 agent 用量、代打紀錄
 agentflowctl list
-agentflowctl logs f-xxxx --latest
+agentflowctl logs f-xxxx           # 列出每一份 log 的編號、結果、階段、步驟、agent
+agentflowctl logs f-xxxx 7         # 解析第 7 份 log，最後附上錯誤整理（--latest 看最新一份）
+agentflowctl logs f-xxxx 7 --raw   # 原始內容（agent 的 JSON 行）
 agentflowctl resume f-xxxx         # 從暫停、Ctrl-C 或失敗處接續
 agentflowctl cancel f-xxxx
 agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保留
@@ -94,12 +96,22 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 | `--cycle` | 這次 run 的輪替順序，例如 `claude,codex,gemini`；建立後就固定，`resume` 沿用 |
 | `--max-agent-runs` | 這次 run 的 agent 執行次數上限 |
 | `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
+| `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可設 `AGENTFLOWCTL_VERBOSE=1` |
 
 `status` 會列出任務。進行中的任務會標出正在寫測試還是正在寫實作。
 
 ### 執行中的終端機輸出
 
-agent 每次使用工具，都會印出完整的指令或主要參數，不截斷。多行指令的後續行會縮排對齊。install、測試、verify 這些專案指令也會以 `$ ` 開頭印出來：
+預設是安靜模式，只印出 `[run-id]` 開頭的階段進度（📝 🧐 ✓ ✗ ⚠️ 等）。agent 執行失敗、測試或檢查沒過時，會附上對應 log 的查看指令：
+
+```
+[f-xxxx] 🔍 執行驗證
+[f-xxxx]    ✓ typecheck
+[f-xxxx]    ✗ lint（agentflowctl logs f-xxxx 15）
+    ✗ codex 執行失敗（結束碼 1），可用 agentflowctl logs f-xxxx 16 查看
+```
+
+加上 `-v` 會另外印出 agent 每一段文字的第一行、每次工具呼叫的完整指令或主要參數（不截斷，多行指令的後續行縮排對齊），以及 install、測試、verify 這些以 `$ ` 開頭的專案指令：
 
 ```
     💬 [claude] 先讀現有的表單元件
@@ -110,7 +122,23 @@ agent 每次使用工具，都會印出完整的指令或主要參數，不截�
     $ pnpm install
 ```
 
-工具參數依序取 command、檔案路徑、path、pattern、url、query，都沒有時印出整包 JSON。每次執行的完整輸出都在 `agentflowctl logs <id>`。
+工具參數依序取 command、檔案路徑、path、pattern、url、query，都沒有時印出整包 JSON。
+
+### Log
+
+每次執行 agent 或專案指令都會留一份 log，放在 `.agentflowctl/runs/<id>/logs/`，檔名是「序號-階段-步驟-agent」，專案指令的 agent 欄位是 `cmd`：
+
+```
+001-setup-install-cmd.log
+002-spec-spec-claude.log
+007-implement-T1-tests-codex.log
+008-implement-T1-red-cmd.log
+015-verify-lint-cmd.log
+```
+
+檔案保留 agent 的原始輸出，也就是各家 CLI 的 JSON 行。第一行 `# agentflowctl {...}` 記錄階段、步驟、agent 與開始時間；stderr 接在 `[stderr]` 之後；最後一行 `# exit {...}` 記錄結束碼與是否成功，沒有這行就代表還在執行或被中斷。
+
+`agentflowctl logs <id> <編號>` 會把原始 JSON 解析成易讀的格式：💬 agent 的完整文字、🔧 工具呼叫、📊 用量、🏁 最後結果、⚠️ 工具回報的錯誤、❌ adapter 不認得的錯誤事件、📄 非 JSON 的輸出。最後一段「錯誤」整理出結束碼、agent 回報的失敗、錯誤事件和 stderr。run 失敗時，`status` 也會指出最後一份 log 和最近失敗的那份。
 
 ## 設定
 
@@ -279,6 +307,7 @@ src/
   engine.ts         狀態機與各階段
   roles.ts          輪替規則（含計畫修正者與仲裁者）
   runner.ts         執行 agent、正規化結果、執行專案指令
+  logs.ts           log 檔名、檔頭檔尾、列表與解析
   agents/           claude、codex、gemini、command
   git.ts            worktree 與 git 操作
   store.ts          狀態、用量、代打紀錄
