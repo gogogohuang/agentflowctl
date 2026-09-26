@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,8 +7,8 @@ import { describe, expect, it } from "vitest";
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-handoff-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
-const { handoffPath } = await import("./paths.js");
-const { readHandoff, previewHandoff, mergeHandoff, openActions } = await import("./handoff.js");
+const { flowDir, handoffPath } = await import("./paths.js");
+const { readHandoff, previewHandoff, mergeHandoff, openActions, prepareHandoff, validateHandoffResponse, acceptHandoff, recoverHandoff } = await import("./handoff.js");
 
 const source = { stage: "implement" as const, step: "T-1-code", agent: "codex", callKey: "f-a:implement:T-1:code:0:codex" };
 const issue = { kind: "action" as const, summary: "測試未涵蓋逾時", evidence: "src/api.test.ts:20", targetStage: "code" as const };
@@ -66,5 +66,40 @@ describe("交接紀錄", () => {
     execFileSync("mkdir", ["-p", join(root, ".agentflowctl", "runs", "f-e")]);
     writeFileSync(path, "{broken");
     expect(() => readHandoff("f-e")).toThrow();
+  });
+
+  it("下一位只看相關未結事項，匿名仲裁不會看到來源身分", () => {
+    mergeHandoff("f-f", source.callKey, source, { newIssues: [issue, { ...issue, targetStage: "plan" }], dispositions: [] }, "writer");
+    prepareHandoff("f-f", "next", "code", false);
+    const context = readFileSync(join(flowDir("f-f"), "handoff-context.md"), "utf8");
+    expect(context).toContain("測試未涵蓋逾時");
+    expect(context.match(/測試未涵蓋逾時/g)).toHaveLength(1);
+    expect(context).toContain("codex");
+    prepareHandoff("f-f", "arbiter", "plan", true);
+    const blind = readFileSync(join(flowDir("f-f"), "handoff-context.md"), "utf8");
+    expect(blind).not.toContain("codex");
+    expect(blind).toContain("測試未涵蓋逾時");
+  });
+
+  it("缺失或無效的回覆不視為空清單", () => {
+    prepareHandoff("f-g", "step", "code", false);
+    expect(validateHandoffResponse("f-g").ok).toBe(false);
+    writeFileSync(join(flowDir("f-g"), "handoff-response.json"), "{}");
+    expect(validateHandoffResponse("f-g").ok).toBe(false);
+    writeFileSync(join(flowDir("f-g"), "handoff-response.json"), JSON.stringify(empty));
+    expect(validateHandoffResponse("f-g")).toEqual({ ok: true, data: empty });
+  });
+
+  it("接受已驗證回覆後可重播，同一步驟開始時清掉舊回覆", () => {
+    prepareHandoff("f-h", source.callKey, "code", false);
+    const path = join(flowDir("f-h"), "handoff-response.json");
+    writeFileSync(path, JSON.stringify({ newIssues: [issue], dispositions: [] }));
+    const parsed = validateHandoffResponse("f-h");
+    if (!parsed.ok) throw new Error(parsed.error);
+    acceptHandoff("f-h", source.callKey, source, parsed.data, "writer");
+    recoverHandoff("f-h");
+    expect(readHandoff("f-h").issues).toHaveLength(1);
+    prepareHandoff("f-h", "next", "code", false);
+    expect(existsSync(path)).toBe(false);
   });
 });

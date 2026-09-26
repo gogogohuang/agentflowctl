@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
+import { acceptHandoff, prepareHandoff, recoverHandoff, validateHandoffResponse } from "./handoff.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile } from "./logs.js";
 import { exec } from "./proc.js";
@@ -55,6 +56,20 @@ const exhausted = new Set<string>();
 interface StepMode {
   kind: "review" | "write";
   reset?: () => Promise<void> | void;
+  slot?: number;
+  blind?: boolean;
+}
+
+interface StepOutcome { r: AgentResult; agent: string; step: string; callKey: string }
+
+function handoffTarget(run: FlowRun): "plan" | "code" {
+  return ["spec", "plan", "plan_review", "plan_fix"].includes(run.stage) ? "plan" : "code";
+}
+
+/** 同一輪重跑使用相同 key；重試次數或 panel 位置改變時使用新 key。 */
+function handoffKey(run: FlowRun, step: string, slot: number, agent: string): string {
+  const attempts = Object.entries(run.attempts).sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify([run.id, run.stage, step, run.taskIndex, run.taskPhase, attempts, slot, agent]);
 }
 
 async function agentStep(
@@ -63,7 +78,7 @@ async function agentStep(
   step: string,
   prompt: string,
   mode: StepMode,
-): Promise<{ r: AgentResult; agent: string }> {
+): Promise<StepOutcome> {
   const cfg = loadRepoConfig();
   const reset = mode.reset ?? (() => discardChanges(worktreeDir(run.id)));
   let agent = planned;
@@ -79,16 +94,32 @@ async function agentStep(
       info(run, `🔁 ${agent} 額度已用完，${step} 由 ${sub} 代打${note ? `（注意：${note}）` : ""}`);
       agent = sub;
     }
+    const callKey = handoffKey(run, step, mode.slot ?? 0, agent);
+    prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false);
     const r = await runAgent(agent, resolveAgent(cfg, agent), target(run, step, agent), prompt);
     addUsage(run.id, { stage: step, agent, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
     if (!r.quotaExhausted) {
       reportMeta(run, agent, r);
-      return { r, agent };
+      return { r, agent, step, callKey };
     }
     info(run, `⛽ ${agent} 的額度已用完`);
     exhausted.add(agent);
     await reset();
     // 迴圈回到開頭：review 會停下，write 會找代打
+  }
+}
+
+/** 原有關卡已通過後才接受交接；失敗回覆不進入正式紀錄。 */
+function finishHandoff(run: FlowRun, outcome: StepOutcome, role: "writer" | "reviewer"): string | undefined {
+  const parsed = validateHandoffResponse(run.id);
+  if (!parsed.ok) return parsed.error;
+  try {
+    acceptHandoff(run.id, outcome.callKey, {
+      stage: run.stage, step: outcome.step, agent: outcome.agent, callKey: outcome.callKey,
+    }, parsed.data, role);
+    return undefined;
+  } catch (error) {
+    return (error as Error).message;
   }
 }
 
@@ -147,7 +178,8 @@ function loadOrderedTasks(run: FlowRun): TaskItem[] {
 async function specStage(run: FlowRun): Promise<FlowRun> {
   const agent = specAgent(run.cycle, run.id);
   info(run, `📝 產生規格（${agent}）`);
-  const { r } = await agentStep(run, agent, "spec", renderPrompt("spec", { requirement: run.requirement }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "spec", renderPrompt("spec", { requirement: run.requirement }), { kind: "write" });
+  const { r } = outcome;
   await discardChanges(worktreeDir(run.id)); // 這個階段只允許寫 .flow/
   if (!r.ok) return retry(run, "spec", `Agent 執行失敗：${r.summary}`, "spec");
   if (!existsSync(flowFile(run, "spec.md"))) return retry(run, "spec", "缺少 .flow/spec.md", "spec");
@@ -155,6 +187,8 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
   if (!ac.ok) return retry(run, "spec", ac.error, "spec");
   const ids = ac.data.map((a) => a.id);
   if (new Set(ids).size !== ids.length) return retry(run, "spec", "驗收條件 id 有重複", "spec");
+  const handoffError = finishHandoff(run, outcome, "writer");
+  if (handoffError) return retry(run, "spec", handoffError, "spec");
   return succeed(run, "spec", "plan");
 }
 
@@ -225,11 +259,14 @@ async function planStage(run: FlowRun): Promise<FlowRun> {
   const agent = planAgent(run.cycle, run.id);
   info(run, `🗺️  拆解任務（${agent}）`);
   const cfg = loadRepoConfig();
-  const { r, agent: actual } = await agentStep(run, agent, "plan", renderPrompt("plan", { testPattern: cfg.testPattern }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "plan", renderPrompt("plan", { testPattern: cfg.testPattern }), { kind: "write" });
+  const { r, agent: actual } = outcome;
   await discardChanges(worktreeDir(run.id));
   if (!r.ok) return retry(run, "plan", `Agent 執行失敗：${r.summary}`, "plan");
   const ordered = validatePlan(run);
   if (typeof ordered === "string") return retry(run, "plan", ordered, "plan");
+  const handoffError = finishHandoff(run, outcome, "writer");
+  if (handoffError) return retry(run, "plan", handoffError, "plan");
   acceptPlan(run, ordered);
   rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
   return { ...succeed(run, "plan", "plan_review"), planWriter: actual };
@@ -248,17 +285,20 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
     info(run, `🧐 計畫審查第 ${round} 輪（${reviewer}，作者 ${author}）`);
     const snap = snapshotPlan(run);
     rmSync(flowFile(run, "plan-review.json"), { force: true });
-    const { r } = await agentStep(
+    const outcome = await agentStep(
       run, reviewer, "plan-review",
       renderPrompt("plan-review", { reviewer, author, requirement: run.requirement }),
-      { kind: "review", reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); } },
+      { kind: "review", slot: panel.indexOf(reviewer), reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); } },
     );
+    const { r } = outcome;
     await discardChanges(worktreeDir(run.id));
     const tampered = restorePlan(run, snap);
     if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
     if (!r.ok) return retry(run, "plan-review-run", `Agent 執行失敗：${r.summary}`, "plan_review");
     const review = readJsonFile(flowFile(run, "plan-review.json"), ReviewResult);
     if (!review.ok) return retry(run, "plan-review-run", review.error, "plan_review");
+    const handoffError = finishHandoff(run, outcome, "reviewer");
+    if (handoffError) return retry(run, "plan-review-run", handoffError, "plan_review");
     // 審查紀錄移到 worktree 外面：之後的仲裁者看不到是哪一家提的意見
     mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
     renameSync(flowFile(run, "plan-review.json"), join(runDir(run.id), "reviews", `plan-review-${round}-${reviewer}.json`));
@@ -307,11 +347,12 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
   info(run, `✏️  依 ${run.planReviewer ?? "審查者"} 的意見修改計畫（${agent}）`);
   const feedback = readFeedback(run);
   const snap = snapshotPlan(run);
-  const { r, agent: actual } = await agentStep(
+  const outcome = await agentStep(
     run, agent, "plan-fix",
     renderPrompt("plan-fix", { requirement: run.requirement, testPattern: cfg.testPattern }),
     { kind: "write", reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); } },
   );
+  const { r, agent: actual } = outcome;
   await discardChanges(worktreeDir(run.id)); // 只允許改 .flow/
   if (!r.ok) {
     restorePlan(run, snap);
@@ -321,6 +362,11 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
   if (typeof ordered === "string") {
     restorePlan(run, snap);
     return retry(run, "plan-fix", `${feedback}\n\n另外，修改後的計畫沒有通過格式檢查，已還原：\n${ordered}`, "plan_fix");
+  }
+  const handoffError = finishHandoff(run, outcome, "writer");
+  if (handoffError) {
+    restorePlan(run, snap);
+    return retry(run, "plan-fix", handoffError, "plan_fix");
   }
   acceptPlan(run, ordered);
   writeFileSync(flowFile(run, "feedback.md"), feedback); // 保留審查意見，讓下一輪審查者知道上次提了什麼
@@ -340,19 +386,22 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
   const mode = panel.length > 1 ? "雙盲交叉仲裁" : "第三方仲裁";
   const verdicts: { arbiter: string; verdict: "approve" | "changes_requested" | "abstain"; notes: string[] }[] = [];
 
-  for (const arbiter of panel) {
+  for (const [slot, arbiter] of panel.entries()) {
     info(run, `⚖️  ${mode}（${arbiter}）`);
     const snap = snapshotPlan(run);
     rmSync(flowFile(run, "plan-arbiter.json"), { force: true });
-    const { r } = await agentStep(run, arbiter, "plan-arbiter", renderPrompt("plan-arbiter", { requirement: run.requirement }), {
-      kind: "review",
+    const outcome = await agentStep(run, arbiter, "plan-arbiter", renderPrompt("plan-arbiter", { requirement: run.requirement }), {
+      kind: "review", slot, blind: true,
       reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); },
     });
+    const { r } = outcome;
     await discardChanges(worktreeDir(run.id));
     restorePlan(run, snap);
     const result = r.ok ? readJsonFile(flowFile(run, "plan-arbiter.json"), ArbiterResult) : undefined;
-    if (!result?.ok) {
-      const reason = r.ok ? result?.error ?? "未產生有效裁決" : `Agent 執行失敗：${r.summary}`;
+    const handoffError = result?.ok ? finishHandoff(run, outcome, "reviewer") : undefined;
+    if (!result?.ok || handoffError) {
+      const outputError = !r.ok ? `Agent 執行失敗：${r.summary}` : !result ? "未產生有效裁決" : result.ok ? "未產生有效裁決" : result.error;
+      const reason = handoffError ?? outputError;
       info(run, `   ⏸️  ${arbiter} 未產生有效裁決：${reason}`);
       return { ...run, stage: "paused", pausedStage: "plan_review", pauseReason: `${arbiter} 仲裁未產生有效裁決：${reason}` };
     }
@@ -415,11 +464,12 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const key = `${task.id}:tests`;
     info(run, `🧪 [${progress}] 撰寫測試（${agents.tests}）`);
     const before = await headCommit(repo);
-    const { r, agent: testsAuthor } = await agentStep(
+    const outcome = await agentStep(
       run, agents.tests, `${task.id}-tests`,
       renderPrompt("implement-tests", { task: taskJson, testPattern: cfg.testPattern, testCmd }),
       { kind: "write", reset: () => resetTo(repo, before) },
     );
+    const { r, agent: testsAuthor } = outcome;
     if (!r.ok) {
       await resetTo(repo, before);
       return retry(run, key, `Agent 執行失敗：${r.summary}`, "implement");
@@ -436,6 +486,11 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。", "implement");
     }
+    const handoffError = finishHandoff(run, outcome, "writer");
+    if (handoffError) {
+      await resetTo(repo, before);
+      return retry(run, key, handoffError, "implement");
+    }
     writeFileSync(flowFile(run, "red-output.txt"), red.output);
     info(run, `🔴 [${progress}] 測試如預期失敗`);
     return { ...succeed(run, key, "implement"), taskPhase: "code", testsCommit: commit, lastTestsAuthor: testsAuthor };
@@ -447,11 +502,12 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (!testsCommit) throw new Error("缺少 testsCommit，狀態不一致");
   info(run, `🛠️  [${progress}] 實作（${agents.code}，測試由 ${run.lastTestsAuthor ?? agents.tests} 撰寫）`);
   const redOutput = existsSync(flowFile(run, "red-output.txt")) ? readFileSync(flowFile(run, "red-output.txt"), "utf8") : "";
-  const { r, agent: codeAuthor } = await agentStep(
+  const outcome = await agentStep(
     run, agents.code, `${task.id}-code`,
     renderPrompt("implement-code", { task: taskJson, testCmd, redOutput: tail(redOutput, 3000) }),
     { kind: "write", reset: () => resetTo(repo, testsCommit) },
   );
+  const { r, agent: codeAuthor } = outcome;
   if (!r.ok) return retry(run, key, `Agent 執行失敗：${r.summary}`, "implement");
   await commitAll(repo, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
   const touched = (await changedFiles(repo, testsCommit, await headCommit(repo))).filter((f) => testRe.test(f));
@@ -463,6 +519,11 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (!green.ok) {
     info(run, `   ✗ 測試仍未通過${logHint(run, green.seq)}`);
     return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement");
+  }
+  const handoffError = finishHandoff(run, outcome, "writer");
+  if (handoffError) {
+    await resetTo(repo, testsCommit);
+    return retry(run, key, handoffError, "implement");
   }
   info(run, `🟢 [${progress}] 完成`);
   return {
@@ -512,10 +573,11 @@ async function fixStage(run: FlowRun): Promise<FlowRun> {
   const repo = worktreeDir(run.id);
   const feedback = readFeedback(run);
   const before = await headCommit(repo);
-  const { r, agent: actual } = await agentStep(run, agent, "fix", renderPrompt("fix", { testPattern: cfg.testPattern }), {
+  const outcome = await agentStep(run, agent, "fix", renderPrompt("fix", { testPattern: cfg.testPattern }), {
     kind: "write",
     reset: () => resetTo(repo, before),
   });
+  const { r, agent: actual } = outcome;
   if (!r.ok) return retry(run, "fix", `${feedback}\n\n（上次修正時 Agent 執行失敗：${r.summary}）`, "fix");
   await commitAll(repo, `fix: ${why} [${actual}]`);
   const testRe = new RegExp(cfg.testPattern);
@@ -523,6 +585,11 @@ async function fixStage(run: FlowRun): Promise<FlowRun> {
   if (deleted.length) {
     await resetTo(repo, before);
     return retry(run, "fix", `${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`, "fix");
+  }
+  const handoffError = finishHandoff(run, outcome, "writer");
+  if (handoffError) {
+    await resetTo(repo, before);
+    return retry(run, "fix", handoffError, "fix");
   }
   // 修正者成為新的作者，下一輪審查會換成別人
   return { ...to(run, "verify"), lastWriter: actual };
@@ -538,16 +605,19 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
 
   const issues: string[] = [];
   let firstObjector: string | undefined;
-  for (const reviewer of panel) {
+  for (const [slot, reviewer] of panel.entries()) {
     info(run, `👀 程式碼審查（${reviewer}）`);
     rmSync(flowFile(run, "review.json"), { force: true });
-    const { r } = await agentStep(run, reviewer, "review", renderPrompt("review", { reviewer, authors: authors.join("、") || "未知" }), {
-      kind: "review",
+    const outcome = await agentStep(run, reviewer, "review", renderPrompt("review", { reviewer, authors: authors.join("、") || "未知" }), {
+      kind: "review", slot,
     });
+    const { r } = outcome;
     await discardChanges(repo); // 審查者不可改程式碼
     if (!r.ok) return retry(run, "review-run", `Agent 執行失敗：${r.summary}`, "review");
     const review = readJsonFile(flowFile(run, "review.json"), ReviewResult);
     if (!review.ok) return retry(run, "review-run", review.error, "review");
+    const handoffError = finishHandoff(run, outcome, "reviewer");
+    if (handoffError) return retry(run, "review-run", handoffError, "review");
     renameSync(flowFile(run, "review.json"), flowFile(run, `review-${reviewer}.json`));
     if (review.data.verdict === "approve") {
       info(run, `   ✓ ${reviewer} 核准`);
@@ -618,6 +688,7 @@ const STAGES: Record<ActiveStage, (run: FlowRun) => Promise<FlowRun>> = {
 /** 一路推進到需要人介入（awaiting_approval、paused）或結束（done / failed）為止；每一步都寫回檔案，中斷後可接續 */
 export async function advance(initial: FlowRun): Promise<FlowRun> {
   let run = initial;
+  recoverHandoff(run.id);
   for (;;) {
     if (["done", "failed", "awaiting_approval", "paused"].includes(run.stage)) return run;
     const stage = run.stage as ActiveStage;

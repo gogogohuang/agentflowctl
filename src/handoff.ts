@@ -1,8 +1,23 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { handoffPath } from "./paths.js";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { z } from "zod";
+import { flowDir, handoffPath, runDir } from "./paths.js";
 import { HandoffLedger, HandoffResponse, HandoffSource, type HandoffIssue } from "./schemas.js";
+import { readJsonFile, type JsonResult } from "./util.js";
+
+const responsePath = (id: string) => join(flowDir(id), "handoff-response.json");
+const receiptsDir = (id: string) => join(runDir(id), "handoff-receipts");
+const keyHash = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 16);
+const receiptPath = (id: string, key: string) => join(receiptsDir(id), `${keyHash(key)}.json`);
+const Receipt = z.object({ callKey: z.string(), source: HandoffSource, response: HandoffResponse, role: z.enum(["writer", "reviewer"]) });
+
+function writeAtomic(path: string, content: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
+}
 
 export function readHandoff(id: string): HandoffLedger {
   const path = handoffPath(id);
@@ -56,10 +71,43 @@ export function mergeHandoff(
   role: "writer" | "reviewer",
 ): HandoffLedger {
   const next = previewHandoff(readHandoff(id), callKey, source, response, role);
-  const path = handoffPath(id);
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(next, null, 2));
-  renameSync(tmp, path);
+  writeAtomic(handoffPath(id), JSON.stringify(next, null, 2));
   return next;
+}
+
+/** 只把目前步驟需要處理的事項投影給 agent。 */
+export function prepareHandoff(id: string, _callKey: string, target: "plan" | "code", blind: boolean): void {
+  const items = openActions(readHandoff(id), target);
+  const lines = items.map((item) => {
+    const source = blind ? "" : `\n來源：${item.source.stage}／${item.source.agent}`;
+    return `## ${item.id}：${item.summary}\n證據：${item.evidence}\n狀態：${item.status}${source}`;
+  });
+  mkdirSync(flowDir(id), { recursive: true });
+  writeFileSync(join(flowDir(id), "handoff-context.md"), `# 待處理交接事項\n\n${lines.length ? lines.join("\n\n") : "目前沒有待處理事項。"}\n`);
+  rmSync(responsePath(id), { force: true });
+}
+
+export function validateHandoffResponse(id: string): JsonResult<HandoffResponse> {
+  return readJsonFile(responsePath(id), HandoffResponse);
+}
+
+/** 已通過原有關卡的回覆先記收據，再合併；中斷後可重播。 */
+export function acceptHandoff(id: string, callKey: string, source: HandoffSource, response: HandoffResponse, role: "writer" | "reviewer"): void {
+  const checked = Receipt.parse({ callKey, source, response, role });
+  previewHandoff(readHandoff(id), callKey, source, response, role);
+  const path = receiptPath(id, callKey);
+  writeAtomic(path, JSON.stringify(checked));
+  mergeHandoff(id, callKey, source, response, role);
+  rmSync(path, { force: true });
+}
+
+export function recoverHandoff(id: string): void {
+  const dir = receiptsDir(id);
+  if (!existsSync(dir)) return;
+  for (const name of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+    const path = join(dir, name);
+    const receipt = Receipt.parse(JSON.parse(readFileSync(path, "utf8")));
+    mergeHandoff(id, receipt.callKey, receipt.source, receipt.response, receipt.role);
+    rmSync(path);
+  }
 }

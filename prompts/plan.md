@@ -6,6 +6,17 @@
 目前的工作目錄就是專案（agentflowctl 為這次任務建立的專用 git worktree）。
 </context>
 
+<handoff>
+先閱讀 .flow/handoff-context.md，處理與本階段有關的待辦事項。完成時寫入 .flow/handoff-response.json；即使沒有事項也必須寫出空陣列：
+
+```json
+{ "newIssues": [], "dispositions": [] }
+```
+
+新增事項格式：{ "kind": "action 或 info", "summary": "具體問題", "evidence": "檔案位置或檢查證據", "targetStage": "plan 或 code" }。
+處置格式：{ "id": "既有事項 ID", "status": "proposed_resolved、resolved 或 accepted", "reason": "具體處理理由", "evidence": "檔案、commit 或檢查結果" }。撰寫者只能用 proposed_resolved 提出修正；審查者可以用 resolved 或 accepted 結案。重要疑慮必須放在這份檔案，不能只寫在回覆的 <concerns>。
+</handoff>
+
 <inputs>
 - .flow/spec.md
 - .flow/acceptance.json
