@@ -1,5 +1,8 @@
 import type { TaskItem } from "./schemas.js";
 
+/** 一個任務最多做兩件事：對應的驗收條件超過這個數量就要再拆 */
+export const MAX_TASK_ACCEPTANCE = 2;
+
 /**
  * 檢查任務清單並依相依關係排序（Kahn 演算法）。
  * 回傳排序後的任務，或回傳一段可以直接回饋給 Agent 的錯誤說明。
@@ -13,6 +16,9 @@ export function orderTasks(tasks: TaskItem[], acceptanceIds: Set<string>): TaskI
   }
   const covered = new Set<string>();
   for (const t of tasks) {
+    if (t.acceptance.length > MAX_TASK_ACCEPTANCE) {
+      errors.push(`${t.id} 對應 ${t.acceptance.length} 條驗收條件，一個任務最多 ${MAX_TASK_ACCEPTANCE} 條，請拆成更小的任務`);
+    }
     for (const d of t.dependsOn) if (!ids.has(d)) errors.push(`${t.id} 相依的 ${d} 不存在`);
     for (const a of t.acceptance) {
       if (!acceptanceIds.has(a)) errors.push(`${t.id} 對應的驗收條件 ${a} 不存在`);
