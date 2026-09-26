@@ -15,6 +15,8 @@ import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
 import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
 import { readJsonFile } from "./util.js";
+import { openActions, readHandoff } from "./handoff.js";
+import { stopReport } from "./stopReport.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 
@@ -27,13 +29,14 @@ function mustGetRun(id: string): FlowRun {
 async function drive(run: FlowRun): Promise<void> {
   // Ctrl-C 會同時送給子程序（claude、測試指令），狀態已經寫在 state.json，之後可用 resume 接續
   process.once("SIGINT", () => {
-    console.log(`\n已中斷，之後可用 agentflowctl resume ${run.id} 接續`);
+    console.log("\n已中斷");
+    printSummary(getRun(run.id) ?? run, true);
     process.exit(130);
   });
   printSummary(await advance(run));
 }
 
-function printSummary(run: FlowRun): void {
+function printSummary(run: FlowRun, interrupted = false): void {
   console.log("");
   console.log(`run      ${run.id}`);
   console.log(`階段     ${run.stage}`);
@@ -46,19 +49,20 @@ function printSummary(run: FlowRun): void {
   if (run.stage === "failed") {
     console.log(`失敗於   ${run.failedStage ?? "?"}`);
     console.log(`原因     ${run.failureReason ?? "?"}`);
-    const logs = listLogs(logDir(run.id));
-    const last = logs.at(-1);
-    const lastFailed = logs.filter((e) => e.footer && !e.footer.ok).at(-1);
-    if (last) console.log(`最後的 log #${last.seq} ${logMark(last)}（agentflowctl logs ${run.id} ${last.seq}）`);
-    if (lastFailed && lastFailed !== last) console.log(`最近失敗的 log #${lastFailed.seq}（agentflowctl logs ${run.id} ${lastFailed.seq}）`);
-    console.log(`\n必要時直接在 worktree 裡修正，再執行 agentflowctl resume ${run.id}`);
   }
   if (run.stage === "paused") {
     console.log(`暫停於   ${run.pausedStage ?? "?"}`);
     console.log(`原因     ${run.pauseReason ?? "?"}`);
-    console.log(`\n額度恢復後執行 agentflowctl resume ${run.id}`);
   }
-  if (run.stage === "awaiting_approval") console.log(`\n確認計畫後執行 agentflowctl approve ${run.id}`);
+  const report = stopReport({
+    run,
+    interrupted,
+    logs: listLogs(logDir(run.id)),
+    read: (file) => readFileSync(file, "utf8"),
+    open: openActions(readHandoff(run.id)),
+    worktree: worktreeDir(run.id),
+  });
+  for (const line of report) console.log(line);
 }
 
 /** 決定參與的 agent：指令參數 > flow.config.json > 自動偵測已安裝的 CLI */
