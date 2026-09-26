@@ -12,8 +12,9 @@ execFileSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "c
 process.chdir(root);
 
 const script = join(root, "reviewer.mjs");
-writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
+writeFileSync(script, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const mode = readFileSync(".flow/review-mode.txt", "utf8").trim();
+if (existsSync(".flow/tamper-review.txt")) writeFileSync(".flow/acceptance.json", "[]");
 const context = readFileSync(".flow/handoff-context.md", "utf8");
 const id = context.match(/## ([a-f0-9]+)：/)?.[1];
 writeFileSync(mode.startsWith("plan-") ? ".flow/plan-review.json" : ".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
@@ -33,7 +34,7 @@ const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, worktreeDir } = await import("./paths.js");
 const { agentRuns } = await import("./store.js");
 
-async function reviewRun(id: string, mode: "open" | "close", quorum = 1) {
+async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
     cycle: ["a", "b", "c"], reviewQuorum: quorum,
@@ -44,6 +45,10 @@ async function reviewRun(id: string, mode: "open" | "close", quorum = 1) {
   await commitAll(wt, "feat: 測試功能 [a]");
   mkdirSync(flowDir(id), { recursive: true });
   writeFileSync(join(flowDir(id), "review-mode.txt"), mode);
+  if (tamper) {
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "匯出 answer" }]));
+    writeFileSync(join(flowDir(id), "tamper-review.txt"), "");
+  }
   const source = { stage: "implement" as const, step: "T-1-code", agent: "a", callKey: `${id}:code` };
   mergeHandoff(id, source.callKey, source, { newIssues: [{ kind: "action", summary: "測試待核對", evidence: "src/api.test.ts:20", targetStage: "code" }], dispositions: [] }, "writer");
   const now = new Date().toISOString();
@@ -74,6 +79,12 @@ describe("審查交接關卡", () => {
     const ledger = readHandoff(run.id);
     expect(ledger.issues[0]?.status).toBe("resolved");
     expect(ledger.appliedCalls).toHaveLength(3); // 一位作者、兩位審查者
+  });
+
+  it("程式碼審查者修改驗收條件時會被還原", async () => {
+    const run = await reviewRun("f-review-tamper", "close", 1, true);
+    expect(run.stage).toBe("done");
+    expect(JSON.parse(readFileSync(join(flowDir(run.id), "acceptance.json"), "utf8"))).toEqual([{ id: "AC-1", description: "匯出 answer" }]);
   });
 
   it("計畫審查核准仍有未結事項時不能開始實作", async () => {
@@ -194,5 +205,45 @@ describe("實作階段", () => {
     expect(agentRuns(run.id)).toBe(3);
     expect(readFileSync(join(flowDir(run.id), `feedback-${phase}.txt`), "utf8")).toContain("不可修改規格與計畫檔");
     expect(existsSync(join(worktreeDir(run.id), "feature.test.mjs"))).toBe(true);
+  });
+});
+
+const fixer = join(root, "fixer.mjs");
+writeFileSync(fixer, `import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+writeFileSync(".flow/feedback-seen.txt", readFileSync(".flow/feedback.md"));
+if (existsSync(".flow/tamper-fix.txt")) {
+  rmSync(".flow/tamper-fix.txt");
+  writeFileSync(".flow/acceptance.json", "[]");
+}
+writeFileSync("fixed.txt", String(Date.now()));
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+
+describe("修正階段", () => {
+  it("修改驗收條件時還原並帶著原本的意見重試", async () => {
+    const id = "f-fix-tamper";
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", fixer] }])),
+      cycle: ["a", "b"], install: "true", test: "true", checks: [],
+    }));
+    const acceptance = [{ id: "AC-1", description: "匯出 answer" }];
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
+    writeFileSync(join(flowDir(id), "feedback.md"), "型別檢查失敗");
+    writeFileSync(join(flowDir(id), "tamper-fix.txt"), "");
+    const now = new Date().toISOString();
+    // 第一次修正偷改被退回，第二次修正後 verify 通過，接著審查時達到 agent 次數上限而停下
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "fix", fixSource: "verify",
+      autopilot: true, maxAgentRuns: 2, cycle: ["a", "b"], lastWriter: "a", attempts: {},
+      taskIndex: 1, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.failureReason).toMatch(/達到上限/);
+    expect(agentRuns(id)).toBe(2);
+    expect(JSON.parse(readFileSync(join(flowDir(id), "acceptance.json"), "utf8"))).toEqual(acceptance);
+    const feedback = readFileSync(join(flowDir(id), "feedback-seen.txt"), "utf8");
+    expect(feedback).toContain("型別檢查失敗");
+    expect(feedback).toContain("不可修改規格與計畫檔");
   });
 });

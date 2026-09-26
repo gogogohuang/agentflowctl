@@ -32,6 +32,7 @@
 - 不可刪除測試檔（檔名符合 `{{testPattern}}`），也不可用 skip、放寬斷言、`@ts-ignore`、`eslint-disable` 等方式讓檢查通過。
 - 如果測試本身確實有誤，可以修正測試，但必須在回覆的 `<concerns>` 說明理由。
 - 不要執行 git commit（權限設定已禁止）。
+- **不可修改** .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json、.flow/tasks.ordered.json，修改會被自動還原並視為失敗。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。
 </constraints>
 
 <reply_format>

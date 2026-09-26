@@ -356,12 +356,13 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | implement 紅燈 | 洗牌輪流，每家各一次 | 有測試變更，而且測試執行後失敗；規格與計畫檔沒有被修改 | 還原並重試 |
 | implement 綠燈 | 測試作者以外隨機一位 | 測試檔與規格、計畫檔都沒有被修改，而且測試通過 | 還原，或帶著輸出重試 |
 | verify | — | `install` 與所有 `checks` 通過 | 交回作者修正 |
-| review | 作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 依 `fixStrategy` 交給他人修正 |
+| fix | verify 失敗交回作者；審查意見依 `fixStrategy` | 沒有刪除測試檔，也沒有修改規格與計畫檔 | 還原並重試 |
+| review | 作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve`（審查者對程式碼與規格、計畫檔的修改一律還原） | 依 `fixStrategy` 交給他人修正 |
 | pr | — | push 成功；有 `gh` 就開 PR | — |
 
 驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
 每個任務的寫測試與寫實作 prompt 只帶入該任務對應的驗收條件；agent 優先讀任務與相關程式碼，遇到資訊不足或矛盾才查規格、計畫的相關段落。agent 可先跑相關測試，紅燈與完整測試仍由外部流程執行與判定，減少重複讀取文件和全套測試輸出所用的 token。
-實作階段不可修改 `.flow/` 裡的規格與計畫檔（`spec.md`、`acceptance.json`、`plan.md`、`tasks.json`、`tasks.ordered.json`）；被改就還原並重試，對規格有疑慮要寫進交接事項。
+計畫定案後（實作、修正、程式碼審查）不可修改 `.flow/` 裡的規格與計畫檔（`spec.md`、`acceptance.json`、`plan.md`、`tasks.json`、`tasks.ordered.json`）；實作與修正時被改就還原並重試，審查者的修改直接還原，對規格有疑慮要寫進交接事項。
 程式碼審查仍逐條核對所有驗收條件，但只在 `review.json` 列出未通過或其他重要問題；先看 diff 與相關檔案，驗收條件不清楚時才查規格。修正階段先依 `feedback.md` 定位問題並執行相關檢查，完整檢查仍由後續 verify 執行，以減少反覆讀取完整文件與測試輸出。
 
 ## Prompt 結構

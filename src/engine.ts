@@ -205,11 +205,11 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
   return succeed(run, "spec", "plan");
 }
 
-// ── 規格與計畫檔案：審查者、仲裁者與實作者只能讀，不能改 ──
+// ── 規格與計畫檔案：計畫審查、仲裁與計畫定案後的所有階段只能讀，不能改 ──
 
 const PLAN_FILES = ["spec.md", "acceptance.json", "plan.md", "tasks.json"] as const;
-/** 實作階段另外依賴計畫通過時排好的任務順序，同樣不能被改 */
-const IMPLEMENT_FILES = [...PLAN_FILES, "tasks.ordered.json"] as const;
+/** 計畫定案後（實作、修正、程式碼審查）另外依賴排好的任務順序，同樣不能被改 */
+const LOCKED_FILES = [...PLAN_FILES, "tasks.ordered.json"] as const;
 
 function snapshotPlan(run: FlowRun, files: readonly string[] = PLAN_FILES): Record<string, string | undefined> {
   return Object.fromEntries(
@@ -463,7 +463,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
 }
 
 function planTamperedMessage(files: string[]): string {
-  return `實作階段不可修改規格與計畫檔，已還原你的變更：${files.map((f) => `.flow/${f}`).join(", ")}。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。`;
+  return `計畫定案後不可修改規格與計畫檔，已還原你的變更：${files.map((f) => `.flow/${f}`).join(", ")}。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。`;
 }
 
 async function implementStage(run: FlowRun): Promise<FlowRun> {
@@ -489,7 +489,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const key = `${task.id}:tests`;
     info(run, `🧪 [${progress}] 撰寫測試（${agents.tests}）`);
     const before = await headCommit(repo);
-    const snap = snapshotPlan(run, IMPLEMENT_FILES);
+    const snap = snapshotPlan(run, LOCKED_FILES);
     const outcome = await agentStep(
       run, agents.tests, `${task.id}-tests`,
       renderPrompt("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd }),
@@ -533,7 +533,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (!testsCommit) throw new Error("缺少 testsCommit，狀態不一致");
   info(run, `🛠️  [${progress}] 實作（${agents.code}，測試由 ${run.lastTestsAuthor ?? agents.tests} 撰寫）`);
   const redOutput = existsSync(flowFile(run, "red-output.txt")) ? readFileSync(flowFile(run, "red-output.txt"), "utf8") : "";
-  const snap = snapshotPlan(run, IMPLEMENT_FILES);
+  const snap = snapshotPlan(run, LOCKED_FILES);
   const outcome = await agentStep(
     run, agents.code, `${task.id}-code`,
     renderPrompt("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) }),
@@ -610,12 +610,18 @@ async function fixStage(run: FlowRun): Promise<FlowRun> {
   const repo = worktreeDir(run.id);
   const feedback = readFeedback(run);
   const before = await headCommit(repo);
+  const snap = snapshotPlan(run, LOCKED_FILES);
   const outcome = await agentStep(run, agent, "fix", renderPrompt("fix", { testPattern: cfg.testPattern }), {
     kind: "write",
-    reset: () => resetTo(repo, before),
+    reset: async () => { await resetTo(repo, before); restorePlan(run, snap); },
   });
   const { r, agent: actual } = outcome;
+  const tampered = restorePlan(run, snap);
   if (!r.ok) return retry(run, "fix", `${feedback}\n\n（上次修正時 Agent 執行失敗：${r.summary}）`, "fix");
+  if (tampered.length) {
+    await resetTo(repo, before);
+    return retry(run, "fix", `${feedback}\n\n另外：${planTamperedMessage(tampered)}`, "fix");
+  }
   await commitAll(repo, `fix: ${why} [${actual}]`);
   const testRe = new RegExp(cfg.testPattern);
   const deleted = (await changedFiles(repo, before, await headCommit(repo), "D")).filter((f) => testRe.test(f));
@@ -645,11 +651,14 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
   for (const [slot, reviewer] of panel.entries()) {
     info(run, `👀 程式碼審查（${reviewer}）`);
     rmSync(flowFile(run, "review.json"), { force: true });
+    const snap = snapshotPlan(run, LOCKED_FILES);
     const outcome = await agentStep(run, reviewer, "review", renderPrompt("review", { reviewer, authors: authors.join("、") || "未知" }), {
-      kind: "review", slot,
+      kind: "review", slot, reset: async () => { await discardChanges(repo); restorePlan(run, snap); },
     });
     const { r } = outcome;
     await discardChanges(repo); // 審查者不可改程式碼
+    const tampered = restorePlan(run, snap); // .flow/ 不受 git 管理，要另外還原
+    if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
     if (!r.ok) return retry(run, "review-run", `Agent 執行失敗：${r.summary}`, "review");
     const review = readJsonFile(flowFile(run, "review.json"), ConsistentReviewResult);
     if (!review.ok) return retry(run, "review-run", review.error, "review");
