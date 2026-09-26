@@ -44,6 +44,7 @@
 <constraints>
 - 不可實作功能本身。可以建立讓測試能編譯所需的最小型別或空殼匯出，但不可以有真正的邏輯。
 - 不要執行 git commit（權限設定已禁止），外部流程會提交並驗證測試是否失敗。
+- **不可修改** .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json、.flow/tasks.ordered.json，修改會被自動還原並視為失敗。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。
 </constraints>
 
 <reply_format>

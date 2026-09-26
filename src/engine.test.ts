@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -31,6 +31,7 @@ const { addWorktree, commitAll } = await import("./git.js");
 const { advance } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, worktreeDir } = await import("./paths.js");
+const { agentRuns } = await import("./store.js");
 
 async function reviewRun(id: string, mode: "open" | "close", quorum = 1) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
@@ -119,5 +120,79 @@ describe("審查交接關卡", () => {
     });
     expect(run.failureReason).not.toMatch(/矛盾/);
     expect(readHandoff(id).issues[0]?.status).toBe("resolved");
+  });
+});
+
+const implementer = join(root, "implementer.mjs");
+writeFileSync(implementer, `import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+const phase = prompt.includes("<red_output>") ? "code" : "tests";
+writeFileSync(\`.flow/prompt-\${phase}.txt\`, prompt);
+if (existsSync(".flow/feedback.md")) writeFileSync(\`.flow/feedback-\${phase}.txt\`, readFileSync(".flow/feedback.md"));
+if (existsSync(\`.flow/tamper-\${phase}.txt\`)) {
+  rmSync(\`.flow/tamper-\${phase}.txt\`);
+  writeFileSync(".flow/acceptance.json", "[]");
+}
+if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
+else writeFileSync("feature.mjs", "export const answer = 42;\\n");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+
+async function implementRun(id: string, acceptance: unknown, { maxAgentRuns = 2, tamper }: { maxAgentRuns?: number; tamper?: "tests" | "code" } = {}) {
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
+    cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+  }));
+  const wt = worktreeDir(id);
+  await addWorktree(root, wt, "main", `flow/${id}`);
+  mkdirSync(flowDir(id), { recursive: true });
+  writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
+  writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+    { id: "T-1", title: "回傳答案", description: "匯出 answer", dependsOn: [], acceptance: ["AC-2"] },
+  ]));
+  if (tamper) writeFileSync(join(flowDir(id), `tamper-${tamper}.txt`), "");
+  const now = new Date().toISOString();
+  // 紅燈、綠燈各執行一次 agent（加上重試次數）後就達到上限而停下，只檢查 implement 的結果
+  return advance({
+    id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+    autopilot: true, maxAgentRuns, cycle: ["a", "b"], attempts: {},
+    taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+  });
+}
+
+describe("實作階段", () => {
+  it("紅綠燈 prompt 只帶入目前任務的驗收條件", async () => {
+    const run = await implementRun("f-impl-ac", [
+      { id: "AC-1", description: "其他任務的條件" },
+      { id: "AC-2", description: "匯出 answer 為 42" },
+    ]);
+    expect(run.taskIndex).toBe(1);
+    expect(run.failureReason).toMatch(/達到上限/);
+    for (const phase of ["tests", "code"]) {
+      const prompt = readFileSync(join(flowDir(run.id), `prompt-${phase}.txt`), "utf8");
+      const acceptance = prompt.match(/<acceptance>([\s\S]*?)<\/acceptance>/)?.[1] ?? "";
+      expect(acceptance).toContain("匯出 answer 為 42");
+      expect(acceptance).not.toContain("AC-1");
+    }
+  });
+
+  it("任務對應的驗收條件不存在時停在實作階段並說明原因", async () => {
+    const run = await implementRun("f-impl-missing-ac", [{ id: "AC-1", description: "其他任務的條件" }]);
+    expect(run.stage).toBe("failed");
+    expect(run.failedStage).toBe("implement");
+    expect(run.failureReason).toContain("AC-2 不存在");
+  });
+
+  it.each(["tests", "code"] as const)("%s 階段修改驗收條件時還原並重試", async (phase) => {
+    const acceptance = [
+      { id: "AC-1", description: "其他任務的條件" },
+      { id: "AC-2", description: "匯出 answer 為 42" },
+    ];
+    const run = await implementRun(`f-impl-tamper-${phase}`, acceptance, { maxAgentRuns: 3, tamper: phase });
+    expect(run.taskIndex).toBe(1);
+    expect(JSON.parse(readFileSync(join(flowDir(run.id), "acceptance.json"), "utf8"))).toEqual(acceptance);
+    expect(agentRuns(run.id)).toBe(3);
+    expect(readFileSync(join(flowDir(run.id), `feedback-${phase}.txt`), "utf8")).toContain("不可修改規格與計畫檔");
+    expect(existsSync(join(worktreeDir(run.id), "feature.test.mjs"))).toBe(true);
   });
 });

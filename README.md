@@ -351,14 +351,15 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | plan_fix | 依 `fixStrategy` | 修改後仍通過 plan 的格式與 DAG 檢查 | 還原並重試 |
 | 仲裁 | 見上一節 | 一致核准；分歧依 `tieBreak` | 兩家都不核准時進入 plan_fix 再審查；第三方不核准或 `tieBreak: stop` 時失敗 |
 | 人工確認 | 你（只有 `--manual-plan`） | `agentflowctl approve` | — |
-| implement 紅燈 | 洗牌輪流，每家各一次 | 有測試變更，而且測試執行後失敗 | 還原並重試 |
-| implement 綠燈 | 測試作者以外隨機一位 | 測試檔沒有任何修改，而且測試通過 | 還原，或帶著輸出重試 |
+| implement 紅燈 | 洗牌輪流，每家各一次 | 有測試變更，而且測試執行後失敗；規格與計畫檔沒有被修改 | 還原並重試 |
+| implement 綠燈 | 測試作者以外隨機一位 | 測試檔與規格、計畫檔都沒有被修改，而且測試通過 | 還原，或帶著輸出重試 |
 | verify | — | `install` 與所有 `checks` 通過 | 交回作者修正 |
 | review | 作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 依 `fixStrategy` 交給他人修正 |
 | pr | — | push 成功；有 `gh` 就開 PR | — |
 
 驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
 每個任務的寫測試與寫實作 prompt 只帶入該任務對應的驗收條件；agent 優先讀任務與相關程式碼，遇到資訊不足或矛盾才查規格、計畫的相關段落。agent 可先跑相關測試，紅燈與完整測試仍由外部流程執行與判定，減少重複讀取文件和全套測試輸出所用的 token。
+實作階段不可修改 `.flow/` 裡的規格與計畫檔（`spec.md`、`acceptance.json`、`plan.md`、`tasks.json`、`tasks.ordered.json`）；被改就還原並重試，對規格有疑慮要寫進交接事項。
 
 ## Prompt 結構
 

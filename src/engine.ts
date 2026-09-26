@@ -205,20 +205,22 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
   return succeed(run, "spec", "plan");
 }
 
-// ── 規格與計畫檔案：審查者與仲裁者只能讀，不能改 ──
+// ── 規格與計畫檔案：審查者、仲裁者與實作者只能讀，不能改 ──
 
 const PLAN_FILES = ["spec.md", "acceptance.json", "plan.md", "tasks.json"] as const;
+/** 實作階段另外依賴計畫通過時排好的任務順序，同樣不能被改 */
+const IMPLEMENT_FILES = [...PLAN_FILES, "tasks.ordered.json"] as const;
 
-function snapshotPlan(run: FlowRun): Record<string, string | undefined> {
+function snapshotPlan(run: FlowRun, files: readonly string[] = PLAN_FILES): Record<string, string | undefined> {
   return Object.fromEntries(
-    PLAN_FILES.map((f) => [f, existsSync(flowFile(run, f)) ? readFileSync(flowFile(run, f), "utf8") : undefined]),
+    files.map((f) => [f, existsSync(flowFile(run, f)) ? readFileSync(flowFile(run, f), "utf8") : undefined]),
   );
 }
 
-/** 把被審查者動過的計畫檔案還原成審查前的內容 */
+/** 把被動過的計畫檔案還原成快照的內容，回傳被改的檔名 */
 function restorePlan(run: FlowRun, snap: Record<string, string | undefined>): string[] {
   const changed: string[] = [];
-  for (const f of PLAN_FILES) {
+  for (const f of Object.keys(snap)) {
     const now = existsSync(flowFile(run, f)) ? readFileSync(flowFile(run, f), "utf8") : undefined;
     if (now === snap[f]) continue;
     changed.push(f);
@@ -460,6 +462,10 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
   return { ...run, stage: "failed", failedStage: "plan_review", failureReason: `${summary}，需要人工決定（見 plan.md 的仲裁紀錄）` };
 }
 
+function planTamperedMessage(files: string[]): string {
+  return `實作階段不可修改規格與計畫檔，已還原你的變更：${files.map((f) => `.flow/${f}`).join(", ")}。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。`;
+}
+
 async function implementStage(run: FlowRun): Promise<FlowRun> {
   const tasks = loadOrderedTasks(run);
   const task = tasks[run.taskIndex];
@@ -483,15 +489,21 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const key = `${task.id}:tests`;
     info(run, `🧪 [${progress}] 撰寫測試（${agents.tests}）`);
     const before = await headCommit(repo);
+    const snap = snapshotPlan(run, IMPLEMENT_FILES);
     const outcome = await agentStep(
       run, agents.tests, `${task.id}-tests`,
       renderPrompt("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd }),
-      { kind: "write", reset: () => resetTo(repo, before) },
+      { kind: "write", reset: async () => { await resetTo(repo, before); restorePlan(run, snap); } },
     );
     const { r, agent: testsAuthor } = outcome;
+    const tampered = restorePlan(run, snap);
     if (!r.ok) {
       await resetTo(repo, before);
       return retry(run, key, `Agent 執行失敗：${r.summary}`, "implement");
+    }
+    if (tampered.length) {
+      await resetTo(repo, before);
+      return retry(run, key, planTamperedMessage(tampered), "implement");
     }
     const commit = await commitAll(repo, `test(${task.id}): ${task.title} [${testsAuthor}]`);
     if (!commit) return retry(run, key, "沒有任何檔案變更，這個階段必須撰寫測試。", "implement");
@@ -521,13 +533,19 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (!testsCommit) throw new Error("缺少 testsCommit，狀態不一致");
   info(run, `🛠️  [${progress}] 實作（${agents.code}，測試由 ${run.lastTestsAuthor ?? agents.tests} 撰寫）`);
   const redOutput = existsSync(flowFile(run, "red-output.txt")) ? readFileSync(flowFile(run, "red-output.txt"), "utf8") : "";
+  const snap = snapshotPlan(run, IMPLEMENT_FILES);
   const outcome = await agentStep(
     run, agents.code, `${task.id}-code`,
     renderPrompt("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) }),
-    { kind: "write", reset: () => resetTo(repo, testsCommit) },
+    { kind: "write", reset: async () => { await resetTo(repo, testsCommit); restorePlan(run, snap); } },
   );
   const { r, agent: codeAuthor } = outcome;
+  const tampered = restorePlan(run, snap);
   if (!r.ok) return retry(run, key, `Agent 執行失敗：${r.summary}`, "implement");
+  if (tampered.length) {
+    await resetTo(repo, testsCommit);
+    return retry(run, key, planTamperedMessage(tampered), "implement");
+  }
   await commitAll(repo, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
   const touched = (await changedFiles(repo, testsCommit, await headCommit(repo))).filter((f) => testRe.test(f));
   if (touched.length) {
