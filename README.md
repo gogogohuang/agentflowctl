@@ -10,17 +10,14 @@
 
 ## 快速開始
 
-需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入，再用 `doctor` 檢查環境：
+需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入：
 
 ```bash
 claude    # 完成登入
 codex     # 完成登入
-npx agentflowctl doctor
 ```
 
-沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。`doctor` 會列出這些 agent 的 CLI 是否已安裝，並印出即將使用的輪替順序。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
-
-還沒設定任何 agent 時，用 `agent setup` 互動設定。它會偵測本機的 `claude`、`codex`、`gemini`，逐一詢問要不要加入、名稱與 model，再設定輪替順序；確認後才一次寫入，最後自動跑一次 `doctor`：
+沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。用 `agent setup` 互動設定：它會偵測本機的 `claude`、`codex`、`gemini`，逐一詢問要不要加入、名稱與 model，再設定輪替順序；確認後才一次寫入，最後自動跑一次 `doctor`：
 
 ```bash
 npx agentflowctl agent setup
@@ -32,6 +29,14 @@ npx agentflowctl agent setup
 npx agentflowctl agent add claude --adapter claude
 npx agentflowctl agent add codex --adapter codex
 ```
+
+之後改了設定或換了環境，用 `doctor` 檢查。它會列出設定的 agent 的 CLI 是否已安裝，並印出即將使用的輪替順序。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
+
+```bash
+npx agentflowctl doctor
+```
+
+從舊版升級：以前沒寫 `agents` 時會自動使用內建的 claude、codex、gemini，現在不會了，要先用 `agent setup` 或 `agent add` 補上。舊設定裡的 `removedAgents` 已不再使用，可以刪掉。
 
 在專案資料夾內開始一次 run：
 
@@ -136,6 +141,7 @@ agent 每次使用工具，都會印出完整的指令或主要參數，不截�
   "tddSplit": true,
   "tieBreak": "proceed",
   "agents": {
+    "claude": { "adapter": "claude" },
     "codex": { "adapter": "codex", "model": "你要用的模型" },
     "aider": { "adapter": "command", "command": ["aider", "--yes-always", "--no-auto-commits", "--message", "{prompt}"] }
   }
