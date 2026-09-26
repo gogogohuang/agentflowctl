@@ -19,6 +19,7 @@ export const agentflowctlDir = () => join(projectRoot(), ".agentflowctl");
 export const runsDir = () => join(agentflowctlDir(), "runs");
 export const runDir = (id: string) => join(runsDir(), id);
 export const logDir = (id: string) => join(runDir(id), "logs");
+export const handoffPath = (id: string) => join(runDir(id), "handoff.json");
 /** 每個 run 一個 git worktree，Agent 只在這裡工作，不碰你正在編輯的檔案 */
 export const worktreesDir = () => join(agentflowctlDir(), "worktrees");
 export const worktreeDir = (id: string) => join(worktreesDir(), id);

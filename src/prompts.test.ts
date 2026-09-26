@@ -24,6 +24,10 @@ describe("prompts", () => {
     expect(text).toMatch(/^<role>\n你是[\s\S]+?<\/role>/);
     expect(text).toContain("<reply_format>");
     expect(text).toContain("<result>");
+    expect(text).toContain(".flow/handoff-context.md");
+    expect(text).toContain(".flow/handoff-response.json");
+    expect(text).toContain('"newIssues": []');
+    expect(text).toContain('"dispositions": []');
   });
 
   it("每份 prompt 的角色都不一樣", () => {

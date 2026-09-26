@@ -351,6 +351,14 @@ Agent 的最後回覆要附上 XML 中繼資料：
 
 `blocked` 與 `concerns` 會印在終端機上，完整回覆留在 log，可用 `agentflowctl logs` 查看。這份中繼資料只給人看；缺少或格式錯誤都不影響流程，是否通過仍由上表的程式檢查決定。
 
+### Agent 交接紀錄
+
+每次 agent 執行前，程式會把與當前階段有關的未結事項寫入 `.flow/handoff-context.md`。agent 完成時必須寫 `.flow/handoff-response.json`，包含 `newIssues` 和 `dispositions` 兩個陣列；沒有事項也要明確寫成 `{ "newIssues": [], "dispositions": [] }`。缺少檔案或 JSON 格式不合法，會依該步驟的重試規則處理。
+
+程式只在原有關卡通過後接收交接回覆，並將正式紀錄原子儲存於 `.agentflowctl/runs/<id>/handoff.json`。`action` 是需要後續處理的事項；`info` 只供參考。作者只能提出已修正並附證據，審查者才能確認結案或附理由接受。XML `<concerns>` 可以供人閱讀，但重要疑慮必須寫進交接 JSON，才能交給下一位 agent。額度代打與重試不會接收失敗呼叫的交接內容；中斷後可用 `resume` 接續。
+
+計畫審查或程式碼審查若核准，但該階段仍有未結的 `action`，程式會視為互相矛盾的審查結果並重試。計畫定案和開 PR 前也會再檢查一次；`info` 會提供給目標階段閱讀，但不阻擋通關。
+
 ## Adapter
 
 | adapter | 執行方式 | 權限 |
