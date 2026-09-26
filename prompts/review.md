@@ -39,13 +39,16 @@
 
 ```json
 {
-  "verdict": "approve",
-  "items": []
+  "verdict": "changes_requested",
+  "items": [
+    { "criterion": "AC-1", "status": "not_met", "note": "src/form.tsx 缺少 API 失敗時的錯誤訊息，請在 catch 中顯示錯誤並補測試" }
+  ]
 }
 ```
 
 - `verdict`：逐條核對所有驗收條件後，全部通過且沒有嚴重問題時為 `approve`，否則為 `changes_requested`。
-- `items` 只列未通過的驗收條件與額外發現的重要問題；全部通過時用空陣列。每筆的 `status` 為 `not_met` 或 `partial`，`note` 請寫出具體位置與修正方向，例如 `{ "criterion": "AC-1", "status": "not_met", "note": "src/form.tsx 缺少 API 失敗時的錯誤訊息" }`。
+- `items` 只列未通過的驗收條件與額外發現的重要問題，每筆的 `status` 為 `not_met` 或 `partial`，`note` 請寫出具體位置與修正方向。
+- `approve` 時 `items` 為空陣列；`changes_requested` 時至少要有一筆。兩者不一致會被視為格式錯誤並重新審查。
 </output_format>
 
 <constraints>

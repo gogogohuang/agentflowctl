@@ -15,8 +15,8 @@ import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget 
 import {
   AcceptanceList,
   ArbiterResult,
+  ConsistentReviewResult,
   RepoConfig,
-  ReviewResult,
   TaskItem,
   TaskList,
   type FlowRun,
@@ -312,7 +312,7 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
     const tampered = restorePlan(run, snap);
     if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
     if (!r.ok) return retry(run, "plan-review-run", `Agent 執行失敗：${r.summary}`, "plan_review");
-    const review = readJsonFile(flowFile(run, "plan-review.json"), ReviewResult);
+    const review = readJsonFile(flowFile(run, "plan-review.json"), ConsistentReviewResult);
     if (!review.ok) return retry(run, "plan-review-run", review.error, "plan_review");
     const handoffError = finishHandoff(run, outcome, "reviewer", { target: "plan", verdict: review.data.verdict });
     if (handoffError) return retry(run, "plan-review-run", handoffError, "plan_review");
@@ -651,7 +651,7 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     const { r } = outcome;
     await discardChanges(repo); // 審查者不可改程式碼
     if (!r.ok) return retry(run, "review-run", `Agent 執行失敗：${r.summary}`, "review");
-    const review = readJsonFile(flowFile(run, "review.json"), ReviewResult);
+    const review = readJsonFile(flowFile(run, "review.json"), ConsistentReviewResult);
     if (!review.ok) return retry(run, "review-run", review.error, "review");
     const handoffError = finishHandoff(run, outcome, "reviewer", { target: "code", verdict: review.data.verdict });
     if (handoffError) return retry(run, "review-run", handoffError, "review");

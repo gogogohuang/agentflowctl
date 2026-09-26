@@ -53,6 +53,7 @@
 ```
 
 - `verdict`：沒有會影響實作結果的問題時為 `approve`，否則為 `changes_requested`。
+- `approve` 時 `items` 只能是空陣列或全部 `met`，不影響實作的小建議不要列成 `not_met` 或 `partial`；`changes_requested` 時至少要有一筆 `not_met` 或 `partial`。兩者不一致會被視為格式錯誤並重新審查。
 - 每個問題的 `note` 請寫出具體要改哪個檔案的哪個部分，以及建議怎麼改。
 </output_format>
 
