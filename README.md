@@ -307,12 +307,14 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | 有幾家 | 誰來仲裁 | 結果 |
 | --- | --- | --- |
 | 三家以上 | 沒參與這次討論的那一家 | 核准就繼續，否則 run 失敗 |
-| 兩家 | 兩家各自在全新 context 裡判斷 | 都核准就繼續；都不核准就依裁決意見修訂並重新審查，仲裁達重試上限才停下；分歧依 `tieBreak` |
+| 兩家 | 兩家各自在全新 context 裡判斷 | 都核准就繼續；都不核准就依裁決意見修訂並重新審查；分歧依 `tieBreak` |
 | 一家 | 同一家 | 由它自己仲裁 |
 
 兩家時的仲裁是雙盲的。仲裁者只看計畫，以及一份不含模型名稱的爭議清單（`.flow/dispute.md`）。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、verify 與程式碼審查。
 
-計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。仲裁最多進行 `AGENTFLOWCTL_MAX_ATTEMPTS` 次，預設三次。
+計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。兩家都要求修改時不因仲裁輪數而直接失敗；整個 run 仍受 `maxAgentRuns` 限制。
+
+仲裁 JSON 的 `verdict` 應為 `approve` 或 `changes_requested`；若模型寫成 `reject`，程式會當成 `changes_requested` 並保留理由。缺少檔案、JSON 格式錯誤或其他不合法輸出不算反對票，run 會暫停並顯示驗證錯誤；檢查 `agentflowctl logs <id>` 與 `.flow/plan-arbiter.json` 後可用 `resume` 重新執行。
 
 ## 階段與通過條件
 
@@ -322,7 +324,7 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | plan | 與 spec 同一位 | zod、相依存在、無循環、每條驗收條件都有任務 | 重試 |
 | plan_review | 計畫作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 進入 plan_fix |
 | plan_fix | 依 `fixStrategy` | 修改後仍通過 plan 的格式與 DAG 檢查 | 還原並重試 |
-| 仲裁 | 見上一節 | 一致核准；分歧依 `tieBreak` | 兩家都不核准時先進入 plan_fix，達仲裁上限才失敗；第三方不核准或 `tieBreak: stop` 時失敗 |
+| 仲裁 | 見上一節 | 一致核准；分歧依 `tieBreak` | 兩家都不核准時進入 plan_fix 再審查；第三方不核准或 `tieBreak: stop` 時失敗 |
 | 人工確認 | 你（只有 `--manual-plan`） | `agentflowctl approve` | — |
 | implement 紅燈 | 洗牌輪流，每家各一次 | 有測試變更，而且測試執行後失敗 | 還原並重試 |
 | implement 綠燈 | 測試作者以外隨機一位 | 測試檔沒有任何修改，而且測試通過 | 還原，或帶著輸出重試 |

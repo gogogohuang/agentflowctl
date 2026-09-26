@@ -12,6 +12,7 @@ import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, review
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
 import {
   AcceptanceList,
+  ArbiterResult,
   RepoConfig,
   ReviewResult,
   TaskItem,
@@ -349,21 +350,25 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     });
     await discardChanges(worktreeDir(run.id));
     restorePlan(run, snap);
-    const result = r.ok ? readJsonFile(flowFile(run, "plan-arbiter.json"), ReviewResult) : undefined;
-    if (result?.ok) {
-      mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
-      renameSync(flowFile(run, "plan-arbiter.json"), join(runDir(run.id), "reviews", `plan-arbiter-${arbitrationRound}-${arbiter}.json`));
+    const result = r.ok ? readJsonFile(flowFile(run, "plan-arbiter.json"), ArbiterResult) : undefined;
+    if (!result?.ok) {
+      const reason = r.ok ? result?.error ?? "未產生有效裁決" : `Agent 執行失敗：${r.summary}`;
+      info(run, `   ⏸️  ${arbiter} 未產生有效裁決：${reason}`);
+      return { ...run, stage: "paused", pausedStage: "plan_review", pauseReason: `${arbiter} 仲裁未產生有效裁決：${reason}` };
     }
-    const verdict = result?.ok ? result.data.verdict : "abstain";
-    const notes = result?.ok ? result.data.items.map((i) => `- ${i.criterion}：${i.note}`) : [`- 未產生有效裁決（${r.ok ? "輸出格式錯誤" : r.summary}）`];
-    info(run, `   ${verdict === "approve" ? "✓" : verdict === "abstain" ? "…" : "✗"} ${arbiter}：${verdict === "approve" ? "可以執行" : verdict === "abstain" ? "未裁決" : "不可執行"}`);
+    mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
+    renameSync(flowFile(run, "plan-arbiter.json"), join(runDir(run.id), "reviews", `plan-arbiter-${arbitrationRound}-${arbiter}.json`));
+    const verdict = result.data.verdict;
+    const notes = result.data.items.map((i) => `- ${i.criterion}：${i.note}`);
+    info(run, `   ${verdict === "approve" ? "✓" : "✗"} ${arbiter}：${verdict === "approve" ? "可以執行" : "不可執行"}`);
     verdicts.push({ arbiter, verdict, notes });
   }
   rmSync(flowFile(run, "dispute.md"), { force: true });
 
   const approvals = verdicts.filter((v) => v.verdict === "approve").length;
   const unanimous = approvals === verdicts.length;
-  const decision = arbitrationDecision(verdicts.map((v) => v.verdict), cfg.tieBreak, arbitrationRound, config.maxAttempts);
+  const decision = arbitrationDecision(verdicts.map((v) => v.verdict), cfg.tieBreak);
+  if (decision === "invalid") throw new Error("仲裁結果缺少有效裁決");
   const summary = unanimous
     ? `${mode}一致核准`
     : approvals === 0

@@ -36,6 +36,7 @@
 ```
 
 dispute.md 裡的每一條意見都要列一筆並說明你的判斷。
+`verdict` 只能寫 `approve` 或 `changes_requested`。若計畫有會導致錯誤結果、遺漏需求或無法驗收的問題，請寫 `changes_requested`，不要寫 `reject`。
 </output_format>
 
 <constraints>
