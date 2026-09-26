@@ -17,6 +17,59 @@ export const Stage = z.enum([
 ]);
 export type Stage = z.infer<typeof Stage>;
 
+export const HandoffSource = z.object({
+  stage: Stage,
+  step: z.string().min(1),
+  agent: z.string().min(1),
+  callKey: z.string().min(1),
+});
+export type HandoffSource = z.infer<typeof HandoffSource>;
+
+const HandoffKind = z.enum(["action", "info"]);
+const HandoffTarget = z.enum(["plan", "code"]);
+const HandoffStatus = z.enum(["open", "proposed_resolved", "resolved", "accepted"]);
+
+export const HandoffResponse = z.object({
+  newIssues: z.array(z.object({
+    kind: HandoffKind,
+    summary: z.string().trim().min(1),
+    evidence: z.string().trim().min(1),
+    targetStage: HandoffTarget,
+  })),
+  dispositions: z.array(z.object({
+    id: z.string().min(1),
+    status: z.enum(["proposed_resolved", "resolved", "accepted"]),
+    reason: z.string().trim().min(1),
+    evidence: z.string().trim().min(1),
+  })),
+});
+export type HandoffResponse = z.infer<typeof HandoffResponse>;
+
+export const HandoffIssue = z.object({
+  id: z.string().min(1),
+  source: HandoffSource,
+  kind: HandoffKind,
+  summary: z.string().min(1),
+  evidence: z.string().min(1),
+  targetStage: HandoffTarget,
+  status: HandoffStatus,
+  resolution: z.object({
+    agent: z.string(),
+    reason: z.string(),
+    evidence: z.string(),
+  }).optional(),
+  updatedAt: z.string(),
+});
+export type HandoffIssue = z.infer<typeof HandoffIssue>;
+
+export const HandoffLedger = z.object({
+  version: z.literal(1),
+  issues: z.array(HandoffIssue),
+  /** 用來辨識沒有新增事項的回覆是否已經合併。 */
+  appliedCalls: z.array(z.string()).optional(),
+});
+export type HandoffLedger = z.infer<typeof HandoffLedger>;
+
 /** Agent 在 spec 階段產出的 .flow/acceptance.json */
 export const AcceptanceList = z
   .array(
