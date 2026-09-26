@@ -10,15 +10,17 @@
 
 ## 快速開始
 
-需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入，再檢查環境：
+需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入，把要用的 agent 加進設定，再檢查環境：
 
 ```bash
 claude    # 完成登入
 codex     # 完成登入
+npx agentflowctl agent add claude --adapter claude
+npx agentflowctl agent add codex --adapter codex
 npx agentflowctl doctor
 ```
 
-`doctor` 會列出已安裝的 CLI，並印出即將使用的輪替順序。沒有 `flow.config.json` 時，會自動採用偵測到的 CLI。
+沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。`doctor` 會列出這些 agent 的 CLI 是否已安裝，並印出即將使用的輪替順序。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
 
 在專案資料夾內開始一次 run：
 
@@ -131,7 +133,7 @@ agent 每次使用工具，都會印出完整的指令或主要參數，不截�
 
 | 設定 | 預設 | 說明 |
 |---|---|---|
-| `cycle` | 自動偵測 | 輪替順序。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
+| `cycle` | 自動偵測 | 輪替順序。未設定時依 `agents` 的順序取已安裝的 CLI。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
 | `fixStrategy` | `ring` | `ring`：審查意見交給審查者的下一位；`author`：交回最後作者 |
 | `tddSplit` | `true` | 測試與實作是否分開 |
 | `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve` |
@@ -140,8 +142,7 @@ agent 每次使用工具，都會印出完整的指令或主要參數，不截�
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
 | `install` / `test` / `checks` | 見 `src/schemas.ts` | verify 階段實際執行的指令 |
-| `agents` | 內建 claude、codex、gemini | 覆寫內建 agent，或用 `command` adapter 接上其他 CLI |
-| `removedAgents` | `[]` | 移除的內建 agent，不會被自動偵測、不能放進輪替。通常用 `agent remove` 寫入 |
+| `agents` | `{}` | 可用的 agent，沒有內建的。每個都要指定 adapter（`claude`、`codex`、`gemini`，或用 `command` 接上其他 CLI） |
 
 verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
 
@@ -150,21 +151,19 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 `agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
 
 ```bash
-agentflowctl agent list                                   # 內建與自訂 agent、是否已安裝、輪替位置
+agentflowctl agent list                                   # 設定的 agent、是否已安裝、輪替位置
 agentflowctl agent add claude-strong --adapter claude --model opus
 agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
 agentflowctl agent set codex --model 你要用的模型 --extra-arg=--search
 agentflowctl agent set aider --adapter gemini             # 換 adapter
 agentflowctl agent remove aider
-agentflowctl agent remove gemini                          # 內建的也能移除
 agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前的順序
 ```
 
 修改會連帶更新相關設定，並在終端機列出：
 
 - `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
-- `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回自動偵測。
-- 內建的 claude、codex、gemini 也能 `remove`：覆寫設定會一起刪掉，名稱記在 `removedAgents`，之後自動偵測會跳過它，也不能放進 `cycle`。要加回來用 `agent add gemini --adapter gemini`。
+- `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回從 `agents` 自動偵測。
 - `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
 
 已建立的 run 會沿用建立時的輪替順序，不受這些修改影響。

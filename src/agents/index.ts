@@ -6,9 +6,3 @@ import type { Adapter } from "./types.js";
 
 export const ADAPTERS: Record<"claude" | "codex" | "gemini" | "command", Adapter> = { claude, codex, gemini, command };
 export type AdapterName = keyof typeof ADAPTERS;
-
-/** 沒有設定時，依序偵測這些已安裝的 CLI 組成輪替順序 */
-export const DEFAULT_CYCLE = ["claude", "codex", "gemini"] as const;
-
-/** 扣掉設定裡 removedAgents 之後，仍可使用的內建 agent */
-export const builtinAgents = (removed: readonly string[] = []): string[] => DEFAULT_CYCLE.filter((n) => !removed.includes(n));

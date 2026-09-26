@@ -66,8 +66,8 @@ describe("工具事件的畫面輸出", () => {
 });
 
 describe("resolveAgent", () => {
-  it("內建 agent 不用設定就能用，移除後就不能用", () => {
-    expect(resolveAgent(RepoConfig.parse({}), "gemini").adapter).toBe("gemini");
-    expect(() => resolveAgent(RepoConfig.parse({ removedAgents: ["gemini"] }), "gemini")).toThrow(/已從設定移除/);
+  it("沒有內建 agent，只認 agents 裡定義的", () => {
+    expect(() => resolveAgent(RepoConfig.parse({}), "gemini")).toThrow(/未定義/);
+    expect(resolveAgent(RepoConfig.parse({ agents: { g: { adapter: "gemini" } } }), "g").adapter).toBe("gemini");
   });
 });

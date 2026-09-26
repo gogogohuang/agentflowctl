@@ -3,7 +3,6 @@ import { Command } from "commander";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
-import { builtinAgents } from "./agents/index.js";
 import { advance, loadRepoConfig } from "./engine.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git, removeWorktree } from "./git.js";
@@ -61,9 +60,12 @@ async function resolveCycle(flag?: string): Promise<string[]> {
     }
     return wanted;
   }
+  // 沒有內建 agent：只從 agents 裡定義的挑出已安裝的
+  const defined = Object.keys(cfg.agents);
+  if (!defined.length) throw new Error("還沒有設定任何 agent，請先用 agentflowctl agent add <name> --adapter <adapter> 新增");
   const found: string[] = [];
-  for (const name of builtinAgents(cfg.removedAgents)) if (await probeAgent(resolveAgent(cfg, name))) found.push(name);
-  if (!found.length) throw new Error(`沒有偵測到任何 agent CLI（${builtinAgents(cfg.removedAgents).join("、") || "內建 agent 都已移除"}），可用 agentflowctl doctor 檢查`);
+  for (const name of defined) if (await probeAgent(resolveAgent(cfg, name))) found.push(name);
+  if (!found.length) throw new Error(`設定的 agent（${defined.join("、")}）都沒有偵測到已安裝的 CLI，可用 agentflowctl doctor 檢查`);
   return found;
 }
 
@@ -207,25 +209,24 @@ const agent = program.command("agent").description("管理 agent 與 adapter 設
 
 agent
   .command("list")
-  .description("列出內建與自訂 agent、是否已安裝、在輪替中的位置")
+  .description("列出設定的 agent、是否已安裝、在輪替中的位置")
   .action(async () => {
     const cfg = loadRepoConfig();
     const cycle = await resolveCycle().catch(() => cfg.cycle ?? []);
-    const names = [...new Set([...builtinAgents(cfg.removedAgents), ...Object.keys(cfg.agents)])];
+    const names = Object.keys(cfg.agents);
+    if (!names.length) console.log("還沒有設定任何 agent，請用 agent add <name> --adapter <adapter> 新增");
     for (const name of names) {
       const def = resolveAgent(cfg, name);
       const ok = await probeAgent(def);
       const pos = cycle.indexOf(name);
-      const kind = builtinAgents(cfg.removedAgents).includes(name) ? (name in cfg.agents ? "內建（已覆寫）" : "內建") : "自訂";
       const detail = [
         `adapter=${def.adapter}`,
         def.model && `model=${def.model}`,
         def.extraArgs.length && `extraArgs=${def.extraArgs.join(" ")}`,
         def.command && `command=${def.command.join(" ")}`,
       ].filter(Boolean);
-      console.log(`${ok ? "✅" : "❌"} ${name.padEnd(14)} ${kind.padEnd(8)} ${pos >= 0 ? `輪替 #${pos + 1}` : "不在輪替"}  ${detail.join(" ")}`);
+      console.log(`${ok ? "✅" : "❌"} ${name.padEnd(14)} ${pos >= 0 ? `輪替 #${pos + 1}` : "不在輪替"}  ${detail.join(" ")}`);
     }
-    if (cfg.removedAgents.length) console.log(`\n已移除的內建 agent：${cfg.removedAgents.join("、")}（可用 agent add <name> --adapter <name> 加回）`);
     console.log(`
 輪替順序：${cycle.length ? cycle.join(" → ") : "（沒有可用的 agent）"}${cfg.cycle ? "" : "（自動偵測）"}`);
   });
@@ -258,7 +259,7 @@ agent
 
 agent
   .command("remove <name>")
-  .description("刪除 agent（含內建的 claude、codex、gemini），一併從輪替移除；內建的可用 agent add 加回")
+  .description("刪除 agent，一併從輪替移除")
   .action((name: string) => applyEdit((cfg) => removeAgent(cfg, name), `已移除 ${name}`));
 
 agent
@@ -283,7 +284,8 @@ program
   .description("檢查可用的 agent CLI 與目前的輪替設定")
   .action(async () => {
     const cfg = loadRepoConfig();
-    const names = [...new Set([...builtinAgents(cfg.removedAgents), ...Object.keys(cfg.agents)])];
+    const names = Object.keys(cfg.agents);
+    if (!names.length) console.log("還沒有設定任何 agent，請用 agent add <name> --adapter <adapter> 新增");
     for (const name of names) {
       const def = resolveAgent(cfg, name);
       const ok = await probeAgent(def);
