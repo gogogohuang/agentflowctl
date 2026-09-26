@@ -4,6 +4,7 @@ import { z } from "zod";
 import { config } from "./config.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
+import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
@@ -321,9 +322,9 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
     firstObjector ??= reviewer;
     const lines = review.data.items
       .filter((i) => i.status !== "met")
-      .map((i) => `- **${i.criterion}**（${i.status}）：${i.note}`);
+      .map((i) => reviewIssue(i.criterion, i.status, i.note));
     issueLines.push(...lines);
-    issues.push(`### ${reviewer} 的意見\n\n${lines.join("\n")}`);
+    issues.push(opinion(reviewer, lines));
   }
   if (!firstObjector) return planSettled(run, "plan-review");
 
@@ -395,7 +396,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
   const arbitrationRound = (run.attempts["plan-arbitration"] ?? 0) + 1;
   const panel = arbiterPanel(run.cycle, `${run.id}:arbiter`, run.planWriter, run.planReviewer);
   const mode = panel.length > 1 ? "雙盲交叉仲裁" : "第三方仲裁";
-  const verdicts: { arbiter: string; verdict: "approve" | "changes_requested" | "abstain"; notes: string[] }[] = [];
+  const verdicts: { arbiter: string; verdict: "approve" | "changes_requested" | "abstain"; notes: string[]; markdownNotes: string[] }[] = [];
 
   for (const [slot, arbiter] of panel.entries()) {
     info(run, `⚖️  ${mode}（${arbiter}）`);
@@ -419,9 +420,10 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
     renameSync(flowFile(run, "plan-arbiter.json"), join(runDir(run.id), "reviews", `plan-arbiter-${arbitrationRound}-${arbiter}.json`));
     const verdict = result.data.verdict;
-    const notes = result.data.items.map((i) => `- ${i.criterion}：${i.note}`);
+    const notes = result.data.items.map((i) => `<issue criterion="${escapeXml(i.criterion)}">${escapeXml(i.note)}</issue>`);
+    const markdownNotes = result.data.items.map((i) => `- ${i.criterion}：${i.note}`);
     info(run, `   ${verdict === "approve" ? "✓" : "✗"} ${arbiter}：${verdict === "approve" ? "可以執行" : "不可執行"}`);
-    verdicts.push({ arbiter, verdict, notes });
+    verdicts.push({ arbiter, verdict, notes, markdownNotes });
   }
   rmSync(flowFile(run, "dispute.md"), { force: true });
 
@@ -435,18 +437,18 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
       ? `${mode}沒有任何一方核准${decision === "revise" ? "，交回計畫修訂" : ""}`
       : `${mode}意見分歧，依 tieBreak=${cfg.tieBreak} ${cfg.tieBreak === "proceed" ? "繼續實作" : "停止"}`;
 
-  const record = verdicts.map((v) => `### ${v.arbiter}（${v.verdict}）\n\n${v.notes.join("\n")}`).join("\n\n");
+  const feedbackRecord = verdicts.map((v) => opinion(v.arbiter, v.notes, v.verdict)).join("\n\n");
   if (decision === "revise") {
     const attempts: Record<string, number> = { ...run.attempts, "plan-arbitration": arbitrationRound };
     delete attempts["plan-review"];
     rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
-    writeFileSync(flowFile(run, "feedback.md"), `# 仲裁要求修訂（第 ${arbitrationRound} 次）\n\n${summary}\n\n${record}\n`);
+    writeFileSync(flowFile(run, "feedback.md"), `# 仲裁要求修訂（第 ${arbitrationRound} 次）\n\n${summary}\n\n${feedbackRecord}\n`);
     info(run, `   → ${summary}`);
     return { ...run, attempts, stage: "plan_fix" };
   }
   writeFileSync(
     flowFile(run, "plan.md"),
-    `${readFileSync(flowFile(run, "plan.md"), "utf8")}\n\n## 仲裁紀錄\n\n**結果：${summary}**\n\n${record}\n`,
+    `${readFileSync(flowFile(run, "plan.md"), "utf8")}\n\n## 仲裁紀錄\n\n**結果：${summary}**\n\n${verdicts.map((v) => `### ${v.arbiter}（${v.verdict}）\n\n${v.markdownNotes.join("\n")}`).join("\n\n")}\n`,
   );
   if (decision === "proceed") {
     info(run, `   → ${summary}`);
@@ -636,13 +638,9 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     }
     info(run, `   ✗ ${reviewer} 要求修改`);
     firstObjector ??= reviewer;
-    issues.push(
-      `### ${reviewer} 的意見\n\n` +
-        review.data.items
-          .filter((i) => i.status !== "met")
-          .map((i) => `- **${i.criterion}**（${i.status}）：${i.note}`)
-          .join("\n"),
-    );
+    issues.push(opinion(reviewer, review.data.items
+      .filter((i) => i.status !== "met")
+      .map((i) => reviewIssue(i.criterion, i.status, i.note))));
   }
   if (!firstObjector) return succeed(run, "review", "pr");
   return {
