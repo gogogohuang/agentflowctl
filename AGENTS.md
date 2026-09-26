@@ -24,7 +24,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu／macos × Node 22／24 跑 typeche
 
 一次 run 就是一台狀態機，全程由程式推進，是否通過一律由程式檢查（跑測試、比對 git diff、zod 驗證 JSON），不看 agent 自己怎麼說。
 
-- **`engine.ts`：狀態機。** `advance()` 反覆呼叫 `STAGES[stage](run)`，每一步後都用 `saveRun` 原子寫入 `state.json`，所以任何時候中斷都能 `resume`。階段依序是 spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁 → implement（紅燈：寫測試／綠燈：寫實作）→ verify ⇄ fix → review ⇄ fix → pr。沒通過時呼叫 `retry()`：把原因寫進 `.flow/feedback.md` 給下一次嘗試參考，連續超過 `maxAttempts` 次就讓 run 失敗；通過時呼叫 `succeed()`。
+- **`engine.ts`：狀態機。** `advance()` 反覆呼叫 `STAGES[stage](run)`，每一步後都用 `saveRun` 原子寫入 `state.json`，所以任何時候中斷都能 `resume`。階段依序是 spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁 → implement（每個任務依 `taskPhase` 走：紅燈寫測試 → 綠燈寫實作 → 任務審查 → 任務驗證，未通過進任務修正後重新審查）→ verify ⇄ fix → review ⇄ fix → pr。沒通過時呼叫 `retry()`：把原因寫進 `.flow/feedback.md` 給下一次嘗試參考，連續超過 `maxAttempts` 次就讓 run 失敗；通過時呼叫 `succeed()`。
 - **`agentStep()`（engine.ts）：額度處理。** 步驟分成 `review` 與 `write` 兩類。額度用完時，`review` 類丟出 `QuotaPause` 讓 run 暫停，因為換人代審可能變成作者審自己；`write` 類則先 `reset` 清掉半成品，再隨機由另一家還有額度的 agent 代打，並記進 `substitutions.jsonl`。
 - **`roles.ts`：誰負責哪一步。** 角色分配寫成純函式，人選隨機但以 run id 加步驟為種子（resume 時不變），例如審查者一定不是最後的作者、測試與實作由不同家負責（`tddSplit`）、`fixStrategy` 決定修正者、仲裁者的挑選。要改角色分配就改這裡，並補上 `roles.test.ts`。
 - **`runner.ts` 與 `agents/`：執行 agent。** 每種 adapter 提供 `probe`、`invoke`（組出 cmd／args／stdin／env）與 `parse`（把一行 stdout 轉成正規化的 `AgentEvent`：text／tool／usage／done）。額度錯誤靠 `QUOTA_PATTERNS` 比對錯誤訊息，而且只在執行失敗時才檢查。回覆結尾的 `<result>` XML 由 `resultMeta.ts` 的 `parseResultMeta` 解析，只給人看，不影響關卡判斷。`runCommand` 則用 shell 在 worktree 內跑專案的 install／test／checks。終端機預設安靜：💬／🔧／`$ 指令` 只在 `config.verbose`（`-v` 或 `AGENTFLOWCTL_VERBOSE=1`）時印出。

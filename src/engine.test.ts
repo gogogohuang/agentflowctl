@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -31,7 +31,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({
 const { addWorktree, commitAll } = await import("./git.js");
 const { advance } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
-const { flowDir, worktreeDir } = await import("./paths.js");
+const { flowDir, logDir, worktreeDir } = await import("./paths.js");
 const { agentRuns } = await import("./store.js");
 
 async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false) {
@@ -163,7 +163,7 @@ async function implementRun(id: string, acceptance: unknown, { maxAgentRuns = 2,
   ]));
   if (tamper) writeFileSync(join(flowDir(id), `tamper-${tamper}.txt`), "");
   const now = new Date().toISOString();
-  // 紅燈、綠燈各執行一次 agent（加上重試次數）後就達到上限而停下，只檢查 implement 的結果
+  // 紅燈、綠燈各執行一次 agent（加上重試次數）後就達到上限而停在任務審查前，只檢查紅綠燈的結果
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
     autopilot: true, maxAgentRuns, cycle: ["a", "b"], attempts: {},
@@ -177,7 +177,7 @@ describe("實作階段", () => {
       { id: "AC-1", description: "其他任務的條件" },
       { id: "AC-2", description: "匯出 answer 為 42" },
     ]);
-    expect(run.taskIndex).toBe(1);
+    expect(run.taskPhase).toBe("review");
     expect(run.failureReason).toMatch(/達到上限/);
     for (const phase of ["tests", "code"]) {
       const prompt = readFileSync(join(flowDir(run.id), `prompt-${phase}.txt`), "utf8");
@@ -200,7 +200,7 @@ describe("實作階段", () => {
       { id: "AC-2", description: "匯出 answer 為 42" },
     ];
     const run = await implementRun(`f-impl-tamper-${phase}`, acceptance, { maxAgentRuns: 3, tamper: phase });
-    expect(run.taskIndex).toBe(1);
+    expect(run.taskPhase).toBe("review");
     expect(JSON.parse(readFileSync(join(flowDir(run.id), "acceptance.json"), "utf8"))).toEqual(acceptance);
     expect(agentRuns(run.id)).toBe(3);
     expect(readFileSync(join(flowDir(run.id), `feedback-${phase}.txt`), "utf8")).toContain("不可修改規格與計畫檔");
@@ -245,5 +245,89 @@ describe("修正階段", () => {
     const feedback = readFileSync(join(flowDir(id), "feedback-seen.txt"), "utf8");
     expect(feedback).toContain("型別檢查失敗");
     expect(feedback).toContain("不可修改規格與計畫檔");
+  });
+});
+
+const worker = join(root, "worker.mjs");
+writeFileSync(worker, `import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+const id = prompt.match(/"id": "(T-\\d+)"/)?.[1];
+const role = prompt.includes("你是任務審查者") ? "task-review" : prompt.includes("你是程式碼審查者") ? "review"
+  : prompt.includes("你是除錯工程師") ? "fix" : prompt.includes("<red_output>") ? "code" : "tests";
+appendFileSync(".flow/steps.txt", \`\${role}\${role === "review" || role === "fix" ? "" : ":" + id}\\n\`);
+if (role === "tests") writeFileSync(\`\${id}.test.mjs\`, \`import { ok } from "./\${id}.mjs";\\nif (!ok) process.exit(1);\\n\`);
+if (role === "code") writeFileSync(\`\${id}.mjs\`, "export const ok = true;\\n");
+if (role === "fix") writeFileSync("fixed.txt", readFileSync(".flow/feedback.md"));
+if (role === "task-review" || role === "review") {
+  writeFileSync(\`.flow/diff-\${role}-\${id ?? "all"}.txt\`, readFileSync(".flow/diff.patch"));
+  const reject = role === "task-review" && existsSync(".flow/reject-once.txt");
+  if (reject) rmSync(".flow/reject-once.txt");
+  writeFileSync(".flow/review.json", JSON.stringify(reject
+    ? { verdict: "changes_requested", items: [{ criterion: "AC-1", status: "partial", note: "缺少邊界情況" }] }
+    : { verdict: "approve", items: [] }));
+}
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+
+async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce = false } = {}) {
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", worker] }])),
+    cycle: ["a", "b"], install: "true", test: "for f in T-*.test.mjs; do node $f || exit 1; done",
+    checks: [{ name: "check", cmd: check }],
+  }));
+  await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+  mkdirSync(flowDir(id), { recursive: true });
+  const ids = Array.from({ length: tasks }, (_, i) => `T-${i + 1}`);
+  writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(ids.map((t, i) => ({ id: `AC-${i + 1}`, description: `${t} 完成` }))));
+  writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify(ids.map((t, i) => (
+    { id: t, title: `任務 ${t}`, description: `完成 ${t}`, dependsOn: [], acceptance: [`AC-${i + 1}`] }
+  ))));
+  if (rejectOnce) writeFileSync(join(flowDir(id), "reject-once.txt"), "");
+  const now = new Date().toISOString();
+  return advance({
+    id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+    autopilot: true, maxAgentRuns: 20, cycle: ["a", "b"], attempts: {},
+    taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+  });
+}
+
+const steps = (id: string) => readFileSync(join(flowDir(id), "steps.txt"), "utf8").trim().split("\n");
+
+describe("任務審查與驗證", () => {
+  it("每個任務依序寫測試、實作、審查、驗證，全部完成後再做整體審查", async () => {
+    const run = await taskFlowRun("f-task-order", { tasks: 2 });
+    expect(run.failureReason).toBeUndefined();
+    expect(run.stage).toBe("done");
+    expect(steps(run.id)).toEqual(["tests:T-1", "code:T-1", "task-review:T-1", "tests:T-2", "code:T-2", "task-review:T-2", "review"]);
+    const logs = readdirSync(logDir(run.id));
+    expect(logs.findIndex((f) => f.includes("T-1-check"))).toBeLessThan(logs.findIndex((f) => f.includes("T-2-tests")));
+  });
+
+  it("任務審查只看這個任務的變更，整體審查看全部", async () => {
+    const run = await taskFlowRun("f-task-diff", { tasks: 2 });
+    const second = readFileSync(join(flowDir(run.id), "diff-task-review-T-2.txt"), "utf8");
+    expect(second).toContain("T-2.mjs");
+    expect(second).not.toContain("T-1.mjs");
+    const whole = readFileSync(join(flowDir(run.id), "diff-review-all.txt"), "utf8");
+    expect(whole).toContain("T-1.mjs");
+    expect(whole).toContain("T-2.mjs");
+  });
+
+  it("任務審查要求修改時，修正後重新審查再驗證", async () => {
+    const run = await taskFlowRun("f-task-reject", { rejectOnce: true });
+    expect(run.failureReason).toBeUndefined();
+    expect(run.stage).toBe("done");
+    expect(steps(run.id)).toEqual(["tests:T-1", "code:T-1", "task-review:T-1", "fix", "task-review:T-1", "review"]);
+    expect(readFileSync(join(worktreeDir(run.id), "fixed.txt"), "utf8")).toContain("缺少邊界情況");
+    const log = execFileSync("git", ["-C", worktreeDir(run.id), "log", "--format=%s"], { encoding: "utf8" });
+    expect(log).toMatch(/^fix\(T-1\): 依 \S+ 的審查意見 \[\S+\]$/m);
+  });
+
+  it("任務驗證失敗時，修正後重新審查再驗證，通過才換下一個任務", async () => {
+    const run = await taskFlowRun("f-task-verify", { tasks: 2, check: "test -f fixed.txt" });
+    expect(run.failureReason).toBeUndefined();
+    expect(run.stage).toBe("done");
+    expect(steps(run.id)).toEqual(["tests:T-1", "code:T-1", "task-review:T-1", "fix", "task-review:T-1", "tests:T-2", "code:T-2", "task-review:T-2", "review"]);
+    expect(readFileSync(join(worktreeDir(run.id), "fixed.txt"), "utf8")).toContain("check 失敗");
   });
 });

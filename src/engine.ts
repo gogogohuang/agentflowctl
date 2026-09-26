@@ -482,6 +482,9 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
   if (!acceptance.ok) throw new Error(acceptance.error);
   const acceptanceJson = JSON.stringify(taskAcceptance(task, acceptance.data), null, 2);
+  if (run.taskPhase === "review") return taskReviewStep(run, task, progress, taskJson, acceptanceJson);
+  if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
+  if (run.taskPhase === "fix") return taskFixStep(run, task, progress);
   const agents = taskAgents(run.cycle, run.taskIndex, cfg.tddSplit, run.id);
 
   // ── 紅燈：只寫測試，而且測試必須失敗 ──
@@ -524,7 +527,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     }
     writeFileSync(flowFile(run, "red-output.txt"), red.output);
     info(run, `🔴 [${progress}] 測試如預期失敗`);
-    return { ...succeed(run, key, "implement"), taskPhase: "code", testsCommit: commit, lastTestsAuthor: testsAuthor };
+    return { ...succeed(run, key, "implement"), taskPhase: "code", taskBase: before, testsCommit: commit, lastTestsAuthor: testsAuthor };
   }
 
   // ── 綠燈：實作到測試通過，而且不可動測試 ──
@@ -562,40 +565,101 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     await resetTo(repo, testsCommit);
     return retry(run, key, handoffError, "implement");
   }
-  info(run, `🟢 [${progress}] 完成`);
+  info(run, `🟢 [${progress}] 測試通過`);
+  return { ...succeed(run, key, "implement"), taskPhase: "review", lastWriter: codeAuthor };
+}
+
+// ── 任務審查：只看這個任務的變更與驗收條件 ──
+async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, taskJson: string, acceptanceJson: string): Promise<FlowRun> {
+  const key = `${task.id}:review`;
+  const base = run.taskBase ?? (run.testsCommit && `${run.testsCommit}~1`);
+  if (!base) throw new Error("缺少 taskBase，狀態不一致");
+  const result = await codeReview(run, {
+    base,
+    seed: `${run.id}:review:${task.id}:${run.attempts[key] ?? 0}`,
+    label: `[${progress}] 任務審查`,
+    step: `${task.id}-review`,
+    prompt: (reviewer, authors) => renderPrompt("task-review", { reviewer, authors, task: taskJson, acceptance: acceptanceJson }),
+    saveAs: (reviewer) => `review-${task.id}-${reviewer}.json`,
+    // 未結交接事項可能屬於後面的任務，由最後的整體審查把關
+    gate: false,
+    runKey: `${task.id}:review-run`,
+    backTo: "implement",
+  });
+  if ("run" in result) return result.run;
+  if (!result.objector) return { ...succeed(run, key, "implement"), taskPhase: "verify" };
+  return {
+    ...retry(run, key, `任務審查要求修改：\n\n${result.issues.join("\n\n")}`, "implement"),
+    taskPhase: "fix",
+    fixSource: "review",
+    lastReviewer: result.objector,
+  };
+}
+
+// ── 任務驗證：通過才進入下一個任務 ──
+async function taskVerifyStep(run: FlowRun, task: TaskItem, progress: string): Promise<FlowRun> {
+  const key = `${task.id}:verify`;
+  info(run, `🔍 [${progress}] 執行驗證`);
+  const report = await runChecks(run, `${task.id}-`);
+  if (report) return { ...retry(run, key, report, "implement"), taskPhase: "fix", fixSource: "verify" };
+  info(run, `✅ [${progress}] 完成`);
   return {
     ...succeed(run, key, "implement"),
     taskIndex: run.taskIndex + 1,
     taskPhase: "tests",
+    taskBase: undefined,
     testsCommit: undefined,
     lastTestsAuthor: undefined,
-    lastWriter: codeAuthor,
   };
 }
 
-async function verifyStage(run: FlowRun): Promise<FlowRun> {
-  info(run, "🔍 執行驗證");
+// ── 任務修正：修完重新審查、驗證 ──
+async function taskFixStep(run: FlowRun, task: TaskItem, progress: string): Promise<FlowRun> {
+  const result = await applyFix(run, {
+    seed: `${run.id}:fix:${task.id}:${run.attempts[`${task.id}:review`] ?? 0}`,
+    label: `[${progress}] `,
+    step: `${task.id}-fix`,
+    commitScope: `fix(${task.id})`,
+    key: `${task.id}:fix`,
+    backTo: "implement",
+  });
+  if ("run" in result) return result.run;
+  return { ...run, taskPhase: "review", lastWriter: result.agent };
+}
+
+/** 執行 install 與所有 checks，結果寫入 verify.json；有失敗時回傳給修正者的報告 */
+async function runChecks(run: FlowRun, stepPrefix = ""): Promise<string | undefined> {
   const cfg = loadRepoConfig();
   const results: { name: string; ok: boolean; output: string }[] = [];
-  const install = await runCommand(target(run, "install", CMD_AGENT), cfg.install);
+  const install = await runCommand(target(run, `${stepPrefix}install`, CMD_AGENT), cfg.install);
   if (!install.ok) {
     info(run, `   ✗ install${logHint(run, install.seq)}`);
     results.push({ name: "install", ok: false, output: tail(install.output) });
   } else {
     for (const check of cfg.checks) {
-      const r = await runCommand(target(run, check.name, CMD_AGENT), check.cmd);
+      const r = await runCommand(target(run, `${stepPrefix}${check.name}`, CMD_AGENT), check.cmd);
       info(run, `   ${r.ok ? "✓" : "✗"} ${check.name}${r.ok ? "" : logHint(run, r.seq)}`);
       results.push({ name: check.name, ok: r.ok, output: tail(r.output, 3000) });
     }
   }
   writeFileSync(flowFile(run, "verify.json"), JSON.stringify(results, null, 2));
   const failed = results.filter((r) => !r.ok);
-  if (failed.length === 0) return succeed(run, "verify", "review");
-  const report = failed.map((f) => `## ${f.name} 失敗\n\n\`\`\`\n${f.output}\n\`\`\``).join("\n\n");
+  if (failed.length === 0) return undefined;
+  return failed.map((f) => `## ${f.name} 失敗\n\n\`\`\`\n${f.output}\n\`\`\``).join("\n\n");
+}
+
+async function verifyStage(run: FlowRun): Promise<FlowRun> {
+  info(run, "🔍 執行驗證");
+  const report = await runChecks(run);
+  if (!report) return succeed(run, "verify", "review");
   return { ...retry(run, "verify", report, "fix"), fixSource: "verify" };
 }
 
-async function fixStage(run: FlowRun): Promise<FlowRun> {
+/** 修正驗證錯誤或審查意見；成功時回傳實際修正者，未通過時回傳重試後的 run */
+async function applyFix(
+  run: FlowRun,
+  opts: { seed: string; label: string; step: string; commitScope: string; key: string; backTo: Stage },
+): Promise<{ run: FlowRun } | { agent: string }> {
   const cfg = loadRepoConfig();
   const source = run.fixSource ?? "verify";
   const agent = fixAgent(run.cycle, {
@@ -603,83 +667,127 @@ async function fixStage(run: FlowRun): Promise<FlowRun> {
     strategy: cfg.fixStrategy,
     lastWriter: run.lastWriter,
     lastReviewer: run.lastReviewer,
-    seed: `${run.id}:fix:${run.attempts.review ?? 0}`,
+    seed: opts.seed,
   });
   const why = source === "review" ? `依 ${run.lastReviewer ?? "reviewer"} 的審查意見` : "修正驗證錯誤";
-  info(run, `🩹 ${why}（${agent}）`);
+  info(run, `🩹 ${opts.label}${why}（${agent}）`);
   const repo = worktreeDir(run.id);
   const feedback = readFeedback(run);
   const before = await headCommit(repo);
   const snap = snapshotPlan(run, LOCKED_FILES);
-  const outcome = await agentStep(run, agent, "fix", renderPrompt("fix", { testPattern: cfg.testPattern }), {
+  const outcome = await agentStep(run, agent, opts.step, renderPrompt("fix", { testPattern: cfg.testPattern }), {
     kind: "write",
     reset: async () => { await resetTo(repo, before); restorePlan(run, snap); },
   });
   const { r, agent: actual } = outcome;
   const tampered = restorePlan(run, snap);
-  if (!r.ok) return retry(run, "fix", `${feedback}\n\n（上次修正時 Agent 執行失敗：${r.summary}）`, "fix");
+  const again = (reason: string) => ({ run: retry(run, opts.key, reason, opts.backTo) });
+  if (!r.ok) return again(`${feedback}\n\n（上次修正時 Agent 執行失敗：${r.summary}）`);
   if (tampered.length) {
     await resetTo(repo, before);
-    return retry(run, "fix", `${feedback}\n\n另外：${planTamperedMessage(tampered)}`, "fix");
+    return again(`${feedback}\n\n另外：${planTamperedMessage(tampered)}`);
   }
-  await commitAll(repo, `fix: ${why} [${actual}]`);
+  await commitAll(repo, `${opts.commitScope}: ${why} [${actual}]`);
   const testRe = new RegExp(cfg.testPattern);
   const deleted = (await changedFiles(repo, before, await headCommit(repo), "D")).filter((f) => testRe.test(f));
   if (deleted.length) {
     await resetTo(repo, before);
-    return retry(run, "fix", `${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`, "fix");
+    return again(`${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`);
   }
   const handoffError = finishHandoff(run, outcome, "writer");
   if (handoffError) {
     await resetTo(repo, before);
-    return retry(run, "fix", handoffError, "fix");
+    return again(handoffError);
   }
-  // 修正者成為新的作者，下一輪審查會換成別人
-  return { ...to(run, "verify"), lastWriter: actual };
+  return { agent: actual };
 }
 
-async function reviewStage(run: FlowRun): Promise<FlowRun> {
+async function fixStage(run: FlowRun): Promise<FlowRun> {
+  const result = await applyFix(run, {
+    seed: `${run.id}:fix:${run.attempts.review ?? 0}`,
+    label: "",
+    step: "fix",
+    commitScope: "fix",
+    key: "fix",
+    backTo: "fix",
+  });
+  if ("run" in result) return result.run;
+  // 修正者成為新的作者，下一輪審查會換成別人
+  return { ...to(run, "verify"), lastWriter: result.agent };
+}
+
+/**
+ * 由作者以外的審查小組審查 base 之後的變更；回傳第一位要求修改的審查者與所有意見，
+ * 審查本身未完成（執行失敗、格式錯誤、交接不合格）時回傳重試後的 run。
+ * gate 為 true 時，核准前必須結清所有程式碼類的未結交接事項。
+ */
+async function codeReview(
+  run: FlowRun,
+  opts: {
+    base: string; seed: string; label: string; step: string;
+    prompt: (reviewer: string, authors: string) => string;
+    saveAs: (reviewer: string) => string;
+    gate: boolean; runKey: string; backTo: Stage;
+  },
+): Promise<{ run: FlowRun } | { objector?: string; issues: string[] }> {
   const cfg = loadRepoConfig();
   const repo = worktreeDir(run.id);
-  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, `${run.id}:review:${run.attempts.review ?? 0}`);
-  writeFileSync(flowFile(run, "diff.patch"), await git(repo, "diff", `${run.baseBranch}...HEAD`));
-  const authors = [...new Set((await git(repo, "log", "--format=%s", `${run.baseBranch}..HEAD`)).match(/\[[^\]]+\]$/gm) ?? [])]
+  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, opts.seed);
+  writeFileSync(flowFile(run, "diff.patch"), await git(repo, "diff", `${opts.base}...HEAD`));
+  const authors = [...new Set((await git(repo, "log", "--format=%s", `${opts.base}..HEAD`)).match(/\[[^\]]+\]$/gm) ?? [])]
     .map((s) => s.slice(1, -1));
 
   const issues: string[] = [];
-  let firstObjector: string | undefined;
+  let objector: string | undefined;
   for (const [slot, reviewer] of panel.entries()) {
-    info(run, `👀 程式碼審查（${reviewer}）`);
+    info(run, `👀 ${opts.label}（${reviewer}）`);
     rmSync(flowFile(run, "review.json"), { force: true });
     const snap = snapshotPlan(run, LOCKED_FILES);
-    const outcome = await agentStep(run, reviewer, "review", renderPrompt("review", { reviewer, authors: authors.join("、") || "未知" }), {
+    const outcome = await agentStep(run, reviewer, opts.step, opts.prompt(reviewer, authors.join("、") || "未知"), {
       kind: "review", slot, reset: async () => { await discardChanges(repo); restorePlan(run, snap); },
     });
     const { r } = outcome;
     await discardChanges(repo); // 審查者不可改程式碼
     const tampered = restorePlan(run, snap); // .flow/ 不受 git 管理，要另外還原
     if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
-    if (!r.ok) return retry(run, "review-run", `Agent 執行失敗：${r.summary}`, "review");
+    if (!r.ok) return { run: retry(run, opts.runKey, `Agent 執行失敗：${r.summary}`, opts.backTo) };
     const review = readJsonFile(flowFile(run, "review.json"), ConsistentReviewResult);
-    if (!review.ok) return retry(run, "review-run", review.error, "review");
-    const handoffError = finishHandoff(run, outcome, "reviewer", { target: "code", verdict: review.data.verdict });
-    if (handoffError) return retry(run, "review-run", handoffError, "review");
-    renameSync(flowFile(run, "review.json"), flowFile(run, `review-${reviewer}.json`));
+    if (!review.ok) return { run: retry(run, opts.runKey, review.error, opts.backTo) };
+    const gate = opts.gate ? { target: "code" as const, verdict: review.data.verdict } : undefined;
+    const handoffError = finishHandoff(run, outcome, "reviewer", gate);
+    if (handoffError) return { run: retry(run, opts.runKey, handoffError, opts.backTo) };
+    renameSync(flowFile(run, "review.json"), flowFile(run, opts.saveAs(reviewer)));
     if (review.data.verdict === "approve") {
       info(run, `   ✓ ${reviewer} 核准`);
       continue;
     }
     info(run, `   ✗ ${reviewer} 要求修改`);
-    firstObjector ??= reviewer;
+    objector ??= reviewer;
     issues.push(opinion(reviewer, review.data.items
       .filter((i) => i.status !== "met")
       .map((i) => reviewIssue(i.criterion, i.status, i.note))));
   }
-  if (!firstObjector) return succeed(run, "review", "pr");
+  return { objector, issues };
+}
+
+async function reviewStage(run: FlowRun): Promise<FlowRun> {
+  const result = await codeReview(run, {
+    base: run.baseBranch,
+    seed: `${run.id}:review:${run.attempts.review ?? 0}`,
+    label: "程式碼審查",
+    step: "review",
+    prompt: (reviewer, authors) => renderPrompt("review", { reviewer, authors }),
+    saveAs: (reviewer) => `review-${reviewer}.json`,
+    gate: true,
+    runKey: "review-run",
+    backTo: "review",
+  });
+  if ("run" in result) return result.run;
+  if (!result.objector) return succeed(run, "review", "pr");
   return {
-    ...retry(run, "review", `程式碼審查要求修改：\n\n${issues.join("\n\n")}`, "fix"),
+    ...retry(run, "review", `程式碼審查要求修改：\n\n${result.issues.join("\n\n")}`, "fix"),
     fixSource: "review",
-    lastReviewer: firstObjector,
+    lastReviewer: result.objector,
   };
 }
 
