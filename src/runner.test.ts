@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { exec } from "./proc.js";
 import { formatToolLine, isQuotaError, parseResultMeta, resolveAgent } from "./runner.js";
 import { RepoConfig } from "./schemas.js";
 
@@ -50,15 +49,6 @@ describe("額度錯誤偵測", () => {
   });
 });
 
-describe("移除環境變數", () => {
-  it("unsetEnv 會讓子程序看不到指定的變數", async () => {
-    process.env.ANTHROPIC_API_KEY = "sk-should-not-leak";
-    const r = await exec("node", ["-e", "console.log(process.env.ANTHROPIC_API_KEY ?? 'none')"], { unsetEnv: ["ANTHROPIC_API_KEY"] });
-    expect(r.stdout.trim()).toBe("none");
-    delete process.env.ANTHROPIC_API_KEY;
-  });
-});
-
 describe("工具事件的畫面輸出", () => {
   it("完整顯示指令，不截斷", () => {
     const cmd = `pnpm vitest run ${"z".repeat(200)}`;
@@ -76,8 +66,8 @@ describe("工具事件的畫面輸出", () => {
 });
 
 describe("resolveAgent", () => {
-  it("內建 agent 不用設定就能用，移除後就不能用", () => {
-    expect(resolveAgent(RepoConfig.parse({}), "gemini").adapter).toBe("gemini");
-    expect(() => resolveAgent(RepoConfig.parse({ removedAgents: ["gemini"] }), "gemini")).toThrow(/已從設定移除/);
+  it("沒有內建 agent，只認 agents 裡定義的", () => {
+    expect(() => resolveAgent(RepoConfig.parse({}), "gemini")).toThrow(/未定義/);
+    expect(resolveAgent(RepoConfig.parse({ agents: { g: { adapter: "gemini" } } }), "g").adapter).toBe("gemini");
   });
 });

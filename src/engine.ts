@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { config } from "./config.js";
+import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { exec } from "./proc.js";
@@ -119,10 +121,13 @@ function succeed(run: FlowRun, key: string, next: Stage): FlowRun {
 }
 
 /** 設定檔放在主專案根目錄，未 commit 的修改也會生效 */
+/** 讀取 flow.config.json；沒寫的 install、test、checks 依專案現況偵測 */
 export function loadRepoConfig(): RepoConfig {
-  const p = join(projectRoot(), "flow.config.json");
-  if (!existsSync(p)) return RepoConfig.parse({});
-  const r = readJsonFile(p, RepoConfig);
+  const root = projectRoot();
+  const detected = detectProjectDefaults(root);
+  const p = join(root, "flow.config.json");
+  if (!existsSync(p)) return RepoConfig.parse(withProjectDefaults({}, detected));
+  const r = readJsonFile(p, z.preprocess((raw) => withProjectDefaults(raw, detected), RepoConfig));
   if (!r.ok) throw new Error(r.error);
   return r.data;
 }

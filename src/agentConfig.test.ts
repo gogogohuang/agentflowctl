@@ -17,9 +17,8 @@ describe("addAgent", () => {
     });
   });
 
-  it("名稱已存在（含內建）或 adapter 不合法時報錯", () => {
+  it("名稱已存在或 adapter 不合法時報錯", () => {
     expect(() => addAgent({ agents: { x: { adapter: "codex" } } }, "x", { adapter: "claude" })).toThrow(/已存在/);
-    expect(() => addAgent({}, "codex", { adapter: "codex" })).toThrow(/已存在/);
     expect(() => addAgent({}, "x", { adapter: "gpt" })).toThrow(/adapter/);
     expect(() => addAgent({}, "a b", { adapter: "claude" })).toThrow(/名稱/);
   });
@@ -28,10 +27,8 @@ describe("addAgent", () => {
     expect(() => addAgent({}, "x", { adapter: "claude", command: ["foo"] })).toThrow(/command/);
   });
 
-  it("加回已移除的內建 agent", () => {
-    const r = addAgent({ removedAgents: ["gemini", "codex"] }, "gemini", { adapter: "gemini" });
-    expect(r.cfg).toEqual({ removedAgents: ["codex"], agents: { gemini: { adapter: "gemini" } } });
-    expect(addAgent({ removedAgents: ["gemini"] }, "gemini", { adapter: "gemini" }).cfg).toEqual({ agents: { gemini: { adapter: "gemini" } } });
+  it("沒有內建 agent：claude、codex、gemini 也要自己新增", () => {
+    expect(addAgent({}, "claude", { adapter: "claude" }).cfg).toEqual({ agents: { claude: { adapter: "claude" } } });
   });
 });
 
@@ -40,10 +37,6 @@ describe("setAgent", () => {
     const cfg = { agents: { x: { adapter: "codex", model: "a", extraArgs: ["--foo"] } } };
     expect(setAgent(cfg, "x", { model: "b" }).cfg.agents).toEqual({ x: { adapter: "codex", model: "b", extraArgs: ["--foo"] } });
     expect(setAgent(cfg, "x", { extraArgs: ["--bar"] }).cfg.agents).toEqual({ x: { adapter: "codex", model: "a", extraArgs: ["--bar"] } });
-  });
-
-  it("修改內建 agent 時新增覆寫設定", () => {
-    expect(setAgent({}, "gemini", { model: "pro" }).cfg.agents).toEqual({ gemini: { adapter: "gemini", model: "pro" } });
   });
 
   it("更換 adapter 時清掉舊 adapter 的欄位，除非這次有重新指定", () => {
@@ -59,8 +52,8 @@ describe("setAgent", () => {
 
   it("未定義的 agent 或沒有要改的欄位時報錯", () => {
     expect(() => setAgent({}, "nope", { model: "x" })).toThrow(/未定義/);
-    expect(() => setAgent({}, "claude", {})).toThrow(/沒有要修改/);
-    expect(() => setAgent({ removedAgents: ["claude"] }, "claude", { model: "x" })).toThrow(/未定義/);
+    expect(() => setAgent({}, "claude", { model: "x" })).toThrow(/未定義/);
+    expect(() => setAgent({ agents: { claude: { adapter: "claude" } } }, "claude", {})).toThrow(/沒有要修改/);
   });
 });
 
@@ -69,20 +62,9 @@ describe("removeAgent", () => {
     expect(removeAgent({ agents: { x: { adapter: "codex" } } }, "x").cfg).toEqual({ agents: {} });
   });
 
-  it("移除內建 agent：連同覆寫設定一起刪，並記在 removedAgents", () => {
-    expect(removeAgent({}, "gemini").cfg).toEqual({ agents: {}, removedAgents: ["gemini"] });
-    expect(removeAgent({ agents: { claude: { adapter: "claude", model: "m" } }, removedAgents: ["codex"] }, "claude").cfg)
-      .toEqual({ agents: {}, removedAgents: ["codex", "claude"] });
-  });
-
-  it("移除內建 agent 也會從輪替順序移除", () => {
-    const r = removeAgent({ cycle: ["claude", "gemini"] }, "gemini");
-    expect(r.cfg).toEqual({ cycle: ["claude"], agents: {}, removedAgents: ["gemini"] });
-  });
-
   it("一併從輪替順序移除", () => {
-    const r = removeAgent({ cycle: ["x", "claude"], agents: { x: { adapter: "codex" } } }, "x");
-    expect(r.cfg).toEqual({ cycle: ["claude"], agents: {} });
+    const r = removeAgent({ cycle: ["x", "claude"], agents: { x: { adapter: "codex" }, claude: { adapter: "claude" } } }, "x");
+    expect(r.cfg).toEqual({ cycle: ["claude"], agents: { claude: { adapter: "claude" } } });
     expect(r.changes.join("\n")).toMatch(/輪替/);
   });
 
@@ -92,23 +74,23 @@ describe("removeAgent", () => {
     expect(r.changes.join("\n")).toMatch(/自動偵測/);
   });
 
-  it("未定義或已移除的 agent 報錯", () => {
+  it("未定義的 agent 報錯", () => {
     expect(() => removeAgent({}, "nope")).toThrow(/未定義/);
-    expect(() => removeAgent({ removedAgents: ["gemini"] }, "gemini")).toThrow(/未定義/);
+    expect(() => removeAgent({}, "gemini")).toThrow(/未定義/);
   });
 });
 
 describe("setCycle", () => {
   it("設定輪替順序", () => {
-    const cfg = { agents: { x: { adapter: "codex" } } };
+    const cfg = { agents: { x: { adapter: "codex" }, claude: { adapter: "claude" } } };
     expect(setCycle(cfg, ["x", "claude"]).cfg.cycle).toEqual(["x", "claude"]);
   });
 
   it("空的、重複或未定義的名稱都報錯", () => {
     expect(() => setCycle({}, [])).toThrow(/至少/);
     expect(() => setCycle({}, ["claude", "claude"])).toThrow(/重複/);
-    expect(() => setCycle({}, ["claude", "nope"])).toThrow(/未定義/);
-    expect(() => setCycle({ removedAgents: ["gemini"] }, ["claude", "gemini"])).toThrow(/未定義/);
+    expect(() => setCycle({ agents: { claude: { adapter: "claude" } } }, ["claude", "nope"])).toThrow(/未定義/);
+    expect(() => setCycle({}, ["claude", "gemini"])).toThrow(/未定義/);
   });
 });
 

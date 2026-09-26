@@ -1,8 +1,8 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { ADAPTERS, builtinAgents } from "./agents/index.js";
-import { AgentDef, type RepoConfig } from "./schemas.js";
+import { ADAPTERS } from "./agents/index.js";
+import type { AgentDef, RepoConfig } from "./schemas.js";
 import { projectRoot, runDir } from "./paths.js";
 import { exec, execShell } from "./proc.js";
 import { tail } from "./util.js";
@@ -12,16 +12,6 @@ export interface AgentTarget {
   cwd: string;
   logFile: string;
 }
-
-/** 會讓各家 CLI 改走 API 計費的環境變數；只用訂閱登入，執行 agent 時一律移除 */
-export const API_KEY_VARS = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-];
 
 /**
  * 判斷 agent 失敗是否因為方案額度或速率限制。
@@ -88,15 +78,11 @@ export function formatToolLine(agent: string, tool: { name: string; detail?: str
   return detail ? `${head}: ${detail.split("\n").join("\n       ")}` : head;
 }
 
-/** 內建的 claude、codex、gemini 定義，可在 flow.config.json 覆寫或新增其他 agent */
+/** 取出 flow.config.json 裡定義的 agent；沒有內建 agent */
 export function resolveAgent(cfg: RepoConfig, name: string): AgentDef {
-  const custom = cfg.agents[name];
-  if (custom) return custom;
-  if (builtinAgents(cfg.removedAgents).includes(name)) {
-    return AgentDef.parse({ adapter: name });
-  }
-  if (cfg.removedAgents.includes(name)) throw new Error(`${name} 已從設定移除（removedAgents），要使用請先 agent add ${name} --adapter ${name}`);
-  throw new Error(`未定義的 agent：${name}（請在 flow.config.json 的 agents 裡設定）`);
+  const def = cfg.agents[name];
+  if (!def) throw new Error(`未定義的 agent：${name}（請先用 agent add ${name} --adapter <adapter> 新增）`);
+  return def;
 }
 
 /** 確認某個 agent 的 CLI 是否可以執行 */
@@ -135,7 +121,6 @@ export async function runAgent(
   const r = await exec(inv.cmd, inv.args, {
     cwd: t.cwd,
     env: inv.env,
-    unsetEnv: API_KEY_VARS,
     input: inv.input,
     onStdoutLine: (line) => {
       if (!line.trim()) return;
