@@ -22,10 +22,9 @@
 </requirement>
 
 <steps>
-1. 閱讀 .flow/feedback.md，裡面是其他模型的審查意見。
-2. 閱讀目前的 .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json 與相關程式碼。
-3. 逐條處理審查意見，直接修改上述四個檔案。
-4. 在 .flow/plan.md 最後的「## 審查回應」一節，逐條說明每個意見怎麼處理；不同意的意見，請寫出具體理由，而不是忽略它。回應時只談內容，不要提到審查者或你自己是哪個模型、哪家公司，之後可能由第三方匿名仲裁。
+1. 先閱讀 .flow/feedback.md，依每則意見定位 .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json 中相關的段落或項目；技術細節需要確認時才讀相關程式碼。
+2. 逐條處理審查意見，只修改需要修訂的檔案。新增或調整驗收條件、任務時，檢查受影響的條件與任務對應。
+3. 在 .flow/plan.md 最後的「## 審查回應」一節，逐條說明每個意見怎麼處理；不同意的意見，請寫出具體理由，而不是忽略它。回應時只談內容，不要提到審查者或你自己是哪個模型、哪家公司，之後可能由第三方匿名仲裁。
 </steps>
 
 <output_format>
