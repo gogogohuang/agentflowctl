@@ -103,6 +103,7 @@ agentflowctl logs f-xxxx --latest
 agentflowctl resume f-xxxx         # 從暫停、Ctrl-C 或失敗處接續
 agentflowctl cancel f-xxxx
 agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保留
+agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留下的 worktree
 ```
 
 | 選項 | 作用 |
@@ -114,6 +115,15 @@ agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保�
 | `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
 
 `status` 會列出任務。進行中的任務會標出正在寫測試還是正在寫實作。
+
+### 清除 worktree
+
+`run` 建好 worktree 就會寫入 run 紀錄，所以不論在哪一步中斷（包括安裝相依套件時），都能用 `resume` 接續，或用 `clean` 清掉。
+
+- `clean <id>`：移除該 run 的 worktree 與 `.agentflowctl/runs/<id>/`，並清掉 git 裡已失效的 worktree 登記。沒有 run 紀錄的 worktree 也能清，worktree 資料夾被手動刪掉時也一樣。
+- `clean --all`：清掉所有 `done`、`failed` 的 run，以及沒有 run 紀錄的 worktree。進行中、`paused`、`awaiting_approval` 的不動；Ctrl-C 中斷、之後不打算接續的 run，先 `cancel` 再 `clean --all`，或直接 `clean <id>`。
+
+兩者都保留 `flow/<id>` 分支，不需要時用 `git branch -D` 刪除。
 
 ### 執行中的終端機輸出
 
@@ -296,6 +306,7 @@ src/
   agents/           claude、codex、gemini、command
   setup.ts          agent setup 互動精靈
   git.ts            worktree 與 git 操作
+  cleanup.ts        clean：移除 worktree 與 run 紀錄
   store.ts          狀態、用量、代打紀錄
   tasks.ts          任務 DAG
   schemas.ts        zod schema

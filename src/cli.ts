@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { config } from "./config.js";
 import { advance, loadRepoConfig } from "./engine.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
-import { addWorktree, git, removeWorktree } from "./git.js";
-import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { addWorktree, git } from "./git.js";
+import { cleanableRuns, cleanRun } from "./cleanup.js";
+import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
 import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
 import { readJsonFile } from "./util.js";
@@ -97,11 +98,9 @@ program
     console.log(`[${id}] 🌿 從 ${base} 建立 worktree（分支 ${branch}）`);
     await addWorktree(root, worktreeDir(id), base, branch);
     console.log(`[${id}] 🤝 agent 輪替順序：${cycle.join(" → ")}`);
-    // 先裝好相依套件：有些 agent 的沙箱不能連網，無法自己安裝
     const cfg = loadRepoConfig();
-    const install = await runCommand({ runId: id, cwd: worktreeDir(id), logFile: join(logDir(id), "install.log") }, cfg.install);
-    if (!install.ok) console.log(`[${id}] ⚠️  安裝相依套件失敗，稍後 verify 階段會再試一次（見 ${join(logDir(id), "install.log")}）`);
     const now = new Date().toISOString();
+    // worktree 一建好就寫入紀錄：之後在任何地方中斷，都能用 resume 接續或用 clean 清掉
     const run = saveRun({
       id,
       baseBranch: base,
@@ -117,6 +116,9 @@ program
       createdAt: now,
       updatedAt: now,
     });
+    // 先裝好相依套件：有些 agent 的沙箱不能連網，無法自己安裝
+    const install = await runCommand({ runId: id, cwd: worktreeDir(id), logFile: join(logDir(id), "install.log") }, cfg.install);
+    if (!install.ok) console.log(`[${id}] ⚠️  安裝相依套件失敗，稍後 verify 階段會再試一次（見 ${join(logDir(id), "install.log")}）`);
     await drive(run);
   });
 
@@ -155,13 +157,27 @@ program
   });
 
 program
-  .command("clean <id>")
-  .description("移除 run 的 worktree 與紀錄（分支會保留）")
-  .action(async (id: string) => {
-    mustGetRun(id);
-    if (existsSync(worktreeDir(id))) await removeWorktree(projectRoot(), worktreeDir(id));
-    rmSync(runDir(id), { recursive: true, force: true });
-    console.log(`已清除 ${id}，分支仍保留，不需要時可用 git branch -D 刪除`);
+  .command("clean [id]")
+  .description("移除 run 的 worktree 與紀錄（分支會保留）；--all 清掉所有已結束的 run 與中斷留下的孤兒 worktree")
+  .option("--all", "清除所有 done、failed 的 run，以及沒有紀錄的 worktree；進行中、暫停、等待核准的不動", false)
+  .action(async (id: string | undefined, opts: { all: boolean }) => {
+    if (opts.all === Boolean(id)) throw new Error("請指定 run id，或使用 --all（兩者擇一）");
+    if (id) {
+      if (!(await cleanRun(id))) throw new Error(`找不到 run：${id}`);
+      console.log(`已清除 ${id}，分支仍保留，不需要時可用 git branch -D 刪除`);
+      return;
+    }
+    const targets = cleanableRuns();
+    if (!targets.length) {
+      await git(projectRoot(), "worktree", "prune");
+      console.log("沒有可清除的 run");
+      return;
+    }
+    for (const t of targets) {
+      await cleanRun(t.id);
+      console.log(`已清除 ${t.id}（${t.stage ?? "沒有紀錄，可能是建立時中斷"}）`);
+    }
+    console.log(`\n共清除 ${targets.length} 個，分支仍保留，不需要時可用 git branch -D 刪除`);
   });
 
 program
