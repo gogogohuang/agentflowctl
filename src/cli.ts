@@ -371,7 +371,7 @@ program
   .command("logs <id> [seq]")
   .description("列出 log；指定編號（或 --latest）時顯示解析後的內容，最後附上錯誤整理")
   .option("--latest", "顯示最新一份 log", false)
-  .option("--full", "完整顯示工具內容（多行指令、絕對路徑）與重複的最後回覆", false)
+  .option("--full", "逐條顯示 shell 指令，完整顯示工具內容（多行指令、絕對路徑）與重複的最後回覆", false)
   .option("--raw", "顯示原始內容（agent 的 JSON 行）", false)
   .action((id: string, seq: string | undefined, opts: { latest: boolean; full: boolean; raw: boolean }) => {
     mustGetRun(id);
