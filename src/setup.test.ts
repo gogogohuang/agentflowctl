@@ -15,8 +15,8 @@ function scripted(answers: string[]) {
 const all: Detected = { claude: true, codex: true, gemini: true };
 
 describe("runSetup", () => {
-  it("全部按 Enter：加入已安裝的、略過沒安裝的，輪替依加入順序", async () => {
-    // claude: 加入、名稱、model；codex: 加入、名稱、model；gemini 沒安裝預設不加入；輪替；確認
+  it("全部按 Enter：加入已安裝的、略過沒安裝的，參與的 agent 依加入順序", async () => {
+    // claude: 加入、名稱、model；codex: 加入、名稱、model；gemini 沒安裝預設不加入；參與的 agent；確認
     const s = scripted(["", "", "", "", "", "", "", "", ""]);
     const edit = await runSetup({}, { ...s, detected: { claude: true, codex: true, gemini: false } });
     expect(edit?.cfg).toEqual({
@@ -25,7 +25,7 @@ describe("runSetup", () => {
     });
   });
 
-  it("可自訂名稱、model 與輪替順序，保留其他設定", async () => {
+  it("可自訂名稱、model 與參與的 agent，保留其他設定", async () => {
     const s = scripted(["y", "claude-strong", "opus", "n", "y", "", "", "gemini,claude-strong", "y"]);
     const edit = await runSetup({ tddSplit: false }, { ...s, detected: all });
     expect(edit?.cfg).toEqual({
@@ -42,7 +42,7 @@ describe("runSetup", () => {
     expect(s.asked.filter((q) => q.includes("名稱")).length).toBe(4);
   });
 
-  it("已存在的 agent 可以略過（仍放進輪替）或覆寫", async () => {
+  it("已存在的 agent 可以略過（仍會參與）或覆寫", async () => {
     const cfg = { agents: { claude: { adapter: "claude", model: "old" }, codex: { adapter: "codex", model: "o3" } } };
     // claude 已存在 → 不覆寫；codex 已存在 → 覆寫並改 model；gemini 不加入
     const s = scripted(["y", "", "n", "y", "", "y", "gpt-5", "n", "", "y"]);
@@ -53,7 +53,7 @@ describe("runSetup", () => {
     });
   });
 
-  it("輪替順序不合法時重問", async () => {
+  it("參與的 agent 不合法時重問", async () => {
     const s = scripted(["y", "", "", "n", "n", "claude,nobody", "claude,claude", "claude", "y"]);
     const edit = await runSetup({}, { ...s, detected: all });
     expect(edit?.cfg.cycle).toEqual(["claude"]);

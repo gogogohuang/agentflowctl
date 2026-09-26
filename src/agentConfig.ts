@@ -75,19 +75,19 @@ export function removeAgent(cfg: RawConfig, name: string): Edit {
     const rest = cycle.filter((n) => n !== name);
     if (rest.length) {
       next.cycle = rest;
-      changes.push(`已從輪替順序移除，現在是 ${rest.join(" → ")}`);
+      changes.push(`已從參與的 agent 移除，現在是 ${rest.join("、")}`);
     } else {
       delete next.cycle;
-      changes.push("輪替順序因此變空，已刪除 cycle，改回從 agents 自動偵測已安裝的 CLI");
+      changes.push("參與的 agent 因此變空，已刪除 cycle，改回從 agents 自動偵測已安裝的 CLI");
     }
   }
   return { cfg: next, changes };
 }
 
 export function setCycle(cfg: RawConfig, names: string[]): Edit {
-  if (!names.length) throw new Error("輪替順序至少要有一個 agent");
+  if (!names.length) throw new Error("參與的 agent 至少要有一個");
   const dup = names.find((n, i) => names.indexOf(n) !== i);
-  if (dup) throw new Error(`輪替順序裡 ${dup} 重複了`);
+  if (dup) throw new Error(`參與的 agent 裡 ${dup} 重複了`);
   const missing = names.filter((n) => !isDefined(cfg, n));
   if (missing.length) throw new Error(`未定義的 agent：${missing.join("、")}（先用 agent add 新增）`);
   return { cfg: { ...cfg, cycle: names }, changes: [] };

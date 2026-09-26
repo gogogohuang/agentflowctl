@@ -59,7 +59,7 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
   }
 
   for (;;) {
-    const list = (await ask("輪替順序，用逗號分隔", chosen.join(","))).split(",").map((s) => s.trim()).filter(Boolean);
+    const list = (await ask("參與的 agent，用逗號分隔", chosen.join(","))).split(",").map((s) => s.trim()).filter(Boolean);
     try {
       cfg = setCycle(cfg, list).cfg;
       break;
@@ -71,7 +71,7 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
   const agents = cfg.agents as Record<string, { adapter: string; model?: string }>;
   log("\n即將寫入：");
   for (const name of chosen) log(`  ${name.padEnd(14)} adapter=${agents[name]!.adapter}${agents[name]!.model ? ` model=${agents[name]!.model}` : ""}`);
-  log(`  輪替順序：${(cfg.cycle as string[]).join(" → ")}`);
+  log(`  參與的 agent：${(cfg.cycle as string[]).join("、")}`);
   log("  需要自訂指令的 CLI 請改用 agent add <name> --adapter command -- <指令>");
   if (!(await confirm("寫入 flow.config.json？", true))) {
     log("已取消，設定沒有變更");

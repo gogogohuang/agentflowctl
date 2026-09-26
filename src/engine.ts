@@ -70,7 +70,7 @@ async function agentStep(
       if (mode.kind === "review") {
         throw new QuotaPause(`${agent} 的額度已用完；${step} 是審查步驟，不由另一家代打`);
       }
-      const sub = availableAgent(run.cycle, agent, [...exhausted]);
+      const sub = availableAgent(run.cycle, agent, [...exhausted], `${run.id}:${step}:sub`);
       if (!sub) throw new QuotaPause(`所有 agent 的額度都已用完（${[...exhausted].join("、")}）`);
       const note = step.endsWith("-code") && sub === run.lastTestsAuthor ? "測試與實作由同一家負責" : undefined;
       addSubstitution(run.id, { step, planned, actual: sub, note });
@@ -143,7 +143,7 @@ function loadOrderedTasks(run: FlowRun): TaskItem[] {
 // ───────────────────────── 各階段 ─────────────────────────
 
 async function specStage(run: FlowRun): Promise<FlowRun> {
-  const agent = specAgent(run.cycle);
+  const agent = specAgent(run.cycle, run.id);
   info(run, `📝 產生規格（${agent}）`);
   const { r } = await agentStep(run, agent, "spec", renderPrompt("spec", { requirement: run.requirement }), { kind: "write" });
   await discardChanges(worktreeDir(run.id)); // 這個階段只允許寫 .flow/
@@ -200,7 +200,7 @@ function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
   const cfg = loadRepoConfig();
   info(run, `📋 共 ${ordered.length} 個任務：${ordered.map((t) => t.id).join(" → ")}`);
   ordered.forEach((t, i) => {
-    const a = taskAgents(run.cycle, i, cfg.tddSplit);
+    const a = taskAgents(run.cycle, i, cfg.tddSplit, run.id);
     info(run, `   ${t.id} 測試：${a.tests}　實作：${a.code}`);
   });
 }
@@ -217,7 +217,7 @@ function planSettled(run: FlowRun, key: string): FlowRun {
 }
 
 async function planStage(run: FlowRun): Promise<FlowRun> {
-  const agent = planAgent(run.cycle);
+  const agent = planAgent(run.cycle, run.id);
   info(run, `🗺️  拆解任務（${agent}）`);
   const cfg = loadRepoConfig();
   const { r, agent: actual } = await agentStep(run, agent, "plan", renderPrompt("plan", { testPattern: cfg.testPattern }), { kind: "write" });
@@ -232,9 +232,9 @@ async function planStage(run: FlowRun): Promise<FlowRun> {
 
 async function planReviewStage(run: FlowRun): Promise<FlowRun> {
   const cfg = loadRepoConfig();
-  const author = run.planWriter ?? planAgent(run.cycle);
-  const panel = reviewers(run.cycle, author, cfg.planReviewQuorum);
+  const author = run.planWriter ?? planAgent(run.cycle, run.id);
   const round = (run.attempts["plan-review"] ?? 0) + 1;
+  const panel = reviewers(run.cycle, author, cfg.planReviewQuorum, `${run.id}:plan-review:${round}`);
 
   const issues: string[] = [];
   const issueLines: string[] = []; // 只含意見內容、不含審查者名稱，用來偵測僵持
@@ -293,7 +293,12 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
 
 async function planFixStage(run: FlowRun): Promise<FlowRun> {
   const cfg = loadRepoConfig();
-  const agent = planFixAgent(run.cycle, { strategy: cfg.fixStrategy, planWriter: run.planWriter, planReviewer: run.planReviewer });
+  const agent = planFixAgent(run.cycle, {
+    strategy: cfg.fixStrategy,
+    planWriter: run.planWriter,
+    planReviewer: run.planReviewer,
+    seed: `${run.id}:plan-fix:${run.attempts["plan-review"] ?? 0}`,
+  });
   info(run, `✏️  依 ${run.planReviewer ?? "審查者"} 的意見修改計畫（${agent}）`);
   const feedback = readFeedback(run);
   const snap = snapshotPlan(run);
@@ -325,7 +330,7 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
  */
 async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
   const cfg = loadRepoConfig();
-  const panel = arbiterPanel(run.cycle, run.planWriter, run.planReviewer);
+  const panel = arbiterPanel(run.cycle, `${run.id}:arbiter`, run.planWriter, run.planReviewer);
   const mode = panel.length > 1 ? "雙盲交叉仲裁" : "第三方仲裁";
   const verdicts: { arbiter: string; verdict: "approve" | "changes_requested" | "abstain"; notes: string[] }[] = [];
 
@@ -385,7 +390,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const testCmd = `${cfg.install} && ${cfg.test}`;
   const progress = `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
   const taskJson = JSON.stringify(task, null, 2);
-  const agents = taskAgents(run.cycle, run.taskIndex, cfg.tddSplit);
+  const agents = taskAgents(run.cycle, run.taskIndex, cfg.tddSplit, run.id);
 
   // ── 紅燈：只寫測試，而且測試必須失敗 ──
   if (run.taskPhase === "tests") {
@@ -477,7 +482,13 @@ async function verifyStage(run: FlowRun): Promise<FlowRun> {
 async function fixStage(run: FlowRun): Promise<FlowRun> {
   const cfg = loadRepoConfig();
   const source = run.fixSource ?? "verify";
-  const agent = fixAgent(run.cycle, { source, strategy: cfg.fixStrategy, lastWriter: run.lastWriter, lastReviewer: run.lastReviewer });
+  const agent = fixAgent(run.cycle, {
+    source,
+    strategy: cfg.fixStrategy,
+    lastWriter: run.lastWriter,
+    lastReviewer: run.lastReviewer,
+    seed: `${run.id}:fix:${run.attempts.review ?? 0}`,
+  });
   const why = source === "review" ? `依 ${run.lastReviewer ?? "reviewer"} 的審查意見` : "修正驗證錯誤";
   info(run, `🩹 ${why}（${agent}）`);
   const repo = worktreeDir(run.id);
@@ -502,7 +513,7 @@ async function fixStage(run: FlowRun): Promise<FlowRun> {
 async function reviewStage(run: FlowRun): Promise<FlowRun> {
   const cfg = loadRepoConfig();
   const repo = worktreeDir(run.id);
-  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum);
+  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, `${run.id}:review:${run.attempts.review ?? 0}`);
   writeFileSync(flowFile(run, "diff.patch"), await git(repo, "diff", `${run.baseBranch}...HEAD`));
   const authors = [...new Set((await git(repo, "log", "--format=%s", `${run.baseBranch}..HEAD`)).match(/\[[^\]]+\]$/gm) ?? [])]
     .map((s) => s.slice(1, -1));
