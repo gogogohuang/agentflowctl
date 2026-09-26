@@ -8,7 +8,7 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-handoff-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
 const { flowDir, handoffPath } = await import("./paths.js");
-const { readHandoff, previewHandoff, mergeHandoff, openActions, prepareHandoff, validateHandoffResponse, acceptHandoff, recoverHandoff } = await import("./handoff.js");
+const { readHandoff, previewHandoff, mergeHandoff, openActions, prepareHandoff, validateHandoffResponse, acceptHandoff, recoverHandoff, reviewHandoffGate } = await import("./handoff.js");
 
 const source = { stage: "implement" as const, step: "T-1-code", agent: "codex", callKey: "f-a:implement:T-1:code:0:codex" };
 const issue = { kind: "action" as const, summary: "測試未涵蓋逾時", evidence: "src/api.test.ts:20", targetStage: "code" as const };
@@ -81,6 +81,15 @@ describe("交接紀錄", () => {
     expect(blind).toContain("測試未涵蓋逾時");
   });
 
+  it("參考資訊會交給目標階段，但不會阻擋審查核准", () => {
+    mergeHandoff("f-info", source.callKey, source, {
+      newIssues: [{ kind: "info", summary: "沿用既有重試策略", evidence: "src/retry.ts:1", targetStage: "code" }], dispositions: [],
+    }, "writer");
+    prepareHandoff("f-info", "next", "code", false);
+    expect(readFileSync(join(flowDir("f-info"), "handoff-context.md"), "utf8")).toContain("沿用既有重試策略");
+    expect(reviewHandoffGate(readHandoff("f-info"), "code", "approve")).toBeUndefined();
+  });
+
   it("缺失或無效的回覆不視為空清單", () => {
     prepareHandoff("f-g", "step", "code", false);
     expect(validateHandoffResponse("f-g").ok).toBe(false);
@@ -101,5 +110,17 @@ describe("交接紀錄", () => {
     expect(readHandoff("f-h").issues).toHaveLength(1);
     prepareHandoff("f-h", "next", "code", false);
     expect(existsSync(path)).toBe(false);
+  });
+
+  it("審查核准時仍有未結事項會拒絕，正式結案後才放行", () => {
+    const created = mergeHandoff("f-i", source.callKey, source, { newIssues: [issue], dispositions: [] }, "writer");
+    expect(reviewHandoffGate(created, "code", "approve")).toMatch(/未結/);
+    expect(reviewHandoffGate(created, "code", "changes_requested")).toBeUndefined();
+    const id = created.issues[0]!.id;
+    const reviewer = { stage: "review" as const, step: "review", agent: "claude", callKey: "f-i:review" };
+    const settled = previewHandoff(created, reviewer.callKey, reviewer, {
+      newIssues: [], dispositions: [{ id, status: "resolved", reason: "測試已補齊", evidence: "src/api.test.ts:25" }],
+    }, "reviewer");
+    expect(reviewHandoffGate(settled, "code", "approve")).toBeUndefined();
   });
 });

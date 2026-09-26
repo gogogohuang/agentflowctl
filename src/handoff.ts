@@ -31,6 +31,12 @@ export function openActions(ledger: HandoffLedger, target?: "plan" | "code"): Ha
     && (!target || item.targetStage === target));
 }
 
+export function reviewHandoffGate(ledger: HandoffLedger, target: "plan" | "code", verdict: "approve" | "changes_requested"): string | undefined {
+  if (verdict !== "approve") return undefined;
+  const pending = openActions(ledger, target);
+  return pending.length ? `審查核准與未結交接事項矛盾：${pending.map((item) => item.id).join("、")}` : undefined;
+}
+
 export function previewHandoff(
   ledger: HandoffLedger,
   callKey: string,
@@ -77,7 +83,9 @@ export function mergeHandoff(
 
 /** 只把目前步驟需要處理的事項投影給 agent。 */
 export function prepareHandoff(id: string, _callKey: string, target: "plan" | "code", blind: boolean): void {
-  const items = openActions(readHandoff(id), target);
+  const items = readHandoff(id).issues.filter((item) => item.targetStage === target && (
+    item.kind === "info" || item.status === "open" || item.status === "proposed_resolved"
+  ));
   const lines = items.map((item) => {
     const source = blind ? "" : `\n來源：${item.source.stage}／${item.source.agent}`;
     return `## ${item.id}：${item.summary}\n證據：${item.evidence}\n狀態：${item.status}${source}`;

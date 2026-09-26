@@ -5,7 +5,7 @@ import { config } from "./config.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
-import { acceptHandoff, prepareHandoff, recoverHandoff, validateHandoffResponse } from "./handoff.js";
+import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile } from "./logs.js";
 import { exec } from "./proc.js";
@@ -110,13 +110,22 @@ async function agentStep(
 }
 
 /** 原有關卡已通過後才接受交接；失敗回覆不進入正式紀錄。 */
-function finishHandoff(run: FlowRun, outcome: StepOutcome, role: "writer" | "reviewer"): string | undefined {
+function finishHandoff(
+  run: FlowRun, outcome: StepOutcome, role: "writer" | "reviewer",
+  gate?: { target: "plan" | "code"; verdict: "approve" | "changes_requested" },
+): string | undefined {
   const parsed = validateHandoffResponse(run.id);
   if (!parsed.ok) return parsed.error;
   try {
-    acceptHandoff(run.id, outcome.callKey, {
+    const source = {
       stage: run.stage, step: outcome.step, agent: outcome.agent, callKey: outcome.callKey,
-    }, parsed.data, role);
+    };
+    const preview = previewHandoff(readHandoff(run.id), outcome.callKey, source, parsed.data, role);
+    if (gate) {
+      const error = reviewHandoffGate(preview, gate.target, gate.verdict);
+      if (error) return error;
+    }
+    acceptHandoff(run.id, outcome.callKey, source, parsed.data, role);
     return undefined;
   } catch (error) {
     return (error as Error).message;
@@ -243,6 +252,8 @@ function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
 
 /** 計畫定案後：預設直接開始實作；--manual-plan 時才停下來等人 */
 function planSettled(run: FlowRun, key: string): FlowRun {
+  const pending = openActions(readHandoff(run.id), "plan");
+  if (pending.length) return retry(run, "plan-handoff", `計畫仍有未結交接事項：${pending.map((item) => item.id).join("、")}`, "plan_fix");
   const next = run.autopilot ? "implement" : "awaiting_approval";
   const ordered = loadOrderedTasks(run);
   announceTasks(run, ordered);
@@ -297,7 +308,7 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
     if (!r.ok) return retry(run, "plan-review-run", `Agent 執行失敗：${r.summary}`, "plan_review");
     const review = readJsonFile(flowFile(run, "plan-review.json"), ReviewResult);
     if (!review.ok) return retry(run, "plan-review-run", review.error, "plan_review");
-    const handoffError = finishHandoff(run, outcome, "reviewer");
+    const handoffError = finishHandoff(run, outcome, "reviewer", { target: "plan", verdict: review.data.verdict });
     if (handoffError) return retry(run, "plan-review-run", handoffError, "plan_review");
     // 審查紀錄移到 worktree 外面：之後的仲裁者看不到是哪一家提的意見
     mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
@@ -398,7 +409,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     await discardChanges(worktreeDir(run.id));
     restorePlan(run, snap);
     const result = r.ok ? readJsonFile(flowFile(run, "plan-arbiter.json"), ArbiterResult) : undefined;
-    const handoffError = result?.ok ? finishHandoff(run, outcome, "reviewer") : undefined;
+    const handoffError = result?.ok ? finishHandoff(run, outcome, "reviewer", { target: "plan", verdict: result.data.verdict }) : undefined;
     if (!result?.ok || handoffError) {
       const outputError = !r.ok ? `Agent 執行失敗：${r.summary}` : !result ? "未產生有效裁決" : result.ok ? "未產生有效裁決" : result.error;
       const reason = handoffError ?? outputError;
@@ -616,7 +627,7 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     if (!r.ok) return retry(run, "review-run", `Agent 執行失敗：${r.summary}`, "review");
     const review = readJsonFile(flowFile(run, "review.json"), ReviewResult);
     if (!review.ok) return retry(run, "review-run", review.error, "review");
-    const handoffError = finishHandoff(run, outcome, "reviewer");
+    const handoffError = finishHandoff(run, outcome, "reviewer", { target: "code", verdict: review.data.verdict });
     if (handoffError) return retry(run, "review-run", handoffError, "review");
     renameSync(flowFile(run, "review.json"), flowFile(run, `review-${reviewer}.json`));
     if (review.data.verdict === "approve") {
@@ -642,6 +653,8 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
 }
 
 async function prStage(run: FlowRun): Promise<FlowRun> {
+  const pending = openActions(readHandoff(run.id));
+  if (pending.length) return { ...run, stage: "failed", failedStage: "pr", failureReason: `仍有未結交接事項：${pending.map((item) => item.id).join("、")}` };
   const repo = worktreeDir(run.id);
   const remotes = (await git(repo, "remote")).split("\n").filter(Boolean);
   if (!remotes.includes("origin")) {
