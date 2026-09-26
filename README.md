@@ -142,7 +142,7 @@ agent 每次使用工具，都會印出完整的指令或主要參數，不截�
 
 ## 設定
 
-專案根目錄的 `flow.config.json`。完整範例見 `examples/flow.config.json`。未提供的欄位使用內建預設（安裝指令、測試指令、檢查清單預設對應 Vite + TypeScript + Vitest）。
+專案根目錄的 `flow.config.json`。完整範例見 `examples/flow.config.json`。未提供的欄位使用內建預設；`install`、`test`、`checks` 沒寫時，會依專案現況偵測（見下方「專案指令的偵測」）。
 
 ```json
 {
@@ -168,10 +168,27 @@ agent 每次使用工具，都會印出完整的指令或主要參數，不截�
 | `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
-| `install` / `test` / `checks` | 見 `src/schemas.ts` | verify 階段實際執行的指令 |
+| `install` / `test` / `checks` | 依專案偵測 | 安裝、測試與 verify 階段實際執行的指令 |
 | `agents` | `{}` | 可用的 agent，沒有內建的。每個都要指定 adapter（`claude`、`codex`、`gemini`，或用 `command` 接上其他 CLI） |
 
 verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
+
+### 專案指令的偵測
+
+`install`、`test`、`checks` 沒寫在 `flow.config.json` 時，每次讀設定都會依專案現況推出指令，不寫檔。有寫的欄位一律照你的設定。
+
+- 套件管理器：先看 `package.json` 的 `packageManager`，再看 lockfile（`pnpm-lock.yaml`、`yarn.lock`、`bun.lock`／`bun.lockb`、`package-lock.json`），都沒有就用 npm。
+- `install`：`pnpm install`、`yarn install`、`bun install` 或 `npm install --no-audit --no-fund`。不鎖 lockfile，因為實作時 agent 可能新增依賴。
+- `checks`：typecheck、lint、test、build 四項。`package.json` 有對應的 script（`typecheck`／`type-check`、`lint`、`test`、`build`）就用 `<pm> run <script>`，否則用 `tsc --noEmit`、`eslint .`、`vitest run`、`vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`。
+- `test`：`vitest run`，前綴同上。
+
+`run` 建立 worktree 後會印出這次偵測到的指令：
+
+```
+[f-xxxx] 🔧 依專案偵測指令：pnpm（依 package.json 的 packageManager）
+[f-xxxx]    install：pnpm install
+[f-xxxx]    checks.typecheck：pnpm run type-check
+```
 
 ### 用指令管理 agent
 

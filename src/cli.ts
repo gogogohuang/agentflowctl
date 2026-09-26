@@ -9,6 +9,7 @@ import { advance, loadRepoConfig } from "./engine.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git } from "./git.js";
 import { cleanableRuns, cleanRun } from "./cleanup.js";
+import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
 import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
@@ -116,6 +117,7 @@ program
       createdAt: now,
       updatedAt: now,
     });
+    for (const line of describeDetected(readRawConfig(configPath()), detectProjectDefaults(root))) console.log(`[${id}] ${line}`);
     // 先裝好相依套件：有些 agent 的沙箱不能連網，無法自己安裝
     const install = await runCommand({ runId: id, cwd: worktreeDir(id), logFile: join(logDir(id), "install.log") }, cfg.install);
     if (!install.ok) console.log(`[${id}] ⚠️  安裝相依套件失敗，稍後 verify 階段會再試一次（見 ${join(logDir(id), "install.log")}）`);
