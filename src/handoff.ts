@@ -88,7 +88,8 @@ export function prepareHandoff(id: string, _callKey: string, target: "plan" | "c
   ));
   const lines = items.map((item) => {
     const source = blind ? "" : `\n來源：${item.source.stage}／${item.source.agent}`;
-    return `## ${item.id}：${item.summary}\n證據：${item.evidence}\n狀態：${item.status}${source}`;
+    const resolution = item.resolution ? `\n處理理由：${item.resolution.reason}\n處理證據：${item.resolution.evidence}` : "";
+    return `## ${item.id}：${item.summary}\n證據：${item.evidence}\n狀態：${item.status}${resolution}${source}`;
   });
   mkdirSync(flowDir(id), { recursive: true });
   writeFileSync(join(flowDir(id), "handoff-context.md"), `# 待處理交接事項\n\n${lines.length ? lines.join("\n\n") : "目前沒有待處理事項。"}\n`);

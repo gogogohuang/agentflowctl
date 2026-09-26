@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -90,6 +91,19 @@ describe("交接紀錄", () => {
     expect(reviewHandoffGate(readHandoff("f-info"), "code", "approve")).toBeUndefined();
   });
 
+  it("待審核的修正理由與證據會交給審查者", () => {
+    const created = mergeHandoff("f-proposal", source.callKey, source, { newIssues: [issue], dispositions: [] }, "writer");
+    const id = created.issues[0]!.id;
+    const proposalSource = { ...source, callKey: "f-proposal:fix" };
+    mergeHandoff("f-proposal", proposalSource.callKey, proposalSource, {
+      newIssues: [], dispositions: [{ id, status: "proposed_resolved", reason: "補了逾時斷言", evidence: "commit abc123" }],
+    }, "writer");
+    prepareHandoff("f-proposal", "review", "code", false);
+    const context = readFileSync(join(flowDir("f-proposal"), "handoff-context.md"), "utf8");
+    expect(context).toContain("補了逾時斷言");
+    expect(context).toContain("commit abc123");
+  });
+
   it("缺失或無效的回覆不視為空清單", () => {
     prepareHandoff("f-g", "step", "code", false);
     expect(validateHandoffResponse("f-g").ok).toBe(false);
@@ -110,6 +124,20 @@ describe("交接紀錄", () => {
     expect(readHandoff("f-h").issues).toHaveLength(1);
     prepareHandoff("f-h", "next", "code", false);
     expect(existsSync(path)).toBe(false);
+  });
+
+  it("中斷留下的已驗證收據可恢復，而且重播不重複", () => {
+    const id = "f-receipt";
+    const dir = join(root, ".agentflowctl", "runs", id, "handoff-receipts");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${createHash("sha256").update(source.callKey).digest("hex").slice(0, 16)}.json`);
+    writeFileSync(path, JSON.stringify({ callKey: source.callKey, source, response: { newIssues: [issue], dispositions: [] }, role: "writer" }));
+    recoverHandoff(id);
+    expect(readHandoff(id).issues).toHaveLength(1);
+    expect(existsSync(path)).toBe(false);
+    writeFileSync(path, JSON.stringify({ callKey: source.callKey, source, response: { newIssues: [issue], dispositions: [] }, role: "writer" }));
+    recoverHandoff(id);
+    expect(readHandoff(id).issues).toHaveLength(1);
   });
 
   it("審查核准時仍有未結事項會拒絕，正式結案後才放行", () => {
