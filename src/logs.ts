@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { ADAPTERS } from "./agents/index.js";
 import type { AgentEvent } from "./agents/types.js";
 import { str, tryJson } from "./agents/types.js";
+import { parseResultMeta, type ResultMeta } from "./resultMeta.js";
 
 /**
  * 每次執行 agent 或專案指令都寫成一份 log：
@@ -125,38 +126,77 @@ function findError(ev: Record<string, unknown>): { message: string; fatal: boole
   return hit ? { message: clip(pick(hit)), fatal: false } : undefined;
 }
 
-function renderEvent(ev: AgentEvent): string | undefined {
+/** worktree 絕對路徑改成相對路徑：`<worktree>/x` → `x`，單獨的 `<worktree>` → `.` */
+const relativeToWorktree = (s: string) =>
+  s.replace(/[^\s'"=]*\/\.agentflowctl\/worktrees\/[^/\s'"]+(\/)?/g, (_m, slash?: string) => (slash ? "" : "."));
+
+/** 去掉 codex 這類 CLI 包在指令外面的 `/bin/zsh -lc '...'` */
+function unwrapShell(cmd: string): string {
+  const m = cmd.match(/^\/bin\/(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/);
+  if (!m) return cmd;
+  const [, quote, inner] = m;
+  // 單引號包裝裡的 '"'"' 或 '\'' 是被跳脫的單引號，內容太複雜時保留原樣
+  if (quote === "'" && inner!.includes("'")) return cmd;
+  if (quote === '"' && /(^|[^\\])"/.test(inner!)) return cmd;
+  return inner!;
+}
+
+/** 精簡顯示的工具內容：只留第一行，並註明原本有幾行 */
+function compactDetail(detail: string): string {
+  const lines = relativeToWorktree(unwrapShell(detail.trim())).split("\n");
+  const first = clip(lines[0]!, 200);
+  return lines.length > 1 ? `${first}　…（共 ${lines.length} 行）` : first;
+}
+
+function renderEvent(ev: AgentEvent, full: boolean, lastText?: string): string | undefined {
   switch (ev.kind) {
     case "text":
       return `💬 ${indent(ev.text.trim())}`;
-    case "tool":
-      return `🔧 ${ev.name}${ev.detail ? `: ${indent(ev.detail.trim())}` : ""}`;
+    case "tool": {
+      const detail = ev.detail?.trim();
+      if (!detail) return `🔧 ${ev.name}`;
+      return `🔧 ${ev.name}: ${full ? indent(detail) : compactDetail(detail)}`;
+    }
     case "usage":
       return `📊 用量 input ${ev.inputTokens ?? "?"} / output ${ev.outputTokens ?? "?"} tokens`;
-    case "done":
-      return `🏁 ${ev.ok ? "完成" : "失敗"}${ev.summary ? `：${indent(ev.summary.trim())}` : ""}`;
+    case "done": {
+      const summary = ev.summary?.trim();
+      // 最後一則回覆通常就是 summary，精簡模式不再重印一次
+      const show = summary && (full || summary !== lastText);
+      return `🏁 ${ev.ok ? "完成" : "失敗"}${show ? `：${indent(summary)}` : ""}`;
+    }
   }
 }
 
-/** 把一份 log 轉成人看得懂的版本；最後附上錯誤整理，讓失敗原因一眼可見 */
-export function renderLog(text: string, file = ""): string {
+export interface RenderOptions {
+  /** 顯示完整的工具內容與重複的最後回覆 */
+  full?: boolean;
+}
+
+interface LogAnalysis {
+  header?: LogHeader;
+  footer?: LogFooter;
+  /** 解析後要顯示的內容行 */
+  lines: string[];
+  /** 錯誤整理：結束碼、agent 回報的失敗、錯誤事件 */
+  errors: string[];
+  stderrText?: string;
+  /** agent 最後一則文字；專案指令則是輸出的最後幾行 */
+  lastText?: string;
+  doneSummary?: string;
+}
+
+function analyzeLog(text: string, full: boolean): LogAnalysis {
   const { header, footer, body, stderr } = parseLog(text);
-  const out: string[] = [];
+  const lines: string[] = [];
   const errors: string[] = [];
-  const title = header
-    ? `${header.stage} / ${header.step} / ${header.agent}${header.adapter && header.adapter !== header.agent ? `（adapter ${header.adapter}）` : ""}`
-    : "（沒有檔頭）";
-  out.push(`${logSeq(file) ? `#${logSeq(file)}  ` : ""}${title}`);
-  out.push(
-    `開始 ${localTime(header?.startedAt)}　` +
-      (footer ? `結束 ${localTime(footer.endedAt)}　結束碼 ${footer.code}　${footer.ok ? "✓ 成功" : "✗ 失敗"}` : "… 沒有結束紀錄（還在執行或被中斷）"),
-  );
-  if (file) out.push(`檔案 ${file}`);
-  out.push("");
+  let lastText: string | undefined;
+  let doneSummary: string | undefined;
 
   const adapter = header?.adapter ? ADAPTERS[header.adapter as keyof typeof ADAPTERS] : undefined;
   if (!adapter || header?.agent === CMD_AGENT) {
-    out.push(...body);
+    lines.push(...body);
+    lastText = body.slice(-15).join("\n").trim() || undefined;
   } else {
     let skipped = 0;
     for (const line of body) {
@@ -164,15 +204,17 @@ export function renderLog(text: string, file = ""): string {
       const events = adapter.parse(line);
       if (events.length) {
         for (const ev of events) {
-          const s = renderEvent(ev);
-          if (s) out.push(s);
+          const s = renderEvent(ev, full, lastText);
+          if (s) lines.push(s);
+          if (ev.kind === "text") lastText = ev.text.trim();
+          if (ev.kind === "done") doneSummary = ev.summary?.trim() || undefined;
           if (ev.kind === "done" && !ev.ok) errors.push(`agent 回報失敗${ev.summary ? `：${indent(ev.summary.trim())}` : ""}`);
         }
         continue;
       }
       const json = tryJson(line);
       if (!json) {
-        out.push(`📄 ${line}`);
+        lines.push(`📄 ${line}`);
         continue;
       }
       const err = findError(json);
@@ -180,17 +222,62 @@ export function renderLog(text: string, file = ""): string {
         skipped++;
         continue;
       }
-      out.push(`${err.fatal ? "❌" : "⚠️ "} ${indent(err.message)}`);
+      lines.push(`${err.fatal ? "❌" : "⚠️ "} ${indent(err.message)}`);
       if (err.fatal) errors.push(`錯誤事件：${indent(err.message)}`);
     }
-    if (skipped) out.push(`（另有 ${skipped} 行其他事件未顯示，可用 --raw 查看）`);
+    if (skipped) lines.push(`（另有 ${skipped} 行其他事件未顯示，可用 --raw 查看）`);
   }
 
   if (footer && footer.code !== 0) errors.unshift(`結束碼 ${footer.code}`);
   if (footer && !footer.ok && !errors.length) errors.push("執行未通過（沒有更多錯誤訊息）");
   const stderrText = stderr.length ? `stderr：\n   ${indent(clip(stderr.join("\n"), 4000))}` : undefined;
+  return { header, footer, lines, errors, stderrText, lastText, doneSummary };
+}
 
+const logTitle = (header?: LogHeader) =>
+  header
+    ? `${header.stage} / ${header.step} / ${header.agent}${header.adapter && header.adapter !== header.agent ? `（adapter ${header.adapter}）` : ""}`
+    : "（沒有檔頭）";
+
+/** 把一份 log 轉成人看得懂的版本；最後附上錯誤整理，讓失敗原因一眼可見。預設精簡工具內容，opts.full 時完整顯示 */
+export function renderLog(text: string, file = "", opts: RenderOptions = {}): string {
+  const { header, footer, lines, errors, stderrText } = analyzeLog(text, opts.full ?? false);
+  const out: string[] = [];
+  out.push(`${logSeq(file) ? `#${logSeq(file)}  ` : ""}${logTitle(header)}`);
+  out.push(
+    `開始 ${localTime(header?.startedAt)}　` +
+      (footer ? `結束 ${localTime(footer.endedAt)}　結束碼 ${footer.code}　${footer.ok ? "✓ 成功" : "✗ 失敗"}` : "… 沒有結束紀錄（還在執行或被中斷）"),
+  );
+  if (file) out.push(`檔案 ${file}`);
+  out.push("", ...lines);
   if (errors.length) out.push("", "── 錯誤 ──", ...errors, ...(stderrText ? [stderrText] : []));
   else if (stderrText) out.push("", "── 其他輸出 ──", stderrText);
   return out.join("\n");
+}
+
+export interface LogSummary {
+  title: string;
+  /** undefined 代表沒有檔尾（還在執行或被中斷） */
+  ok?: boolean;
+  /** agent 回覆裡的 <result>；沒有時為 undefined */
+  meta?: ResultMeta;
+  /** 沒有 <result> 時退而求其次的結果文字（最後回覆或指令輸出的結尾） */
+  text?: string;
+  /** 失敗時的錯誤整理（含 stderr） */
+  errors: string[];
+}
+
+/** 一份 log 的結果摘要：給 run 停下時直接印在終端機，不用再另外查 log */
+export function summarizeLog(text: string): LogSummary {
+  const a = analyzeLog(text, false);
+  const reply = a.doneSummary ?? a.lastText;
+  const meta = reply ? parseResultMeta(reply) ?? (a.lastText ? parseResultMeta(a.lastText) : undefined) : undefined;
+  const failed = a.footer ? !a.footer.ok : false;
+  return {
+    title: logTitle(a.header),
+    ok: a.footer?.ok,
+    meta,
+    text: meta ? undefined : reply && clip(reply, 600),
+    errors: failed ? [...a.errors, ...(a.stderrText ? [a.stderrText] : [])] : [],
+  };
 }

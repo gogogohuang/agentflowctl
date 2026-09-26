@@ -99,10 +99,11 @@ agentflowctl run --req-file ./req.md --cycle codex,claude --max-agent-runs 40
 agentflowctl run --req "..." --manual-plan   # 計畫通過 AI 審查後，仍停下來等你確認
 
 agentflowctl approve f-xxxx        # 搭配 --manual-plan
-agentflowctl status f-xxxx         # 階段、任務進度、各 agent 用量、代打紀錄
+agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄
 agentflowctl list
 agentflowctl logs f-xxxx           # 列出每一份 log 的編號、結果、階段、步驟、agent
 agentflowctl logs f-xxxx 7         # 解析第 7 份 log，最後附上錯誤整理（--latest 看最新一份）
+agentflowctl logs f-xxxx 7 --full  # 完整顯示多行指令與絕對路徑
 agentflowctl logs f-xxxx 7 --raw   # 原始內容（agent 的 JSON 行）
 agentflowctl resume f-xxxx         # 從暫停、Ctrl-C 或失敗處接續
 agentflowctl cancel f-xxxx
@@ -182,14 +183,14 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 | 標記 | 內容 |
 |---|---|
 | 💬 | agent 的完整文字，不截斷 |
-| 🔧 | 工具呼叫與完整參數 |
+| 🔧 | 工具呼叫。只顯示第一行，多行時註明共幾行；去掉 `/bin/zsh -lc '…'` 這類 shell 包裝，worktree 內的絕對路徑改成相對路徑 |
 | 📊 | token 用量 |
-| 🏁 | 最後結果 |
+| 🏁 | 最後結果。與最後一則 💬 相同時不再重印 |
 | ⚠️ | 工具回報的錯誤。agent 通常會自己換方法繼續，所以不列進錯誤整理 |
 | ❌ | adapter 不認得的錯誤事件 |
 | 📄 | 不是 JSON 的輸出行 |
 
-adapter 不認得、也看不出錯誤跡象的 JSON 行不會顯示，只列出行數，要看全部請加 `--raw`。專案指令的 log 本來就是純文字，會原樣顯示。
+要看完整的工具內容與重複的最後結果，加 `--full`。adapter 不認得、也看不出錯誤跡象的 JSON 行不會顯示，只列出行數，要看全部請加 `--raw`。專案指令的 log 本來就是純文字，會原樣顯示。
 
 最後一段「錯誤」整理出結束碼、agent 回報的失敗、錯誤事件與 stderr：
 
@@ -199,7 +200,7 @@ adapter 不認得、也看不出錯誤跡象的 JSON 行不會顯示，只列出
 檔案 /repo/.agentflowctl/runs/f-xxxx/logs/003-plan-plan-codex.log
 
 💬 先讀 spec.md 與 acceptance.json
-🔧 shell: bash -lc 'cat .flow/spec.md'
+🔧 shell: cat .flow/spec.md
 🏁 失敗：stream disconnected before completion
 
 ── 錯誤 ──
@@ -211,9 +212,33 @@ stderr：
 
 執行成功時，stderr 會放在「其他輸出」段落，不算錯誤。
 
+### 停下來時的結果與下一步
+
+run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會直接印出三段；`agentflowctl status <id>` 也會印同樣的內容：
+
+- **結果**：被中斷、還沒有結束紀錄的步驟，以及上一步的結果。agent 的步驟取回覆 `<result>` 的摘要與疑慮；失敗時優先顯示失敗的那一步，並附上結束碼、錯誤事件、stderr 或指令輸出的最後幾行。
+- **未結交接事項**：交接紀錄裡還沒結案的 action 事項（open 或 proposed_resolved）。
+- **下一步**：依狀態列出可以執行的指令，例如 `logs`、`cd` 到 worktree、`resume`、`cancel`、`approve`。
+
+```
+── 結果 ──
+  中斷於 #20 plan_review / plan-review / codex（沒有結束紀錄，resume 時會重跑這一步）
+  #19 plan_fix / plan-fix / claude ✓
+     摘要：接受三條審查意見，拆分 T-3、T-5
+     疑慮：T-15 可能仍太大
+
+── 未結交接事項 ──
+  [plan] c9c730b280e87178 T-3、T-5 各混合多個獨立行為（proposed_resolved）
+
+── 下一步 ──
+  agentflowctl logs f-xxxx 19              看上一步的完整 log
+  agentflowctl resume f-xxxx               從 plan_review 接續
+  agentflowctl cancel f-xxxx               放棄這個 run
+```
+
 ### 出錯時怎麼查
 
-1. run 停下時印出的摘要，或 `agentflowctl status <id>`，會列出失敗的階段、原因、最後一份 log，以及最近失敗的那一份。
+1. 先看 run 停下時印出的「結果」與「下一步」，或執行 `agentflowctl status <id>`。
 2. `agentflowctl logs <id> <編號>` 看那份 log 的錯誤段落。
 3. 解析結果看不出原因時，加 `--raw` 看原始輸出。
 4. 必要時直接在 worktree（`.agentflowctl/worktrees/<id>`）裡修正，再執行 `agentflowctl resume <id>`。
@@ -411,6 +436,7 @@ src/
   roles.ts          角色分配規則（含計畫修正者與仲裁者）
   runner.ts         執行 agent、正規化結果、執行專案指令
   logs.ts           log 檔名、檔頭檔尾、列表與解析
+  stopReport.ts     run 停下時的結果、未結交接事項與下一步指令
   agents/           claude、codex、gemini、command
   setup.ts          agent setup 互動精靈
   git.ts            worktree 與 git 操作
