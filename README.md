@@ -310,7 +310,7 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | 兩家 | 兩家各自在全新 context 裡判斷 | 都核准就繼續；都不核准就依裁決意見修訂並重新審查；分歧依 `tieBreak` |
 | 一家 | 同一家 | 由它自己仲裁 |
 
-兩家時的仲裁是雙盲的。仲裁者只看計畫，以及一份不含模型名稱的爭議清單（`.flow/dispute.md`）。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、verify 與程式碼審查。
+兩家時的仲裁是雙盲的。仲裁者只看計畫，以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、verify 與程式碼審查。
 
 計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。兩家都要求修改時不因仲裁輪數而直接失敗；整個 run 仍受 `maxAgentRuns` 限制。
 
