@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
+import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
@@ -213,7 +214,10 @@ function planSettled(run: FlowRun, key: string): FlowRun {
   if (!run.autopilot) {
     info(run, `✋ 計畫已通過審查，請檢視 ${flowFile(run, "plan.md")}，確認後執行 agentflowctl approve ${run.id}`);
   }
-  return { ...succeed(run, key, next), taskIndex: 0, taskPhase: "tests" };
+  const settled = succeed(run, key, next);
+  const attempts = { ...settled.attempts };
+  delete attempts["plan-arbitration"];
+  return { ...settled, attempts, taskIndex: 0, taskPhase: "tests" };
 }
 
 async function planStage(run: FlowRun): Promise<FlowRun> {
@@ -330,6 +334,7 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
  */
 async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
   const cfg = loadRepoConfig();
+  const arbitrationRound = (run.attempts["plan-arbitration"] ?? 0) + 1;
   const panel = arbiterPanel(run.cycle, `${run.id}:arbiter`, run.planWriter, run.planReviewer);
   const mode = panel.length > 1 ? "雙盲交叉仲裁" : "第三方仲裁";
   const verdicts: { arbiter: string; verdict: "approve" | "changes_requested" | "abstain"; notes: string[] }[] = [];
@@ -347,7 +352,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     const result = r.ok ? readJsonFile(flowFile(run, "plan-arbiter.json"), ReviewResult) : undefined;
     if (result?.ok) {
       mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
-      renameSync(flowFile(run, "plan-arbiter.json"), join(runDir(run.id), "reviews", `plan-arbiter-${arbiter}.json`));
+      renameSync(flowFile(run, "plan-arbiter.json"), join(runDir(run.id), "reviews", `plan-arbiter-${arbitrationRound}-${arbiter}.json`));
     }
     const verdict = result?.ok ? result.data.verdict : "abstain";
     const notes = result?.ok ? result.data.items.map((i) => `- ${i.criterion}：${i.note}`) : [`- 未產生有效裁決（${r.ok ? "輸出格式錯誤" : r.summary}）`];
@@ -358,14 +363,22 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
 
   const approvals = verdicts.filter((v) => v.verdict === "approve").length;
   const unanimous = approvals === verdicts.length;
-  const decision: "proceed" | "stop" = unanimous ? "proceed" : approvals === 0 ? "stop" : cfg.tieBreak;
+  const decision = arbitrationDecision(verdicts.map((v) => v.verdict), cfg.tieBreak, arbitrationRound, config.maxAttempts);
   const summary = unanimous
     ? `${mode}一致核准`
     : approvals === 0
-      ? `${mode}沒有任何一方核准`
+      ? `${mode}沒有任何一方核准${decision === "revise" ? "，交回計畫修訂" : ""}`
       : `${mode}意見分歧，依 tieBreak=${cfg.tieBreak} ${cfg.tieBreak === "proceed" ? "繼續實作" : "停止"}`;
 
   const record = verdicts.map((v) => `### ${v.arbiter}（${v.verdict}）\n\n${v.notes.join("\n")}`).join("\n\n");
+  if (decision === "revise") {
+    const attempts: Record<string, number> = { ...run.attempts, "plan-arbitration": arbitrationRound };
+    delete attempts["plan-review"];
+    rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
+    writeFileSync(flowFile(run, "feedback.md"), `# 仲裁要求修訂（第 ${arbitrationRound} 次）\n\n${summary}\n\n${record}\n`);
+    info(run, `   → ${summary}`);
+    return { ...run, attempts, stage: "plan_fix" };
+  }
   writeFileSync(
     flowFile(run, "plan.md"),
     `${readFileSync(flowFile(run, "plan.md"), "utf8")}\n\n## 仲裁紀錄\n\n**結果：${summary}**\n\n${record}\n`,
