@@ -104,6 +104,7 @@ function readFeedback(run: FlowRun): string {
 function retry(run: FlowRun, key: string, reason: string, backTo: Stage): FlowRun {
   const n = (run.attempts[key] ?? 0) + 1;
   const attempts = { ...run.attempts, [key]: n };
+  mkdirSync(flowDir(run.id), { recursive: true });
   writeFileSync(flowFile(run, "feedback.md"), `# 前次嘗試未通過（第 ${n} 次）\n\n${reason}\n`);
   if (n >= config.maxAttempts) {
     return { ...run, attempts, stage: "failed", failedStage: backTo, failureReason: `${key} 連續失敗 ${n} 次：${tail(reason, 500)}` };
