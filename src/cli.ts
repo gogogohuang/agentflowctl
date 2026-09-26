@@ -2,6 +2,8 @@
 import { Command } from "commander";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { stdin, stdout } from "node:process";
+import { createInterface } from "node:readline/promises";
 import { config } from "./config.js";
 import { advance, loadRepoConfig } from "./engine.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
@@ -10,6 +12,7 @@ import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { TaskList, type FlowRun } from "./schemas.js";
 import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
 import { readJsonFile } from "./util.js";
+import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 
 function mustGetRun(id: string): FlowRun {
@@ -62,7 +65,7 @@ async function resolveCycle(flag?: string): Promise<string[]> {
   }
   // 沒有內建 agent：只從 agents 裡定義的挑出已安裝的
   const defined = Object.keys(cfg.agents);
-  if (!defined.length) throw new Error("還沒有設定任何 agent，請先用 agentflowctl agent add <name> --adapter <adapter> 新增");
+  if (!defined.length) throw new Error("還沒有設定任何 agent，請先用 agentflowctl agent setup 互動設定，或用 agent add <name> --adapter <adapter> 新增");
   const found: string[] = [];
   for (const name of defined) if (await probeAgent(resolveAgent(cfg, name))) found.push(name);
   if (!found.length) throw new Error(`設定的 agent（${defined.join("、")}）都沒有偵測到已安裝的 CLI，可用 agentflowctl doctor 檢查`);
@@ -214,7 +217,7 @@ agent
     const cfg = loadRepoConfig();
     const cycle = await resolveCycle().catch(() => cfg.cycle ?? []);
     const names = Object.keys(cfg.agents);
-    if (!names.length) console.log("還沒有設定任何 agent，請用 agent add <name> --adapter <adapter> 新增");
+    if (!names.length) console.log("還沒有設定任何 agent，請用 agent setup 互動設定，或用 agent add <name> --adapter <adapter> 新增");
     for (const name of names) {
       const def = resolveAgent(cfg, name);
       const ok = await probeAgent(def);
@@ -279,27 +282,48 @@ agent
     }
   });
 
-program
-  .command("doctor")
-  .description("檢查可用的 agent CLI 與目前的輪替設定")
+agent
+  .command("setup")
+  .description("互動式設定：偵測已安裝的 claude、codex、gemini，逐一選擇要不要加入並設定輪替順序")
   .action(async () => {
-    const cfg = loadRepoConfig();
-    const names = Object.keys(cfg.agents);
-    if (!names.length) console.log("還沒有設定任何 agent，請用 agent add <name> --adapter <adapter> 新增");
-    for (const name of names) {
-      const def = resolveAgent(cfg, name);
-      const ok = await probeAgent(def);
-      console.log(`${ok ? "✅" : "❌"} ${name.padEnd(10)} adapter=${def.adapter}${def.model ? ` model=${def.model}` : ""}`);
-    }
+    if (!stdin.isTTY) throw new Error("agent setup 需要互動式終端機，請改用 agent add");
+    const detected = {} as Detected;
+    for (const a of SETUP_ADAPTERS) detected[a] = await probeAgent({ adapter: a, extraArgs: [] });
+    const rl = createInterface({ input: stdin, output: stdout });
+    let edit: Edit | null;
     try {
-      console.log(`\n輪替順序：${(await resolveCycle()).join(" → ")}`);
-    } catch (e) {
-      console.log(`\n${(e as Error).message}`);
+      edit = await runSetup(readRawConfig(configPath()), { ask: (q) => rl.question(q), detected, log: (l) => console.log(l) });
+    } finally {
+      rl.close();
     }
-    console.log(`\n單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
-    console.log(`修正策略：${cfg.fixStrategy}　測試與實作分開：${cfg.tddSplit ? "是" : "否"}`);
-    console.log(`程式碼審查人數：${cfg.reviewQuorum}　計畫審查人數：${cfg.planReviewQuorum}　計畫仲裁：${cfg.planArbiter ? "開啟" : "關閉"}`);
+    if (!edit) return;
+    const result = edit;
+    applyEdit(() => result, "設定完成");
+    console.log("");
+    await doctor();
   });
+
+/** 檢查設定的 agent 是否已安裝，印出輪替順序與主要設定 */
+async function doctor(): Promise<void> {
+  const cfg = loadRepoConfig();
+  const names = Object.keys(cfg.agents);
+  if (!names.length) console.log("還沒有設定任何 agent，請用 agent setup 互動設定，或用 agent add <name> --adapter <adapter> 新增");
+  for (const name of names) {
+    const def = resolveAgent(cfg, name);
+    const ok = await probeAgent(def);
+    console.log(`${ok ? "✅" : "❌"} ${name.padEnd(10)} adapter=${def.adapter}${def.model ? ` model=${def.model}` : ""}`);
+  }
+  try {
+    console.log(`\n輪替順序：${(await resolveCycle()).join(" → ")}`);
+  } catch (e) {
+    console.log(`\n${(e as Error).message}`);
+  }
+  console.log(`\n單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
+  console.log(`修正策略：${cfg.fixStrategy}　測試與實作分開：${cfg.tddSplit ? "是" : "否"}`);
+  console.log(`程式碼審查人數：${cfg.reviewQuorum}　計畫審查人數：${cfg.planReviewQuorum}　計畫仲裁：${cfg.planArbiter ? "開啟" : "關閉"}`);
+}
+
+program.command("doctor").description("檢查可用的 agent CLI 與目前的輪替設定").action(doctor);
 
 program
   .command("list")

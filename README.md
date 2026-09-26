@@ -10,17 +10,28 @@
 
 ## 快速開始
 
-需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入，把要用的 agent 加進設定，再檢查環境：
+需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入，再用 `doctor` 檢查環境：
 
 ```bash
 claude    # 完成登入
 codex     # 完成登入
-npx agentflowctl agent add claude --adapter claude
-npx agentflowctl agent add codex --adapter codex
 npx agentflowctl doctor
 ```
 
 沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。`doctor` 會列出這些 agent 的 CLI 是否已安裝，並印出即將使用的輪替順序。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
+
+還沒設定任何 agent 時，用 `agent setup` 互動設定。它會偵測本機的 `claude`、`codex`、`gemini`，逐一詢問要不要加入、名稱與 model，再設定輪替順序；確認後才一次寫入，最後自動跑一次 `doctor`：
+
+```bash
+npx agentflowctl agent setup
+```
+
+也可以不經互動，直接用指令新增：
+
+```bash
+npx agentflowctl agent add claude --adapter claude
+npx agentflowctl agent add codex --adapter codex
+```
 
 在專案資料夾內開始一次 run：
 
@@ -151,6 +162,7 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 `agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
 
 ```bash
+agentflowctl agent setup                                  # 互動設定 claude、codex、gemini 與輪替順序
 agentflowctl agent list                                   # 設定的 agent、是否已安裝、輪替位置
 agentflowctl agent add claude-strong --adapter claude --model opus
 agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
@@ -165,6 +177,7 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 - `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
 - `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回從 `agents` 自動偵測。
 - `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
+- `setup` 遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍放進這次的輪替順序。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
 
 已建立的 run 會沿用建立時的輪替順序，不受這些修改影響。
 
@@ -275,6 +288,7 @@ src/
   roles.ts          輪替規則（含計畫修正者與仲裁者）
   runner.ts         執行 agent、正規化結果、執行專案指令
   agents/           claude、codex、gemini、command
+  setup.ts          agent setup 互動精靈
   git.ts            worktree 與 git 操作
   store.ts          狀態、用量、代打紀錄
   tasks.ts          任務 DAG
