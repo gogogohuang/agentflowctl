@@ -367,8 +367,9 @@ program
   .command("logs <id> [seq]")
   .description("列出 log；指定編號（或 --latest）時顯示解析後的內容，最後附上錯誤整理")
   .option("--latest", "顯示最新一份 log", false)
+  .option("--full", "完整顯示工具內容（多行指令、絕對路徑）與重複的最後回覆", false)
   .option("--raw", "顯示原始內容（agent 的 JSON 行）", false)
-  .action((id: string, seq: string | undefined, opts: { latest: boolean; raw: boolean }) => {
+  .action((id: string, seq: string | undefined, opts: { latest: boolean; full: boolean; raw: boolean }) => {
     mustGetRun(id);
     const logs = listLogs(logDir(id));
     if (!logs.length) return console.log("還沒有 log");
@@ -380,13 +381,13 @@ program
           `${String(e.seq).padStart(3)}  ${logMark(e).padEnd(4)}  ${(h?.stage ?? "?").padEnd(12)}  ${(h?.step ?? "?").padEnd(19)}  ${(h?.agent ?? "?").padEnd(10)}  ${localTime(h?.startedAt)}`,
         );
       }
-      console.log(`\n查看內容：agentflowctl logs ${id} <編號>（加 --raw 看原始 JSON）`);
+      console.log(`\n查看內容：agentflowctl logs ${id} <編號>（加 --full 看完整工具內容、--raw 看原始 JSON）`);
       return;
     }
     const entry = seq ? logs.find((e) => e.seq === Number(seq)) : logs.at(-1);
     if (!entry) throw new Error(`找不到 log #${seq}（共 ${logs.length} 份，可用 agentflowctl logs ${id} 列出）`);
     const text = readFileSync(entry.file, "utf8");
-    console.log(opts.raw ? text : renderLog(text, entry.file));
+    console.log(opts.raw ? text : renderLog(text, entry.file, { full: opts.full }));
   });
 
 program.parseAsync().catch((err: unknown) => {

@@ -91,4 +91,49 @@ describe("log 解析", () => {
     expect(renderLog(ok)).toContain("── 其他輸出 ──");
     expect(renderLog(headerLine({ stage: "spec", step: "spec", agent: "codex", adapter: "codex", startedAt }))).toContain("沒有結束紀錄");
   });
+
+  it("預設精簡：工具只顯示第一行、去掉 shell 包裝與 worktree 絕對路徑，最後回覆不重複", () => {
+    const wt = "/home/u/app/.agentflowctl/worktrees/f-1";
+    const reply = "全部改好了\n1. 第一點";
+    const claude = [
+      headerLine({ stage: "plan_fix", step: "plan-fix", agent: "claude", adapter: "claude", startedAt }),
+      j({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "python3 - <<'EOF'\nimport json\nprint(1)\nEOF" } }] } }),
+      j({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: `${wt}/.flow/spec.md` } }] } }),
+      j({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: `cd ${wt} && ls` } }] } }),
+      j({ type: "assistant", message: { content: [{ type: "text", text: reply }] } }),
+      j({ type: "result", result: reply, usage: { input_tokens: 1, output_tokens: 2 } }),
+      footerLine({ code: 0, ok: true, endedAt }),
+    ].join("\n");
+    const out = renderLog(claude);
+    expect(out).toContain("🔧 Bash: python3 - <<'EOF'　…（共 4 行）");
+    expect(out).not.toContain("import json");
+    expect(out).toContain("🔧 Edit: .flow/spec.md");
+    expect(out).toContain("🔧 Bash: cd . && ls");
+    expect(out).not.toContain(wt);
+    expect(out.split("全部改好了").length).toBe(2);
+    expect(out).toContain("🏁 完成");
+
+    const codex = [
+      headerLine({ stage: "plan_review", step: "plan-review", agent: "codex", adapter: "codex", startedAt }),
+      j({ type: "item.completed", item: { type: "command_execution", command: "/bin/zsh -lc 'cat .flow/plan.md'" } }),
+      j({ type: "item.completed", item: { type: "command_execution", command: `/bin/bash -c "sed -n '1,9p' a.ts"` } }),
+      footerLine({ code: 0, ok: true, endedAt }),
+    ].join("\n");
+    const c = renderLog(codex);
+    expect(c).toContain("🔧 shell: cat .flow/plan.md");
+    expect(c).toContain("🔧 shell: sed -n '1,9p' a.ts");
+  });
+
+  it("--full 顯示完整工具內容與最後回覆", () => {
+    const text = [
+      headerLine({ stage: "spec", step: "spec", agent: "claude", adapter: "claude", startedAt }),
+      j({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "a\nb" } }] } }),
+      j({ type: "assistant", message: { content: [{ type: "text", text: "完成" }] } }),
+      j({ type: "result", result: "完成" }),
+      footerLine({ code: 0, ok: true, endedAt }),
+    ].join("\n");
+    const out = renderLog(text, "", { full: true });
+    expect(out).toContain("🔧 Bash: a\n   b");
+    expect(out).toContain("🏁 完成：完成");
+  });
 });

@@ -125,21 +125,55 @@ function findError(ev: Record<string, unknown>): { message: string; fatal: boole
   return hit ? { message: clip(pick(hit)), fatal: false } : undefined;
 }
 
-function renderEvent(ev: AgentEvent): string | undefined {
+/** worktree 絕對路徑改成相對路徑：`<worktree>/x` → `x`，單獨的 `<worktree>` → `.` */
+const relativeToWorktree = (s: string) =>
+  s.replace(/[^\s'"=]*\/\.agentflowctl\/worktrees\/[^/\s'"]+(\/)?/g, (_m, slash?: string) => (slash ? "" : "."));
+
+/** 去掉 codex 這類 CLI 包在指令外面的 `/bin/zsh -lc '...'` */
+function unwrapShell(cmd: string): string {
+  const m = cmd.match(/^\/bin\/(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/);
+  if (!m) return cmd;
+  const [, quote, inner] = m;
+  // 單引號包裝裡的 '"'"' 或 '\'' 是被跳脫的單引號，內容太複雜時保留原樣
+  if (quote === "'" && inner!.includes("'")) return cmd;
+  if (quote === '"' && /(^|[^\\])"/.test(inner!)) return cmd;
+  return inner!;
+}
+
+/** 精簡顯示的工具內容：只留第一行，並註明原本有幾行 */
+function compactDetail(detail: string): string {
+  const lines = relativeToWorktree(unwrapShell(detail.trim())).split("\n");
+  const first = clip(lines[0]!, 200);
+  return lines.length > 1 ? `${first}　…（共 ${lines.length} 行）` : first;
+}
+
+function renderEvent(ev: AgentEvent, full: boolean, lastText?: string): string | undefined {
   switch (ev.kind) {
     case "text":
       return `💬 ${indent(ev.text.trim())}`;
-    case "tool":
-      return `🔧 ${ev.name}${ev.detail ? `: ${indent(ev.detail.trim())}` : ""}`;
+    case "tool": {
+      const detail = ev.detail?.trim();
+      if (!detail) return `🔧 ${ev.name}`;
+      return `🔧 ${ev.name}: ${full ? indent(detail) : compactDetail(detail)}`;
+    }
     case "usage":
       return `📊 用量 input ${ev.inputTokens ?? "?"} / output ${ev.outputTokens ?? "?"} tokens`;
-    case "done":
-      return `🏁 ${ev.ok ? "完成" : "失敗"}${ev.summary ? `：${indent(ev.summary.trim())}` : ""}`;
+    case "done": {
+      const summary = ev.summary?.trim();
+      // 最後一則回覆通常就是 summary，精簡模式不再重印一次
+      const show = summary && (full || summary !== lastText);
+      return `🏁 ${ev.ok ? "完成" : "失敗"}${show ? `：${indent(summary)}` : ""}`;
+    }
   }
 }
 
-/** 把一份 log 轉成人看得懂的版本；最後附上錯誤整理，讓失敗原因一眼可見 */
-export function renderLog(text: string, file = ""): string {
+export interface RenderOptions {
+  /** 顯示完整的工具內容與重複的最後回覆 */
+  full?: boolean;
+}
+
+/** 把一份 log 轉成人看得懂的版本；最後附上錯誤整理，讓失敗原因一眼可見。預設精簡工具內容，opts.full 時完整顯示 */
+export function renderLog(text: string, file = "", opts: RenderOptions = {}): string {
   const { header, footer, body, stderr } = parseLog(text);
   const out: string[] = [];
   const errors: string[] = [];
@@ -159,13 +193,15 @@ export function renderLog(text: string, file = ""): string {
     out.push(...body);
   } else {
     let skipped = 0;
+    let lastText: string | undefined;
     for (const line of body) {
       if (!line.trim()) continue;
       const events = adapter.parse(line);
       if (events.length) {
         for (const ev of events) {
-          const s = renderEvent(ev);
+          const s = renderEvent(ev, opts.full ?? false, lastText);
           if (s) out.push(s);
+          if (ev.kind === "text") lastText = ev.text.trim();
           if (ev.kind === "done" && !ev.ok) errors.push(`agent 回報失敗${ev.summary ? `：${indent(ev.summary.trim())}` : ""}`);
         }
         continue;
