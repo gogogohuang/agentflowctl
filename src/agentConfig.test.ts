@@ -62,13 +62,13 @@ describe("removeAgent", () => {
     expect(removeAgent({ agents: { x: { adapter: "codex" } } }, "x").cfg).toEqual({ agents: {} });
   });
 
-  it("一併從輪替順序移除", () => {
+  it("一併從參與的 agent 移除", () => {
     const r = removeAgent({ cycle: ["x", "claude"], agents: { x: { adapter: "codex" }, claude: { adapter: "claude" } } }, "x");
     expect(r.cfg).toEqual({ cycle: ["claude"], agents: { claude: { adapter: "claude" } } });
-    expect(r.changes.join("\n")).toMatch(/輪替/);
+    expect(r.changes.join("\n")).toMatch(/參與/);
   });
 
-  it("輪替順序因此變空時刪掉 cycle，改回自動偵測", () => {
+  it("參與的 agent 因此變空時刪掉 cycle，改回自動偵測", () => {
     const r = removeAgent({ cycle: ["x"], agents: { x: { adapter: "codex" } } }, "x");
     expect(r.cfg).toEqual({ agents: {} });
     expect(r.changes.join("\n")).toMatch(/自動偵測/);
@@ -81,7 +81,7 @@ describe("removeAgent", () => {
 });
 
 describe("setCycle", () => {
-  it("設定輪替順序", () => {
+  it("設定參與的 agent", () => {
     const cfg = { agents: { x: { adapter: "codex" }, claude: { adapter: "claude" } } };
     expect(setCycle(cfg, ["x", "claude"]).cfg.cycle).toEqual(["x", "claude"]);
   });

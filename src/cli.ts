@@ -38,7 +38,7 @@ function printSummary(run: FlowRun): void {
   console.log(`run      ${run.id}`);
   console.log(`階段     ${run.stage}`);
   console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次`);
-  console.log(`agent    ${run.cycle.join(" → ")}${run.lastWriter ? `（最後作者：${run.lastWriter}）` : ""}`);
+  console.log(`agent    ${run.cycle.join("、")}${run.lastWriter ? `（最後作者：${run.lastWriter}）` : ""}`);
   console.log(`分支     ${run.branch}`);
   console.log(`worktree ${worktreeDir(run.id)}`);
   if (run.prUrl) console.log(`PR       ${run.prUrl}`);
@@ -61,7 +61,7 @@ function printSummary(run: FlowRun): void {
   if (run.stage === "awaiting_approval") console.log(`\n確認計畫後執行 agentflowctl approve ${run.id}`);
 }
 
-/** 決定輪替順序：指令參數 > flow.config.json > 自動偵測已安裝的 CLI */
+/** 決定參與的 agent：指令參數 > flow.config.json > 自動偵測已安裝的 CLI */
 async function resolveCycle(flag?: string): Promise<string[]> {
   const cfg = loadRepoConfig();
   const wanted = flag ? flag.split(",").map((s) => s.trim()).filter(Boolean) : cfg.cycle;
@@ -96,7 +96,7 @@ program
   .option("--base <branch>", "基底分支（預設為目前的分支）")
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
-  .option("--cycle <agents>", "agent 輪替順序，例如 claude,codex,gemini")
+  .option("--cycle <agents>", "參與的 agent，例如 claude,codex,gemini（順序不影響分工）")
   .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
@@ -108,7 +108,7 @@ program
     const branch = `flow/${id}`;
     console.log(`[${id}] 🌿 從 ${base} 建立 worktree（分支 ${branch}）`);
     await addWorktree(root, worktreeDir(id), base, branch);
-    console.log(`[${id}] 🤝 agent 輪替順序：${cycle.join(" → ")}`);
+    console.log(`[${id}] 🤝 參與的 agent：${cycle.join("、")}（角色隨機分配）`);
     const cfg = loadRepoConfig();
     const now = new Date().toISOString();
     // worktree 一建好就寫入紀錄：之後在任何地方中斷，都能用 resume 接續或用 clean 清掉
@@ -232,7 +232,7 @@ function applyEdit(edit: (cfg: Record<string, unknown>) => Edit, done: string): 
   console.log(`✅ ${done}（${configPath()}）`);
   for (const c of changes) console.log(`   ↳ ${c}`);
   if (JSON.stringify(before.cycle) !== JSON.stringify(cfg.cycle)) {
-    console.log("   已建立的 run 會沿用建立時的輪替順序，不受影響");
+    console.log("   已建立的 run 會沿用建立時參與的 agent，不受影響");
   }
 }
 
@@ -240,7 +240,7 @@ const agent = program.command("agent").description("管理 agent 與 adapter 設
 
 agent
   .command("list")
-  .description("列出設定的 agent、是否已安裝、在輪替中的位置")
+  .description("列出設定的 agent、是否已安裝、是否參與")
   .action(async () => {
     const cfg = loadRepoConfig();
     const cycle = await resolveCycle().catch(() => cfg.cycle ?? []);
@@ -256,10 +256,10 @@ agent
         def.extraArgs.length && `extraArgs=${def.extraArgs.join(" ")}`,
         def.command && `command=${def.command.join(" ")}`,
       ].filter(Boolean);
-      console.log(`${ok ? "✅" : "❌"} ${name.padEnd(14)} ${pos >= 0 ? `輪替 #${pos + 1}` : "不在輪替"}  ${detail.join(" ")}`);
+      console.log(`${ok ? "✅" : "❌"} ${name.padEnd(14)} ${pos >= 0 ? "參與" : "不參與"}  ${detail.join(" ")}`);
     }
     console.log(`
-輪替順序：${cycle.length ? cycle.join(" → ") : "（沒有可用的 agent）"}${cfg.cycle ? "" : "（自動偵測）"}`);
+參與的 agent：${cycle.length ? cycle.join("、") : "（沒有可用的 agent）"}${cfg.cycle ? "" : "（自動偵測）"}`);
   });
 
 agent
@@ -271,7 +271,7 @@ agent
   .action((name: string, command: string[], opts: { adapter: string; model?: string; extraArg?: string[] }) => {
     applyEdit(
       (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, command: command.length ? command : undefined }),
-      `已新增 ${name}；要加進輪替請用 agent cycle`,
+      `已新增 ${name}；要讓它參與請用 agent cycle`,
     );
   });
 
@@ -290,20 +290,20 @@ agent
 
 agent
   .command("remove <name>")
-  .description("刪除 agent，一併從輪替移除")
+  .description("刪除 agent，一併從參與的 agent 移除")
   .action((name: string) => applyEdit((cfg) => removeAgent(cfg, name), `已移除 ${name}`));
 
 agent
   .command("cycle [names]")
-  .description("顯示輪替順序，或用逗號分隔設定新的順序")
+  .description("顯示參與的 agent，或用逗號分隔設定新的名單")
   .action(async (names?: string) => {
     if (!names) {
       const cfg = loadRepoConfig();
-      console.log(`${(await resolveCycle()).join(" → ")}${cfg.cycle ? "" : "（自動偵測）"}`);
+      console.log(`${(await resolveCycle()).join("、")}${cfg.cycle ? "" : "（自動偵測）"}`);
       return;
     }
     const list = names.split(",").map((s) => s.trim()).filter(Boolean);
-    applyEdit((cfg) => setCycle(cfg, list), `輪替順序設為 ${list.join(" → ")}`);
+    applyEdit((cfg) => setCycle(cfg, list), `參與的 agent 設為 ${list.join("、")}`);
     const cfg = loadRepoConfig();
     for (const n of list) {
       if (!(await probeAgent(resolveAgent(cfg, n)))) console.log(`⚠️  ${n} 目前找不到可執行的 CLI，run 會失敗，請先安裝或用 agent set 修正`);
@@ -312,7 +312,7 @@ agent
 
 agent
   .command("setup")
-  .description("互動式設定：偵測已安裝的 claude、codex、gemini，逐一選擇要不要加入並設定輪替順序")
+  .description("互動式設定：偵測已安裝的 claude、codex、gemini，逐一選擇要不要加入並設定參與的 agent")
   .action(async () => {
     if (!stdin.isTTY) throw new Error("agent setup 需要互動式終端機，請改用 agent add");
     const detected = {} as Detected;
@@ -331,7 +331,7 @@ agent
     await doctor();
   });
 
-/** 檢查設定的 agent 是否已安裝，印出輪替順序與主要設定 */
+/** 檢查設定的 agent 是否已安裝，印出參與的 agent 與主要設定 */
 async function doctor(): Promise<void> {
   const cfg = loadRepoConfig();
   const names = Object.keys(cfg.agents);
@@ -342,7 +342,7 @@ async function doctor(): Promise<void> {
     console.log(`${ok ? "✅" : "❌"} ${name.padEnd(10)} adapter=${def.adapter}${def.model ? ` model=${def.model}` : ""}`);
   }
   try {
-    console.log(`\n輪替順序：${(await resolveCycle()).join(" → ")}`);
+    console.log(`\n參與的 agent：${(await resolveCycle()).join("、")}`);
   } catch (e) {
     console.log(`\n${(e as Error).message}`);
   }
@@ -351,7 +351,7 @@ async function doctor(): Promise<void> {
   console.log(`程式碼審查人數：${cfg.reviewQuorum}　計畫審查人數：${cfg.planReviewQuorum}　計畫仲裁：${cfg.planArbiter ? "開啟" : "關閉"}`);
 }
 
-program.command("doctor").description("檢查可用的 agent CLI 與目前的輪替設定").action(doctor);
+program.command("doctor").description("檢查可用的 agent CLI 與目前參與的 agent").action(doctor);
 
 program
   .command("list")

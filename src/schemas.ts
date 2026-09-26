@@ -51,7 +51,7 @@ export const ReviewResult = z.object({
   ),
 });
 
-/** 一個 agent 的定義；名稱（agents 的 key）用在輪替順序裡 */
+/** 一個 agent 的定義；名稱（agents 的 key）用在 cycle 裡 */
 export const AgentDef = z.object({
   adapter: z.enum(["claude", "codex", "gemini", "command"]),
   model: z.string().optional(),
@@ -65,7 +65,7 @@ export type AgentDef = z.infer<typeof AgentDef>;
 export const RepoConfig = z.object({
   /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 agent add） */
   agents: z.record(z.string(), AgentDef).default({}),
-  /** 輪替順序；未設定時依 agents 的順序，取已安裝的 CLI */
+  /** 參與的 agent（順序不影響分工）；未設定時取 agents 裡已安裝的 CLI */
   cycle: z.array(z.string()).min(1).optional(),
   /** review 後的修正由誰做：ring＝輪到下一位；author＝最後寫程式的 agent */
   fixStrategy: z.enum(["ring", "author"]).default("ring"),
@@ -110,7 +110,7 @@ export const FlowRun = z.object({
   /** 暫停前所在的階段與原因（額度用完時） */
   pausedStage: Stage.optional(),
   pauseReason: z.string().optional(),
-  /** 這個 run 的 agent 輪替順序（建立時決定，resume 時沿用） */
+  /** 這個 run 參與的 agent（建立時決定，resume 時沿用） */
   cycle: z.array(z.string()).min(1),
   /** 最後一個寫程式的 agent，reviewer 不可以是它 */
   lastWriter: z.string().optional(),

@@ -17,7 +17,7 @@ claude    # 完成登入
 codex     # 完成登入
 ```
 
-沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。用 `agent setup` 互動設定：它會偵測本機的 `claude`、`codex`、`gemini`，逐一詢問要不要加入、名稱與 model，再設定輪替順序；確認後才一次寫入，最後自動跑一次 `doctor`：
+沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。用 `agent setup` 互動設定：它會偵測本機的 `claude`、`codex`、`gemini`，逐一詢問要不要加入、名稱與 model，再設定參與的 agent；確認後才一次寫入，最後自動跑一次 `doctor`：
 
 ```bash
 npx agentflowctl agent setup
@@ -30,7 +30,7 @@ npx agentflowctl agent add claude --adapter claude
 npx agentflowctl agent add codex --adapter codex
 ```
 
-之後改了設定或換了環境，用 `doctor` 檢查。它會列出設定的 agent 的 CLI 是否已安裝，並印出即將使用的輪替順序。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
+之後改了設定或換了環境，用 `doctor` 檢查。它會列出設定的 agent 的 CLI 是否已安裝，並印出即將參與的 agent。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
 
 ```bash
 npx agentflowctl doctor
@@ -64,26 +64,28 @@ pnpm run build
 pnpm link --global
 ```
 
-## 輪替怎麼打破同溫層
+## 角色分配怎麼打破同溫層
 
 同一個模型審查自己的程式碼，容易放過自己的寫法；測試和實作出自同一個模型，也容易寫出剛好會過的測試。角色分配只有三條規則，定義在 `src/roles.ts`：
 
 | 規則 | 效果 |
 |---|---|
-| 審查者永遠不是最後寫程式的 agent | 每一輪審查都由另一家看 |
+| 審查者永遠不是最後寫程式的 agent，多位審查者彼此不重複 | 每一輪審查都由另一家看 |
 | 同一個任務的測試與實作由不同 agent 負責（`tddSplit`） | A 寫的測試，B 實作到通過，而且不能改測試 |
-| 所有角色沿著同一個輪替順序前進 | 各家輪流當作者、審查者、修正者 |
+| 人選隨機決定，不依 `cycle` 的順序 | 各家輪流當作者、審查者、修正者，不會固定由同一家起頭 |
 
-兩家時是乒乓。輪替順序 `claude → codex` 會跑成：
+`cycle` 只決定哪些 agent 參與。隨機以 run id 為種子，同一個 run 的同一步驟 `resume` 後仍是同一家。寫測試的人每 N 個任務（N 為參與的家數）洗一次牌，每家各輪一次，換輪時也不會連續兩個任務由同一家寫測試。
+
+兩家時是乒乓，例如：
 
 ```
-計畫：claude 撰寫 → codex 審查（要求修改）→ claude 修改 → codex 審查（核准）
+計畫：codex 撰寫 → claude 審查（要求修改）→ codex 修改 → claude 審查（核准）
 T-1  測試：claude   實作：codex
 T-2  測試：codex    實作：claude
 審查：codex（最後作者是 claude）→ 要求修改 → claude 修正 → codex 審查（核准）
 ```
 
-三家時，修正與審查會一直換人。例如 codex 寫、gemini 審、claude 修；仲裁交給沒寫過這份計畫、也沒審過它的那一家。
+三家時，每一輪的審查者從作者以外隨機挑，修正者從審查者以外隨機挑；仲裁交給沒寫過這份計畫、也沒審過它的那一家（有多家時隨機挑一家）。
 
 每個 commit 訊息結尾會標上實際作者，例如 `feat(T-2): 匯出 [gemini]`。
 
@@ -112,7 +114,7 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 |---|---|
 | `--req` / `--req-file` | 需求文字，或從檔案讀取 |
 | `--base` | 基底分支，預設為目前分支 |
-| `--cycle` | 這次 run 的輪替順序，例如 `claude,codex,gemini`；建立後就固定，`resume` 沿用 |
+| `--cycle` | 這次 run 參與的 agent，例如 `claude,codex,gemini`；順序不影響分工；建立後就固定，`resume` 沿用 |
 | `--max-agent-runs` | 這次 run 的 agent 執行次數上限 |
 | `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
 | `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可設 `AGENTFLOWCTL_VERBOSE=1` |
@@ -236,8 +238,8 @@ stderr：
 
 | 設定 | 預設 | 說明 |
 |---|---|---|
-| `cycle` | 自動偵測 | 輪替順序。未設定時依 `agents` 的順序取已安裝的 CLI。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
-| `fixStrategy` | `ring` | `ring`：審查意見交給審查者的下一位；`author`：交回最後作者 |
+| `cycle` | 自動偵測 | 參與的 agent，順序不影響分工（人選隨機決定）。未設定時依 `agents` 的順序取已安裝的 CLI。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
+| `fixStrategy` | `ring` | `ring`：審查意見隨機交給審查者以外的一家；`author`：交回最後作者 |
 | `tddSplit` | `true` | 測試與實作是否分開 |
 | `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve` |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
@@ -271,14 +273,14 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 `agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
 
 ```bash
-agentflowctl agent setup                                  # 互動設定 claude、codex、gemini 與輪替順序
-agentflowctl agent list                                   # 設定的 agent、是否已安裝、輪替位置
+agentflowctl agent setup                                  # 互動設定 claude、codex、gemini 與參與的 agent
+agentflowctl agent list                                   # 設定的 agent、是否已安裝、是否參與
 agentflowctl agent add claude-strong --adapter claude --model opus
 agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
 agentflowctl agent set codex --model 你要用的模型 --extra-arg=--search
 agentflowctl agent set aider --adapter gemini             # 換 adapter
 agentflowctl agent remove aider
-agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前的順序
+agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前參與的 agent
 ```
 
 修改會連帶更新相關設定，並在終端機列出：
@@ -286,9 +288,9 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 - `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
 - `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回從 `agents` 自動偵測。
 - `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
-- `setup` 遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍放進這次的輪替順序。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
+- `setup` 遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍會參與。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
 
-已建立的 run 會沿用建立時的輪替順序，不受這些修改影響。
+已建立的 run 會沿用建立時參與的 agent，不受這些修改影響。
 
 ## 計畫怎麼在沒有人的情況下通過
 
@@ -314,16 +316,16 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 
 | 階段 | 負責的 agent | 程式認定通過的條件 | 失敗時 |
 |---|---|---|---|
-| spec | 輪替順序第 1 位 | 檔案存在、zod 驗證、id 不重複 | 重試 |
-| plan | 輪替順序第 1 位 | zod、相依存在、無循環、每條驗收條件都有任務 | 重試 |
-| plan_review | 非計畫作者的下一位（可多位） | 所有審查者都 `approve` | 進入 plan_fix |
+| spec | 隨機一位 | 檔案存在、zod 驗證、id 不重複 | 重試 |
+| plan | 與 spec 同一位 | zod、相依存在、無循環、每條驗收條件都有任務 | 重試 |
+| plan_review | 計畫作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 進入 plan_fix |
 | plan_fix | 依 `fixStrategy` | 修改後仍通過 plan 的格式與 DAG 檢查 | 還原並重試 |
 | 仲裁 | 見上一節 | 一致核准；分歧依 `tieBreak` | 都不核准，或 `tieBreak: stop` 時 run 失敗 |
 | 人工確認 | 你（只有 `--manual-plan`） | `agentflowctl approve` | — |
-| implement 紅燈 | 第 i 個任務由第 i 位 | 有測試變更，而且測試執行後失敗 | 還原並重試 |
-| implement 綠燈 | 測試作者的下一位 | 測試檔沒有任何修改，而且測試通過 | 還原，或帶著輸出重試 |
+| implement 紅燈 | 洗牌輪流，每家各一次 | 有測試變更，而且測試執行後失敗 | 還原並重試 |
+| implement 綠燈 | 測試作者以外隨機一位 | 測試檔沒有任何修改，而且測試通過 | 還原，或帶著輸出重試 |
 | verify | — | `install` 與所有 `checks` 通過 | 交回作者修正 |
-| review | 非作者的下一位（可多位） | 所有審查者都 `approve` | 依 `fixStrategy` 交給下一位修正 |
+| review | 作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 依 `fixStrategy` 交給他人修正 |
 | pr | — | push 成功；有 `gh` 就開 PR | — |
 
 驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
@@ -367,7 +369,7 @@ Codex 沙箱預設不能連網，所以建立 worktree 時會先跑 `install`。
 | 步驟 | 行為 |
 | --- | --- |
 | 計畫審查、程式碼審查、仲裁 | 暫停。額度恢復後 `agentflowctl resume`。換人代審會變成作者審自己 |
-| 規格、計畫、修改計畫、寫測試、寫實作、修正 | 由輪替順序上下一位還有額度的 agent 代打 |
+| 規格、計畫、修改計畫、寫測試、寫實作、修正 | 隨機由另一家還有額度的 agent 代打 |
 | 每家都用完 | 暫停 |
 
 換人或暫停前，額度用完的 agent 留下的半成品會先清掉。代打寫在 `.agentflowctl/runs/<id>/substitutions.jsonl`，`status` 會列出。commit 結尾標的是實際執行的模型。
@@ -394,7 +396,7 @@ agentflowctl 本身只依賴 Node.js 與 git。專案指令透過系統 shell �
 src/
   cli.ts            指令列（run、doctor、status……）
   engine.ts         狀態機與各階段
-  roles.ts          輪替規則（含計畫修正者與仲裁者）
+  roles.ts          角色分配規則（含計畫修正者與仲裁者）
   runner.ts         執行 agent、正規化結果、執行專案指令
   logs.ts           log 檔名、檔頭檔尾、列表與解析
   agents/           claude、codex、gemini、command
