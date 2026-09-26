@@ -71,9 +71,12 @@ export function taskAgents(cycle: string[], taskIndex: number, tddSplit: boolean
   return { tests, code: tddSplit ? pick(cycle, `${seed}:code:${taskIndex}`, [tests]) : tests };
 }
 
-/** 隨機挑出 quorum 位彼此不重複、而且不是作者的 reviewer */
-export function reviewers(cycle: string[], lastWriter: string | undefined, quorum: number, seed: string): string[] {
-  const picked = shuffled(cycle.filter((c) => c !== lastWriter), seed).slice(0, quorum);
+/** 隨機挑出 quorum 位彼此不重複、而且不是最後作者的 reviewer；任務審查優先避開測試作者 */
+export function reviewers(cycle: string[], lastWriter: string | undefined, quorum: number, seed: string, testAuthor?: string): string[] {
+  const candidates = shuffled(cycle.filter((c) => c !== lastWriter), seed);
+  const preferred = testAuthor ? candidates.filter((c) => c !== testAuthor) : candidates;
+  const fallback = testAuthor ? candidates.filter((c) => c === testAuthor) : [];
+  const picked = [...preferred, ...fallback].slice(0, quorum);
   return picked.length ? picked : [lastWriter ?? cycle[0]!];
 }
 

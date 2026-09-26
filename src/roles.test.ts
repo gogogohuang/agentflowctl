@@ -47,6 +47,14 @@ describe("角色規則", () => {
     expect(reviewers(["claude"], "claude", 1, "x")).toEqual(["claude"]);
   });
 
+  it("任務審查有第三家時優先避開測試作者，不足 quorum 才由測試作者補上", () => {
+    for (const s of seeds) {
+      expect(reviewers(three, "codex", 1, s, "claude")).toEqual(["gemini"]);
+      expect(reviewers(three, "codex", 2, s, "claude")).toEqual(["gemini", "claude"]);
+    }
+    expect(reviewers(two, "codex", 1, "x", "claude")).toEqual(["claude"]);
+  });
+
   it("review 後的 ring 修正者不是 reviewer；兩家時等同交回作者", () => {
     for (const s of seeds) {
       const fixer = fixAgent(three, { source: "review", strategy: "ring", lastWriter: "codex", lastReviewer: "gemini", seed: s });

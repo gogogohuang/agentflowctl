@@ -255,6 +255,14 @@ const id = prompt.match(/"id": "(T-\\d+)"/)?.[1];
 const role = prompt.includes("你是任務審查者") ? "task-review" : prompt.includes("你是程式碼審查者") ? "review"
   : prompt.includes("你是除錯工程師") ? "fix" : prompt.includes("<red_output>") ? "code" : "tests";
 appendFileSync(".flow/steps.txt", \`\${role}\${role === "review" || role === "fix" ? "" : ":" + id}\\n\`);
+if (role === "task-review" && existsSync(".flow/fail-review-once.txt")) {
+  rmSync(".flow/fail-review-once.txt");
+  process.exit(1);
+}
+if (role === "fix" && existsSync(".flow/fail-fix-once.txt")) {
+  rmSync(".flow/fail-fix-once.txt");
+  process.exit(1);
+}
 if (role === "tests") writeFileSync(\`\${id}.test.mjs\`, \`import { ok } from "./\${id}.mjs";\\nif (!ok) process.exit(1);\\n\`);
 if (role === "code") writeFileSync(\`\${id}.mjs\`, "export const ok = true;\\n");
 if (role === "fix") writeFileSync("fixed.txt", readFileSync(".flow/feedback.md"));
@@ -269,7 +277,8 @@ if (role === "task-review" || role === "review") {
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
 
-async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce = false } = {}) {
+async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce = false,
+  failReviewOnce = false, failFixOnce = false } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", worker] }])),
     cycle: ["a", "b"], install: "true", test: "for f in T-*.test.mjs; do node $f || exit 1; done",
@@ -283,6 +292,8 @@ async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce =
     { id: t, title: `任務 ${t}`, description: `完成 ${t}`, dependsOn: [], acceptance: [`AC-${i + 1}`] }
   ))));
   if (rejectOnce) writeFileSync(join(flowDir(id), "reject-once.txt"), "");
+  if (failReviewOnce) writeFileSync(join(flowDir(id), "fail-review-once.txt"), "");
+  if (failFixOnce) writeFileSync(join(flowDir(id), "fail-fix-once.txt"), "");
   const now = new Date().toISOString();
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
@@ -294,6 +305,18 @@ async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce =
 const steps = (id: string) => readFileSync(join(flowDir(id), "steps.txt"), "utf8").trim().split("\n");
 
 describe("任務審查與驗證", () => {
+  it("審查執行失敗後有有效結果，就清除執行失敗次數", async () => {
+    const run = await taskFlowRun("f-task-review-retry-clear", { failReviewOnce: true });
+    expect(run.stage).toBe("done");
+    expect(run.attempts["T-1:review-run"]).toBeUndefined();
+  });
+
+  it("任務修正失敗後成功，就清除修正失敗次數", async () => {
+    const run = await taskFlowRun("f-task-fix-retry-clear", { rejectOnce: true, failFixOnce: true });
+    expect(run.stage).toBe("done");
+    expect(run.attempts["T-1:fix"]).toBeUndefined();
+  });
+
   it("每個任務依序寫測試、實作、審查、驗證，全部完成後再做整體審查", async () => {
     const run = await taskFlowRun("f-task-order", { tasks: 2 });
     expect(run.failureReason).toBeUndefined();

@@ -581,15 +581,17 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     step: `${task.id}-review`,
     prompt: (reviewer, authors) => renderPrompt("task-review", { reviewer, authors, task: taskJson, acceptance: acceptanceJson }),
     saveAs: (reviewer) => `review-${task.id}-${reviewer}.json`,
+    testAuthor: run.lastTestsAuthor,
     // 未結交接事項可能屬於後面的任務，由最後的整體審查把關
     gate: false,
     runKey: `${task.id}:review-run`,
     backTo: "implement",
   });
   if ("run" in result) return result.run;
-  if (!result.objector) return { ...succeed(run, key, "implement"), taskPhase: "verify" };
+  const reviewed = succeed(run, `${task.id}:review-run`, "implement");
+  if (!result.objector) return { ...succeed(reviewed, key, "implement"), taskPhase: "verify" };
   return {
-    ...retry(run, key, `任務審查要求修改：\n\n${result.issues.join("\n\n")}`, "implement"),
+    ...retry(reviewed, key, `任務審查要求修改：\n\n${result.issues.join("\n\n")}`, "implement"),
     taskPhase: "fix",
     fixSource: "review",
     lastReviewer: result.objector,
@@ -624,7 +626,7 @@ async function taskFixStep(run: FlowRun, task: TaskItem, progress: string): Prom
     backTo: "implement",
   });
   if ("run" in result) return result.run;
-  return { ...run, taskPhase: "review", lastWriter: result.agent };
+  return { ...succeed(run, `${task.id}:fix`, "implement"), taskPhase: "review", lastWriter: result.agent };
 }
 
 /** 執行 install 與所有 checks，結果寫入 verify.json；有失敗時回傳給修正者的報告 */
@@ -727,12 +729,12 @@ async function codeReview(
     base: string; seed: string; label: string; step: string;
     prompt: (reviewer: string, authors: string) => string;
     saveAs: (reviewer: string) => string;
-    gate: boolean; runKey: string; backTo: Stage;
+    gate: boolean; runKey: string; backTo: Stage; testAuthor?: string;
   },
 ): Promise<{ run: FlowRun } | { objector?: string; issues: string[] }> {
   const cfg = loadRepoConfig();
   const repo = worktreeDir(run.id);
-  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, opts.seed);
+  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, opts.seed, opts.testAuthor);
   writeFileSync(flowFile(run, "diff.patch"), await git(repo, "diff", `${opts.base}...HEAD`));
   const authors = [...new Set((await git(repo, "log", "--format=%s", `${opts.base}..HEAD`)).match(/\[[^\]]+\]$/gm) ?? [])]
     .map((s) => s.slice(1, -1));
