@@ -51,6 +51,12 @@ export const ReviewResult = z.object({
   ),
 });
 
+/** 仲裁者可能用 reject 表示否決；讀取時正規化，保留相同的理由欄位。 */
+export const ArbiterResult = ReviewResult.extend({
+  verdict: z.enum(["approve", "changes_requested", "reject"])
+    .transform((verdict) => verdict === "reject" ? "changes_requested" as const : verdict),
+});
+
 /** 一個 agent 的定義；名稱（agents 的 key）用在 cycle 裡 */
 export const AgentDef = z.object({
   adapter: z.enum(["claude", "codex", "gemini", "command"]),
