@@ -316,15 +316,23 @@ agent
 
 agent
   .command("setup")
-  .description("互動式設定：偵測已安裝的 claude、codex、gemini，逐一選擇要不要加入並設定參與的 agent")
+  .description("互動式設定：偵測本機已安裝的 agent CLI，逐一選擇要不要加入並設定參與的 agent")
   .action(async () => {
     if (!stdin.isTTY) throw new Error("agent setup 需要互動式終端機，請改用 agent add");
-    const detected = {} as Detected;
+    const detected: Detected = {};
     for (const a of SETUP_ADAPTERS) detected[a] = await probeAgent({ adapter: a, extraArgs: [] });
+    let configured: Record<string, boolean> | undefined;
+    try {
+      const cfg = loadRepoConfig();
+      configured = {};
+      for (const name of Object.keys(cfg.agents)) configured[name] = await probeAgent(resolveAgent(cfg, name));
+    } catch {
+      // 設定檔不合法時照樣進精靈，只是不列出已設定的 agent
+    }
     const rl = createInterface({ input: stdin, output: stdout });
     let edit: Edit | null;
     try {
-      edit = await runSetup(readRawConfig(configPath()), { ask: (q) => rl.question(q), detected, log: (l) => console.log(l) });
+      edit = await runSetup(readRawConfig(configPath()), { ask: (q) => rl.question(q), detected, configured, log: (l) => console.log(l) });
     } finally {
       rl.close();
     }
