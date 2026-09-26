@@ -3,7 +3,7 @@
 讓 Claude Code、Codex、Gemini CLI（或任何 agent CLI）在同一條流程裡輪流寫規格、寫計畫、寫測試、寫實作、互相審查、互相修正，一路做到開 PR。
 
 ```
-需求 → spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁 → implement（測試 A → 實作 B）→ verify ⇄ fix → review ⇄ fix → pr
+需求 → spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁 → implement（每個任務：測試 A → 實作 B → 任務審查 ⇄ 修正 → 任務驗證 ⇄ 修正）→ verify ⇄ fix → review ⇄ fix → pr
 ```
 
 從需求到 PR 全程由程式推進。每個步驟都是一次獨立的 agent 執行，用 `.flow/` 裡的檔案交接。是否通過一律由程式檢查：跑測試、比對 git diff、驗證 JSON。兩家模型就能完整運作；有第三家時，仲裁會交給沒參與討論的那一家。
@@ -120,7 +120,7 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 | `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
 | `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可設 `AGENTFLOWCTL_VERBOSE=1` |
 
-`status` 會列出任務。進行中的任務會標出正在寫測試還是正在寫實作。
+`status` 會列出任務。進行中的任務會標出目前的步驟：🧪 寫測試、🛠️ 寫實作、👀 任務審查、🔍 任務驗證、🩹 任務修正。
 
 ### 清除 worktree
 
@@ -268,7 +268,7 @@ run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會
 | `defaultModels` | `{}` | 依 `claude`、`codex`、`gemini` adapter 指定全域預設 model；agent 的 `model` 優先，兩者都沒設時使用各 CLI 的預設。`command` adapter 不套用 |
 | `fixStrategy` | `ring` | `ring`：審查意見隨機交給審查者以外的一家；`author`：交回最後作者 |
 | `tddSplit` | `true` | 測試與實作是否分開 |
-| `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve` |
+| `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve`（任務審查與最後的程式碼審查都適用） |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
 | `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
@@ -337,7 +337,7 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | 兩家 | 兩家各自在全新 context 裡判斷 | 都核准就繼續；都不核准就依裁決意見修訂並重新審查；分歧依 `tieBreak` |
 | 一家 | 同一家 | 由它自己仲裁 |
 
-兩家時的仲裁是雙盲的。仲裁者只看計畫，以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、verify 與程式碼審查。
+兩家時的仲裁是雙盲的。仲裁者只看計畫，以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、任務審查、verify 與程式碼審查。
 
 計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。兩家都要求修改時不因仲裁輪數而直接失敗；整個 run 仍受 `maxAgentRuns` 限制。
 
@@ -355,6 +355,9 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 | 人工確認 | 你（只有 `--manual-plan`） | `agentflowctl approve` | — |
 | implement 紅燈 | 洗牌輪流，每家各一次 | 有測試變更，而且測試執行後失敗；規格與計畫檔沒有被修改 | 還原並重試 |
 | implement 綠燈 | 測試作者以外隨機一位 | 測試檔與規格、計畫檔都沒有被修改，而且測試通過 | 還原，或帶著輸出重試 |
+| implement 任務審查 | 作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` 這個任務的變更 | 進入任務修正 |
+| implement 任務驗證 | — | `install` 與所有 `checks` 通過，才換下一個任務 | 進入任務修正 |
+| implement 任務修正 | 與 fix 相同 | 與 fix 相同；修完重新任務審查、任務驗證 | 還原並重試 |
 | verify | — | `install` 與所有 `checks` 通過 | 交回作者修正 |
 | fix | verify 失敗交回作者；審查意見依 `fixStrategy` | 沒有刪除測試檔，也沒有修改規格與計畫檔 | 還原並重試 |
 | review | 作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve`（審查者對程式碼與規格、計畫檔的修改一律還原） | 依 `fixStrategy` 交給他人修正 |
@@ -363,11 +366,12 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
 每個任務的寫測試與寫實作 prompt 只帶入該任務對應的驗收條件；agent 優先讀任務與相關程式碼，遇到資訊不足或矛盾才查規格、計畫的相關段落。agent 可先跑相關測試，紅燈與完整測試仍由外部流程執行與判定，減少重複讀取文件和全套測試輸出所用的 token。
 計畫定案後（實作、修正、程式碼審查）不可修改 `.flow/` 裡的規格與計畫檔（`spec.md`、`acceptance.json`、`plan.md`、`tasks.json`、`tasks.ordered.json`）；實作與修正時被改就還原並重試，因為寫出的程式碼可能依賴被改過的規格，必須重寫；審查者只交出審查結果，修改直接還原即可，不必重跑審查。對規格有疑慮要寫進交接事項。
+每個任務綠燈後先做任務審查：審查者只看這個任務寫測試前到目前的 diff（`.flow/diff.patch`）與這個任務的驗收條件，審查紀錄存成 `.flow/review-<任務>-<審查者>.json`。審查者避開最後實作者；有第三家可選時，也優先避開測試作者，只有兩家或審查人數不足時才由測試作者審查。任務審查不要求結清所有交接事項（可能屬於後面的任務），最後的程式碼審查才會擋。審查通過後執行任務驗證（與 verify 相同的 `install` 與 `checks`）。審查要求修改或驗證失敗都進入任務修正，修正者的挑法與 fix 相同，修完回到任務審查再驗證。審查執行或任務修正若先失敗、後成功，會清除各自的連續失敗次數。所有任務完成後，仍照原本流程對整份變更跑一次 verify 與程式碼審查。
 程式碼審查仍逐條核對所有驗收條件，但只在 `review.json` 列出未通過或其他重要問題；先看 diff 與相關檔案，驗收條件不清楚時才查規格。修正階段先依 `feedback.md` 定位問題並執行相關檢查，完整檢查仍由後續 verify 執行，以減少反覆讀取完整文件與測試輸出。
 
 ## Prompt 結構
 
-每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
+每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、任務審查者、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
 
 Agent 的最後回覆要附上 XML 中繼資料：
 

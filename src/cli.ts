@@ -84,6 +84,9 @@ async function resolveCycle(flag?: string): Promise<string[]> {
   return found;
 }
 
+/** status 任務清單中，進行中任務的標記 */
+const TASK_PHASE_MARK: Record<FlowRun["taskPhase"], string> = { tests: "🧪", code: "🛠️ ", review: "👀", verify: "🔍", fix: "🩹" };
+
 const program = new Command()
   .name("agentflowctl")
   .description("在專案資料夾內執行的 Agent 開發流程：規格 → 計畫 → TDD 實作 → 驗證 → 審查 → PR")
@@ -219,7 +222,7 @@ program
     console.log("\n任務");
     tasks.data.forEach((t, i) => {
       const active = i === run.taskIndex && run.stage === "implement";
-      const mark = i < run.taskIndex ? "✅" : active ? (run.taskPhase === "tests" ? "🧪" : "🛠️ ") : "⬜";
+      const mark = i < run.taskIndex ? "✅" : active ? TASK_PHASE_MARK[run.taskPhase] : "⬜";
       console.log(`  ${mark} ${t.id} ${t.title}`);
     });
   });

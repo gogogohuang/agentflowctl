@@ -200,7 +200,10 @@ export const FlowRun = z.object({
   /** 各關卡的連續失敗次數 */
   attempts: z.record(z.string(), z.number()),
   taskIndex: z.number().int().nonnegative(),
-  taskPhase: z.enum(["tests", "code"]),
+  /** 目前任務進行到哪一步：寫測試 → 實作 → 審查 → 驗證，審查或驗證未通過時進入修正 */
+  taskPhase: z.enum(["tests", "code", "review", "verify", "fix"]),
+  /** 目前任務寫測試前的 commit，任務審查只看這之後的變更 */
+  taskBase: z.string().optional(),
   testsCommit: z.string().optional(),
   /** 目前任務的測試實際由誰撰寫（可能是代打） */
   lastTestsAuthor: z.string().optional(),
