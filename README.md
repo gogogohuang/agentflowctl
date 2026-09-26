@@ -17,7 +17,7 @@ claude    # 完成登入
 codex     # 完成登入
 ```
 
-沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。用 `agent setup` 互動設定：它會偵測本機的 `claude`、`codex`、`gemini`，逐一詢問要不要加入、名稱與 model，再設定參與的 agent；確認後才一次寫入，最後自動跑一次 `doctor`：
+沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。用 `agent setup` 互動設定：它會先列出已設定的 agent 與 CLI 是否可以執行，再偵測本機裝了哪些支援的 CLI（目前是 `claude`、`codex`、`gemini`），只針對已安裝的逐一詢問要不要加入、名稱與 model，再設定參與的 agent；沒偵測到的只列出、不詢問。確認後才一次寫入，最後自動跑一次 `doctor`：
 
 ```bash
 npx agentflowctl agent setup
@@ -300,7 +300,7 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 `agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
 
 ```bash
-agentflowctl agent setup                                  # 互動設定 claude、codex、gemini 與參與的 agent
+agentflowctl agent setup                                  # 偵測已安裝的 agent CLI，互動設定與參與的 agent
 agentflowctl agent list                                   # 設定的 agent、是否已安裝、是否參與
 agentflowctl agent add claude-strong --adapter claude --model opus
 agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
@@ -315,7 +315,7 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 - `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
 - `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回從 `agents` 自動偵測。
 - `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
-- `setup` 遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍會參與。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
+- `setup` 只詢問偵測到已安裝的 CLI，一個都沒有就不變更設定。遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍會參與。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
 
 已建立的 run 會沿用建立時參與的 agent，不受這些修改影響。
 

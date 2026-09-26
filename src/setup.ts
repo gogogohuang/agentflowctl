@@ -1,17 +1,22 @@
 import { addAgent, setAgent, setCycle, type Edit, type RawConfig } from "./agentConfig.js";
+import { ADAPTERS, type AdapterName } from "./agents/index.js";
 
 /**
  * `agentflowctl agent setup` 的互動精靈。
  * 問答與偵測結果由外部注入，這裡只負責流程；所有修改都在記憶體裡完成，確認後才交給呼叫端寫入。
  */
-export const SETUP_ADAPTERS = ["claude", "codex", "gemini"] as const;
-export type Detected = Record<(typeof SETUP_ADAPTERS)[number], boolean>;
+/** 不需自訂指令就能加入的 adapter；新增 adapter 時會自動出現在精靈裡 */
+export const SETUP_ADAPTERS = (Object.keys(ADAPTERS) as AdapterName[]).filter((a) => a !== "command");
+/** adapter → 預設的 CLI 是否已安裝，依詢問順序排列 */
+export type Detected = Record<string, boolean>;
 
 export interface SetupDeps {
   /** 問一個問題，回傳使用者輸入的原始字串 */
   ask: (question: string) => Promise<string>;
   /** 各 adapter 預設的 CLI 是否已安裝 */
   detected: Detected;
+  /** flow.config.json 已設定的 agent → CLI 是否可以執行；讀不到設定時可省略 */
+  configured?: Record<string, boolean>;
   log: (line: string) => void;
 }
 
@@ -29,9 +34,27 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
   const chosen: string[] = [];
   const existing = () => Object.keys((cfg.agents ?? {}) as object);
 
-  for (const adapter of SETUP_ADAPTERS) {
-    log(`${detected[adapter] ? "✅" : "❌"} ${adapter}${detected[adapter] ? "" : "（沒有偵測到 CLI）"}`);
-    if (!(await confirm(`  加入 ${adapter}？`, detected[adapter]))) continue;
+  const configured = Object.entries(deps.configured ?? {});
+  if (configured.length) {
+    const defs = (cfg.agents ?? {}) as Record<string, { adapter?: string }>;
+    log("已設定的 agent：");
+    for (const [name, ok] of configured) {
+      log(`  ${ok ? "✅" : "⚠️ "} ${name}（${defs[name]?.adapter ?? "?"}${ok ? "" : "，找不到可執行的 CLI"}）`);
+    }
+  }
+
+  const installed = Object.keys(detected).filter((a) => detected[a]);
+  const missing = Object.keys(detected).filter((a) => !detected[a]);
+  if (missing.length) log(`沒有偵測到：${missing.join("、")}（安裝後可重跑 agent setup）`);
+  if (!installed.length) {
+    log("沒有偵測到可加入的 agent CLI，設定沒有變更");
+    log("需要自訂指令的 CLI 請改用 agent add <name> --adapter command -- <指令>");
+    return null;
+  }
+
+  for (const adapter of installed) {
+    log(`✅ ${adapter}`);
+    if (!(await confirm(`  加入 ${adapter}？`, true))) continue;
 
     let name: string;
     for (;;) {
