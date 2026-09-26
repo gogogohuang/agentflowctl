@@ -18,13 +18,14 @@
 </handoff>
 
 <inputs>
-- .flow/feedback.md：失敗的檢查（型別、lint、測試、建置）或審查意見
-- .flow/spec.md 與 .flow/acceptance.json：規格
+- .flow/feedback.md：先讀取，確認失敗的檢查或審查意見與其證據
+- 相關程式碼與測試：依 feedback 指出的檔案和問題範圍查閱
+- .flow/acceptance.json 與 .flow/spec.md：預期行為不清楚或互相矛盾時，才查相關條件或段落
 </inputs>
 
 <steps>
-1. 找出每個問題的根本原因再修正，不要只針對症狀打補丁。
-2. 在沙箱內自行執行相關檢查，確認問題已解決且沒有造成新的錯誤。
+1. 優先處理 feedback 與交接事項指出的問題；先定位相關程式碼和測試，找出根本原因再修正。
+2. 在沙箱內執行與修改相關的檢查，確認問題已解決。完整檢查由後續 verify 階段執行；需要判斷跨模組影響時再自行擴大檢查範圍。
 </steps>
 
 <constraints>
