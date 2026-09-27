@@ -12,42 +12,16 @@
 
 ## 設定與 CLI
 
-模型強度設定在 `flow.config.json` 的 `agents.<名稱>.models`，每筆填 `name`、`strength`。強度只有 `low`、`medium`、`high`；清單順序是同強度模型的優先順序。`modelSelection.stageStrength` 可逐步驟覆蓋強度預設。
-
-```json
-{
-  "agents": {
-    "claude": {
-      "adapter": "claude",
-      "models": [
-        { "name": "使用者可用的輕量模型", "strength": "low" },
-        { "name": "使用者可用的強力模型", "strength": "high" }
-      ]
-    },
-    "codex": {
-      "adapter": "codex",
-      "models": [
-        { "name": "使用者可用的一般模型", "strength": "medium" },
-        { "name": "使用者可用的強力模型", "strength": "high" }
-      ]
-    }
-  },
-  "cycle": ["claude", "codex"],
-  "modelSelection": {
-    "mode": "adaptive",
-    "stageStrength": { "taskReview": "high" }
-  }
-}
-```
+模型強度設定在 `flow.config.json` 的 `agents.<名稱>.models`，每筆填 `name`、`strength`。`name` 必須是目標 CLI 目前可用、能成功執行最短請求的模型識別名稱；不能填「輕量模型」等自行命名的顯示文字。模型名稱由 `model add` 驗證通過後寫入設定，文件不硬編一份可能過期或與使用者帳號不符的名單。強度只有 `low`、`medium`、`high`；清單順序是同強度模型的優先順序。`modelSelection.stageStrength` 可逐步驟覆蓋強度預設。
 
 `modelSelection.mode` 為 `balanced` 或 `adaptive`，預設 `balanced`。`run --model-mode balanced|adaptive` 可覆蓋這次 run，選定的 mode 存入 `state.json`，resume 沿用。舊的 `agents.<name>.model` 與 `defaultModels` 在 `balanced` 模式繼續生效，不需遷移。`adaptive` 啟動前要求本次 `cycle` 的每個 agent 至少登記一個模型，且同一 agent 的模型名稱不重複。`agent add`／`agent set` 原有 `--model` 行為不變。
 
 使用者應透過指令管理模型與強度；CLI 會先讀取並驗證整份設定，再寫入 `flow.config.json`：
 
 ```bash
-agentflowctl model add claude sonnet --strength medium
-agentflowctl model set claude sonnet --strength high
-agentflowctl model remove claude sonnet
+agentflowctl model add claude <目前可用的模型ID> --strength medium
+agentflowctl model set claude <已登記的模型ID> --strength high
+agentflowctl model remove claude <已登記的模型ID>
 agentflowctl model list claude
 agentflowctl model check claude
 agentflowctl model mode adaptive
