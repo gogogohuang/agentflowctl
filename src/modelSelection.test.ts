@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clearModelReviewFailure, recordModelReviewFailure, selectModel, validateAdaptiveConfig } from "./modelSelection.js";
+import { clearModelReviewFailure, effectiveStageStrengths, recordModelReviewFailure, selectModel, validateAdaptiveConfig } from "./modelSelection.js";
 import { FlowRun, RepoConfig } from "./schemas.js";
 
 const run = (overrides: Record<string, unknown> = {}) => FlowRun.parse({
@@ -14,6 +14,17 @@ const cfg = () => RepoConfig.parse({ agents: { a: { adapter: "codex", models: [
   { name: "middle", strength: "medium" },
   { name: "large", strength: "high" },
 ] } } });
+
+describe("階段強度", () => {
+  it("列出每個階段實際生效的強度與來源", () => {
+    const custom = RepoConfig.parse({ agents: {}, modelSelection: { stageStrength: { taskReview: "high" } } });
+    const all = effectiveStageStrengths(custom);
+    expect(all.taskReview).toEqual({ strength: "high", custom: true });
+    expect(all.plan).toEqual({ strength: "high", custom: false });
+    expect(all.taskCode).toEqual({ strength: "low", custom: false });
+    expect(Object.keys(all)).toHaveLength(11);
+  });
+});
 
 describe("依階段與任務難度選模", () => {
   it("低難度任務選最低足夠強度，高難度任務提高底線", () => {

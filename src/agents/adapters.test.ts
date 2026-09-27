@@ -52,6 +52,14 @@ describe("adapter 事件解析", () => {
     expect(ADAPTERS.claude.parse("not json")).toEqual([]);
   });
 
+  it("初始化事件回報實際模型時送出 model 事件", () => {
+    expect(ADAPTERS.claude.parse('{"type":"system","subtype":"init","cwd":"/w","session_id":"s","tools":[],"model":"claude-opus-5-5","permissionMode":"auto"}'))
+      .toEqual([{ kind: "model", id: "claude-opus-5-5" }]);
+    expect(ADAPTERS.claude.parse('{"type":"system","subtype":"hook_started","hook_id":"h","session_id":"s"}')).toEqual([]);
+    expect(ADAPTERS.gemini.parse('{"type":"init","timestamp":"2026-09-27T08:00:00.000Z","session_id":"s","model":"gemini-2.5-pro"}'))
+      .toEqual([{ kind: "model", id: "gemini-2.5-pro" }]);
+  });
+
   it("結束事件沒有 token 數字時不送 usage，runner 才能分辨未回報", () => {
     expect(ADAPTERS.claude.parse('{"type":"result","subtype":"success","is_error":false,"result":"OK"}'))
       .toEqual([{ kind: "done", ok: true, summary: "OK" }]);

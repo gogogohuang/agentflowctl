@@ -26,7 +26,9 @@ export const gemini: Adapter = {
     const ev = tryJson(line);
     if (!ev) return [];
     const out: AgentEvent[] = [];
-    if (ev.type === "message" && ev.role === "assistant" && str(ev.content)?.trim()) {
+    if (ev.type === "init" && str(ev.model)) {
+      out.push({ kind: "model", id: str(ev.model)! });
+    } else if (ev.type === "message" && ev.role === "assistant" && str(ev.content)?.trim()) {
       out.push({ kind: "text", text: str(ev.content)! });
     } else if (ev.type === "tool_use") {
       out.push({ kind: "tool", name: str(ev.tool_name) ?? "tool", detail: toolDetail(ev.parameters) });

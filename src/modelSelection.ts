@@ -8,6 +8,12 @@ export const DEFAULT_STAGE_STRENGTH: Record<ModelStage, ModelStrength> = {
   taskTests: "low", taskCode: "low", taskReview: "medium", taskFix: "low", fix: "medium", review: "high",
 };
 
+export function effectiveStageStrengths(cfg: RepoConfig): Record<ModelStage, { strength: ModelStrength; custom: boolean }> {
+  const custom = cfg.modelSelection.stageStrength;
+  return Object.fromEntries((Object.keys(DEFAULT_STAGE_STRENGTH) as ModelStage[]).map((stage) =>
+    [stage, { strength: custom[stage] ?? DEFAULT_STAGE_STRENGTH[stage], custom: custom[stage] !== undefined }])) as Record<ModelStage, { strength: ModelStrength; custom: boolean }>;
+}
+
 export interface SelectedModel {
   name?: string;
   strength?: ModelStrength;
@@ -77,7 +83,7 @@ export function selectModel(
   }
   if (!def.models?.length) throw new Error(`agent ${agent} 沒有設定 models`);
   const stage = stepStage(step);
-  const floor = cfg.modelSelection.stageStrength[stage] ?? DEFAULT_STAGE_STRENGTH[stage];
+  const floor = effectiveStageStrengths(cfg)[stage].strength;
   const baseline = stage.startsWith("task") ? Math.max(LEVEL[floor], LEVEL[complexity ?? "medium"]) : LEVEL[floor];
   const targetStrength = STRENGTHS[Math.min(2, baseline + escalation(run, stage, step, reviewer))]!;
   const candidates = def.models.filter((m) => LEVEL[m.strength] >= LEVEL[targetStrength]);

@@ -88,7 +88,7 @@ Claude、Codex、Gemini adapter 的檢查都透過已安裝 CLI 的非互動模�
 
 `verify`、任務驗證、`pr` 沒有 LLM 呼叫，不提供模型設定。
 
-計畫 prompt 要求每個 task 新增 `complexity: "low" | "medium" | "high"`，依影響範圍與技術不確定性標註；計畫審查與計畫修正要檢查並保留它。schema 與驗證的分工如下：
+計畫 prompt 要求每個 task 新增 `complexity: "low" | "medium" | "high"`，依影響範圍、技術不確定性與失敗後果標註，取三者最高等級，並在 `plan.md` 寫出判定依據；計畫審查要對照程式碼獨立核對難度是否低估，計畫修正要保留或依審查意見調整它。各等級的判定準則寫在 `prompts/plan.md`，與 `docs/reference.md` 的說明一致；檔案數、行數與驗收條件數不能單獨決定難度。schema 與驗證的分工如下：
 
 - `TaskItem.complexity` 設為 optional，不設預設值，否則解析後就分不出「有寫」與「被補上」。
 - `validatePlan` 依 run 的 mode 另外檢查：`adaptive` run 的每個 task 都必須有合法的 `complexity`，缺少時計畫驗證失敗並重試；`balanced` run 不要求。

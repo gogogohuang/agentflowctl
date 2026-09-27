@@ -61,9 +61,11 @@ export interface UsageSummary {
   reportedRuns: number;
   unreportedRuns: number;
   legacyRuns: number;
+  /** 舊紀錄的原始數字，只供查閱，不算進合計與占比 */
+  legacyTokens: number;
 }
 
-const emptySummary = (): UsageSummary => ({ tokens: 0, inputTokens: 0, outputTokens: 0, runs: 0, reportedRuns: 0, unreportedRuns: 0, legacyRuns: 0 });
+const emptySummary = (): UsageSummary => ({ tokens: 0, inputTokens: 0, outputTokens: 0, runs: 0, reportedRuns: 0, unreportedRuns: 0, legacyRuns: 0, legacyTokens: 0 });
 
 export function listUsage(id: string): UsageEntry[] {
   const p = usagePath(id);
@@ -78,7 +80,10 @@ function addSummary(acc: UsageSummary, e: UsageEntry): void {
     acc.outputTokens += e.outputTokens ?? 0;
     acc.tokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
   } else if (e.usageReported === false || e.usageReported === true) acc.unreportedRuns += 1;
-  else acc.legacyRuns += 1;
+  else {
+    acc.legacyRuns += 1;
+    acc.legacyTokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
+  }
 }
 
 /** 只加總明確回報的 token，舊資料的 0 不視為已回報。 */

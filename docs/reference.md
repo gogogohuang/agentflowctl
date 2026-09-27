@@ -358,7 +358,7 @@ agentflowctl model mode adaptive
 agentflowctl model stage taskReview high
 ```
 
-`name` 接受 CLI 的別名或完整 ID；`model add` 以當前登入帳號送出短請求，成功後才寫設定，可能耗用少量 token。`model set` 只改強度，不重驗；`model check` 重驗已登記模型，並顯示檢查時間。檢查結果只適用於當下帳號與 CLI 狀態，不保證往後的額度或權限。手動編輯 JSON 不會得到可用性驗證。`model mode adaptive` 會檢查參與者有模型清單；`run` 另會在建立 worktree 前檢查本次實際參與者、模型參數衝突與自訂命令占位符。
+`name` 接受 CLI 的別名或完整 ID；`model add` 以當前登入帳號送出短請求，成功後才寫設定，可能耗用少量 token。`model set` 只改強度，不重驗；`model check` 重驗已登記模型，並顯示檢查時間。檢查結果只適用於當下帳號與 CLI 狀態，不保證往後的額度或權限。手動編輯 JSON 不會得到可用性驗證。`model mode adaptive` 與 adaptive 下的 `model remove` 會檢查參與者有模型清單，缺少時列出所有缺模型的 agent；`run` 另會在建立 worktree 前檢查本次實際參與者、模型參數衝突與自訂命令占位符，`resume` 接續 adaptive run 前也會重做這項檢查。`model stage` 不帶強度時列出各階段實際生效的強度，並標示是預設或自訂。
 
 | 階段鍵 | LLM 步驟 | 預設強度 |
 | --- | --- | --- |
@@ -378,7 +378,7 @@ agentflowctl model stage taskReview high
 
 同一步執行失敗會逐級升強度，最多到 high。審查要求修改本身不讓審查升級；修正後仍未通過才讓修正升級。計畫與整體審查小組只升級失敗的審查者，成功者下次仍從基準強度開始。額度用完沿用原政策：審查暫停，寫入工作可由另一位有額度的 agent 代打，並從代打者自己的清單重新選模。
 
-終端機每次呼叫都顯示送給 CLI 的模型名稱；別名若沒有 CLI 的實際模型回報，不推測解析結果。`status` 按模型、步驟與強度顯示呼叫和 token；只有明確回報的 token 納入合計與占比。沒有 usage 事件顯示「未回報」，舊紀錄因無法分辨真實 0 與補值而顯示「回報狀態不明」。
+終端機每次呼叫都顯示送給 CLI 的模型名稱；Claude Code 與 Gemini CLI 在初始化事件回報實際模型，與送出名稱不同時完成後顯示 `↳ CLI 回報實際模型：…`。Codex CLI 的事件不含模型，別名若沒有 CLI 的實際模型回報，不推測解析結果。`status` 按模型、步驟與強度顯示呼叫和 token；只有明確回報的 token 納入合計與占比。沒有 usage 事件顯示「未回報」，舊紀錄因無法分辨真實 0 與補值而顯示「回報狀態不明」，各 agent 用量另列其原始數字供查閱，不算進合計與占比。
 
 探測使用專用無工具呼叫與暫存目錄，不沿用正常工作時的工具權限或 `extraArgs`。目前 Codex CLI 沒有可確認的無工具模式，因此 `model add` 對 Codex 回報無法安全驗證；仍可用 `balanced` 模式。自訂 `command` adapter 若要參與 `adaptive`，執行指令須含 `{model}`，還需以可重複的 `agent set NAME --model-probe-arg=ARG` 設定 `modelProbe` 命令陣列。第一個值是執行檔，命令必須含 `{model}`，並輸出單一 JSON 物件：`{"requestedModel":"輸入名稱","resolvedModel":"實際模型 ID"}`。agentflowctl 會核對格式與名稱；底層服務是否真的被呼叫，仍由這支自訂探測命令負責。
 

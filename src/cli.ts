@@ -20,7 +20,7 @@ import { stopReport } from "./stopReport.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 import { addModel, removeModel, setModelMode, setModelStrength, setStageStrength } from "./modelConfig.js";
-import { validateAdaptiveConfig } from "./modelSelection.js";
+import { effectiveStageStrengths, validateAdaptiveConfig } from "./modelSelection.js";
 import { probeModel } from "./modelProbe.js";
 
 function mustGetRun(id: string): FlowRun {
@@ -218,7 +218,7 @@ program
     if (Object.keys(byAgent).length) {
       console.log("\n各 agent 用量");
       for (const [agent, c] of Object.entries(byAgent)) {
-        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}）`);
+        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}${c.legacyTokens ? `，原始數字 ${c.legacyTokens} tokens` : ""}）`);
       }
     }
     const byModelStage = usageByModelStage(id);
@@ -457,14 +457,10 @@ model.command("mode [mode]").action((mode?: string) => {
 });
 
 model.command("stage [stage] [strength]").action((stage?: string, strength?: string) => {
-  if (!stage) {
-    const cfg = loadRepoConfig();
-    console.log(JSON.stringify(cfg.modelSelection.stageStrength, null, 2));
-    return;
-  }
-  if (!strength) {
-    const cfg = loadRepoConfig();
-    console.log(`${stage}: ${cfg.modelSelection.stageStrength[parseModelStage(stage)] ?? "預設"}`);
+  if (!stage || !strength) {
+    const all = effectiveStageStrengths(loadRepoConfig());
+    const stages = stage ? [parseModelStage(stage)] : (Object.keys(all) as Array<keyof typeof all>);
+    for (const s of stages) console.log(`${s}: ${all[s].strength}${all[s].custom ? "（自訂）" : "（預設）"}`);
     return;
   }
   writeRawConfig(configPath(), setStageStrength(readRawConfig(configPath()), parseModelStage(stage), parseStrength(strength)));

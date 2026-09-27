@@ -20,7 +20,7 @@ describe("檔案儲存", () => {
     expect(listRuns().map((r) => r.id)).toEqual(["f-a"]);
     addUsage("f-a", { stage: "spec", agent: "claude", inputTokens: 100, outputTokens: 10 });
     addUsage("f-a", { stage: "review", agent: "codex", inputTokens: 50, outputTokens: 5 });
-    expect(usageByAgent("f-a").codex).toMatchObject({ tokens: 0, runs: 1, legacyRuns: 1 });
+    expect(usageByAgent("f-a").codex).toMatchObject({ tokens: 0, runs: 1, legacyRuns: 1, legacyTokens: 55 });
     expect(agentRuns("f-a")).toBe(2);
     addSubstitution("f-a", { step: "T-1-code", planned: "codex", actual: "claude" });
     expect(listSubstitutions("f-a").map((x) => x.actual)).toEqual(["claude"]);

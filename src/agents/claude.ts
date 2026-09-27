@@ -46,7 +46,9 @@ export const claude: Adapter = {
     const ev = tryJson(line);
     if (!ev) return [];
     const out: AgentEvent[] = [];
-    if (ev.type === "assistant") {
+    if (ev.type === "system" && ev.subtype === "init" && str(ev.model)) {
+      out.push({ kind: "model", id: str(ev.model)! });
+    } else if (ev.type === "assistant") {
       const content = (ev.message as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? [];
       for (const b of content) {
         if (b.type === "text" && str(b.text)?.trim()) out.push({ kind: "text", text: str(b.text)! });
