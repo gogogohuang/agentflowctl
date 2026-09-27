@@ -40,9 +40,31 @@
 }
 ```
 
-`modelSelection.mode` 為 `balanced` 或 `adaptive`，預設 `balanced`。`run --model-mode balanced|adaptive` 可覆蓋這次 run，選定的 mode 存入 `state.json`，resume 沿用。舊的 `agents.<name>.model` 與 `defaultModels` 在 `balanced` 模式繼續生效，不需遷移。`adaptive` 啟動前要求本次 `cycle` 的每個 agent 至少登記一個模型，且同一 agent 的模型名稱不重複。`agent add`／`agent set` 原有 `--model` 行為不變；使用者可直接編輯 JSON 的模型清單，由 `RepoConfig` 驗證。
+`modelSelection.mode` 為 `balanced` 或 `adaptive`，預設 `balanced`。`run --model-mode balanced|adaptive` 可覆蓋這次 run，選定的 mode 存入 `state.json`，resume 沿用。舊的 `agents.<name>.model` 與 `defaultModels` 在 `balanced` 模式繼續生效，不需遷移。`adaptive` 啟動前要求本次 `cycle` 的每個 agent 至少登記一個模型，且同一 agent 的模型名稱不重複。`agent add`／`agent set` 原有 `--model` 行為不變。
+
+使用者應透過指令管理模型與強度；CLI 會先讀取並驗證整份設定，再寫入 `flow.config.json`：
+
+```bash
+agentflowctl model add claude sonnet --strength medium
+agentflowctl model set claude sonnet --strength high
+agentflowctl model remove claude sonnet
+agentflowctl model list claude
+agentflowctl model check claude
+agentflowctl model mode adaptive
+agentflowctl model stage taskReview high
+```
+
+`model list` 不帶 agent 時列出全部已設定模型；`model check` 不帶 agent 時重驗全部。`model mode` 與 `model stage` 不帶值時顯示現有設定。`model add` 只在可用性檢查成功後寫入，失敗不留下半套設定。`model set` 只改強度，不重驗模型；需重新確認時執行 `model check`。移除最後一個模型時，若已啟用 `adaptive` 且該 agent 在 `cycle` 中，指令拒絕並說明原因。手動編輯 JSON 仍可被 schema 解析，但不會因此自動完成真實可用性檢查。可用性檢查結果只印在終端機，不寫進可由不同帳號共用的 `flow.config.json`。
 
 `command` adapter 在 `adaptive` 模式須在 `command` 參數陣列使用 `{model}` 占位符，執行時代入所選模型；缺少占位符就報設定錯誤。原有 `{prompt}`／stdin 行為保持。
+
+### 模型可用性檢查
+
+`model add` 用目標 agent 的 CLI 與當前登入身分，指定待新增的模型，在獨立暫存目錄送出一個最短、無工具的測試請求。CLI 成功結束且產生有效回應才視為「目前可呼叫」；只有 `--version` 成功或模型名稱出現在公開清單都不算。檢查有逾時上限；網路、認證、額度、模型名稱錯誤與逾時分別顯示可理解的原因。失敗時不寫設定。測試請求可能耗用少量 token，指令執行前與結果中明示。
+
+`model check` 以相同方式重新檢查已登記模型，顯示每一個模型的成功、失敗或無法確認狀態與檢查時間；它不自動刪除失敗模型，也不默默換模型。檢查是當下帳號與 CLI 的結果，不能保證未來額度、權限或模型供應不變。若執行 run 時模型失效，仍依正常 agent 錯誤或額度處理流程回報，不能把過期的檢查結果當成執行保證。
+
+Claude、Codex、Gemini adapter 的檢查都透過已安裝 CLI 的非互動模式與明確模型參數進行。檢查盡可能禁用工具或採唯讀模式、在暫存目錄執行，並限制輸出與時間。`command` adapter 只能確認自訂命令帶入 `{model}` 後能成功處理最短 prompt；任意自訂命令可能忽略模型參數，結果需標示為「命令可呼叫」，不能宣稱已證實底層模型名稱。
 
 ## 階段強度與 task 難度
 
@@ -82,7 +104,12 @@
 ## 驗證與文件
 
 - 測試設定 schema 的合法／非法模型清單、強度、階段鍵與舊格式；測試 `command` adapter 的 `{model}` 替換。
+- 測試 `model add`／`set`／`remove`／`list`／`check`／`mode`／`stage` 的設定變更、完整驗證與失敗不寫入；以可控制的假 CLI 測試成功、拒絕、逾時與隔離，不在自動測試中呼叫付費模型。
 - 測試純選模函式的階段底線、task 難度、同強度排序、強度不足、重試升級與重現性。
 - 測試 engine 串接：角色不變、代打重新選模、審查額度暫停、舊 run resume、終端機模型輸出與用量統計。
 - 測試計畫 prompt 和任務格式；原有 adapter 事件解析保持。
 - 同一個實作 commit 更新 `README.md` 的使用範例和 `docs/reference.md` 的完整設定、路由規則與 token 統計。執行 typecheck、test、build。
+
+## CLI 能力依據
+
+Claude Code 的官方 [CLI 參考](https://code.claude.com/docs/en/cli-reference)列出 `--model` 與非互動 `-p`；Gemini CLI 的官方[參考文件](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/cli-reference.md)列出 `--model` 與 `--prompt`。本機 `codex exec --help` 列出 `--model`、`--json`、`--sandbox`、`--ephemeral`。這些參數只證明可以嘗試指定模型，可用性仍須以該帳號的實際請求確認。
