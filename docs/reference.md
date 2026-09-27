@@ -358,7 +358,7 @@ agentflowctl model mode adaptive
 agentflowctl model stage taskReview high
 ```
 
-`name` 接受 CLI 的別名或完整 ID；`model add` 以當前登入帳號送出短請求，成功後才寫設定，可能耗用少量 token。`model set` 只改強度，不重驗；`model check` 重驗已登記模型，並顯示檢查時間。檢查結果只適用於當下帳號與 CLI 狀態，不保證往後的額度或權限。手動編輯 JSON 不會得到可用性驗證。`model mode adaptive` 與 adaptive 下的 `model remove` 會檢查參與者有模型清單，缺少時列出所有缺模型的 agent；`run` 另會在建立 worktree 前檢查本次實際參與者、模型參數衝突與自訂命令占位符，`resume` 接續 adaptive run 前也會重做這項檢查。`model stage` 不帶強度時列出各階段實際生效的強度，並標示是預設或自訂。
+`name` 接受 CLI 的別名或完整 ID；`model add` 以當前登入帳號送出短請求，成功後才寫設定，可能耗用少量 token。`model set` 只改強度，不重驗；`model check` 重驗已登記模型，並顯示檢查時間。檢查結果只適用於當下帳號與 CLI 狀態，不保證往後的額度或權限。手動編輯 JSON 不會得到可用性驗證。`model mode adaptive` 與移除最後一個模型的 `model remove` 會檢查參與者有模型清單，缺少時列出所有缺模型的 agent；此移除檢查不受目前模型模式影響。有設定 `cycle` 時檢查其中的 agent，否則檢查全部已設定的 agent。`run` 另會在建立 worktree 前檢查本次實際參與者、模型參數衝突與自訂命令占位符，`resume` 接續 adaptive run 前也會重做這項檢查。`model stage` 不帶強度時列出各階段實際生效的強度，並標示是預設或自訂。
 
 | 階段鍵 | LLM 步驟 | 預設強度 |
 | --- | --- | --- |

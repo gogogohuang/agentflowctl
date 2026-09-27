@@ -22,6 +22,10 @@ describe("模型設定編輯", () => {
     expect(() => removeModel(setModelMode(cfg, "adaptive"), "a", "small")).toThrow(/缺少模型：a/);
   });
 
+  it("balanced 模式也拒絕移除參與者的最後一個模型", () => {
+    expect(() => removeModel(base(), "a", "small")).toThrow(/缺少模型：a/);
+  });
+
   it("adaptive 下移除最後一個模型時，列出受影響範圍內所有缺模型的 agent", () => {
     const cfg = { agents: { a: { adapter: "claude", models: [{ name: "small", strength: "low" }] }, b: { adapter: "gemini" } }, modelSelection: { mode: "adaptive" } };
     expect(() => removeModel(cfg, "a", "small")).toThrow("以下 agent 缺少模型：a、b");

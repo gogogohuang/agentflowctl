@@ -49,7 +49,8 @@ export function removeModel(cfg: RawConfig, agent: string, name: string): RawCon
     if (!models.some((m) => m.name === name)) throw new Error(`agent ${agent} 沒有模型 ${name}`);
     return { ...def, models: models.filter((m) => m.name !== name) };
   });
-  if (((cfg.modelSelection ?? {}) as { mode?: string }).mode === "adaptive") assertModelsPresent(next);
+  const lastModelRemoved = !modelsOf(agentsOf(next)[agent]!).length;
+  if (lastModelRemoved || ((cfg.modelSelection ?? {}) as { mode?: string }).mode === "adaptive") assertModelsPresent(next);
   return next;
 }
 
