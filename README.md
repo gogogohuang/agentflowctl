@@ -391,7 +391,7 @@ Agent 的最後回覆要附上 XML 中繼資料：
 
 每次 agent 執行前，程式會把與當前階段有關的未結事項寫入 `.flow/handoff-context.md`。agent 完成時必須寫 `.flow/handoff-response.json`，包含 `newIssues` 和 `dispositions` 兩個陣列；沒有事項也要明確寫成 `{ "newIssues": [], "dispositions": [] }`。缺少檔案或 JSON 格式不合法，會依該步驟的重試規則處理。
 
-程式只在原有關卡通過後接收交接回覆，並將正式紀錄原子儲存於 `.agentflowctl/runs/<id>/handoff.json`。`action` 是需要後續處理的事項；`info` 只供參考。作者只能提出已修正並附證據，審查者才能確認結案或附理由接受。XML `<concerns>` 可以供人閱讀，但重要疑慮必須寫進交接 JSON，才能交給下一位 agent。額度代打與重試不會接收失敗呼叫的交接內容；中斷後可用 `resume` 接續。
+程式只在原有關卡通過後接收交接回覆，並將正式紀錄原子儲存於 `.agentflowctl/runs/<id>/handoff.json`。`action` 是需要後續處理的事項；`info` 只供參考。`.flow/handoff-context.md` 把兩者分成「待處理事項」與「參考資訊」並標出類型；只有 `action` 能處置，agent 若把 `info` 或已結案的事項寫進 `dispositions`，程式會略過，不會讓整個步驟重試。計畫修正與程式修正的交接回覆不合格時，修改會還原，但原本的審查意見會保留在 `feedback.md`，下一次修正仍知道要改什麼。作者只能提出已修正並附證據，審查者才能確認結案或附理由接受。XML `<concerns>` 可以供人閱讀，但重要疑慮必須寫進交接 JSON，才能交給下一位 agent。額度代打與重試不會接收失敗呼叫的交接內容；中斷後可用 `resume` 接續。
 
 計畫審查或程式碼審查若核准，但該階段仍有未結的 `action`，程式會視為互相矛盾的審查結果並重試。計畫定案和開 PR 前也會再檢查一次；`info` 會提供給目標階段閱讀，但不阻擋通關。審查結果本身也要一致：核准時 `items` 不可有未通過的項目，要求修改時至少要列一筆，否則視為格式錯誤並重新審查。
 

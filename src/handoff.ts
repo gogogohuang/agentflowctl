@@ -58,8 +58,8 @@ export function previewHandoff(
   for (const disposition of response.dispositions) {
     const issue = issues.find((item) => item.id === disposition.id);
     if (!issue) throw new Error(`找不到交接事項：${disposition.id}`);
-    if (issue.kind !== "action") throw new Error(`參考資訊不可結案：${disposition.id}`);
-    if (issue.status === "resolved" || issue.status === "accepted") throw new Error(`交接事項已結案：${disposition.id}`);
+    // 參考資訊沒有結案流程，已結案的事項也不需再處置：略過即可，不讓整個步驟因此重試
+    if (issue.kind !== "action" || issue.status === "resolved" || issue.status === "accepted") continue;
     if (role === "writer" && disposition.status !== "proposed_resolved") throw new Error("作者只能提出已修正，不能自行結案");
     if (role === "reviewer" && disposition.status === "proposed_resolved") throw new Error("審查者須明確結案或接受風險");
     issue.status = disposition.status;
@@ -86,13 +86,20 @@ export function prepareHandoff(id: string, _callKey: string, target: "plan" | "c
   const items = readHandoff(id).issues.filter((item) => item.targetStage === target && (
     item.kind === "info" || item.status === "open" || item.status === "proposed_resolved"
   ));
-  const lines = items.map((item) => {
+  const render = (item: (typeof items)[number]) => {
     const source = blind ? "" : `\n來源：${item.source.stage}／${item.source.agent}`;
     const resolution = item.resolution ? `\n處理理由：${item.resolution.reason}\n處理證據：${item.resolution.evidence}` : "";
-    return `## ${item.id}：${item.summary}\n證據：${item.evidence}\n狀態：${item.status}${resolution}${source}`;
-  });
+    const status = item.kind === "action" ? `\n狀態：${item.status}` : "";
+    return `### ${item.id}：${item.summary}\n類型：${item.kind}\n證據：${item.evidence}${status}${resolution}${source}`;
+  };
+  const actions = items.filter((item) => item.kind === "action").map(render);
+  const infos = items.filter((item) => item.kind !== "action").map(render);
+  const sections = [
+    actions.length ? `## 待處理事項（action，可在 dispositions 處置）\n\n${actions.join("\n\n")}` : "",
+    infos.length ? `## 參考資訊（info，只供參考，不要放進 dispositions）\n\n${infos.join("\n\n")}` : "",
+  ].filter(Boolean);
   mkdirSync(flowDir(id), { recursive: true });
-  writeFileSync(join(flowDir(id), "handoff-context.md"), `# 待處理交接事項\n\n${lines.length ? lines.join("\n\n") : "目前沒有待處理事項。"}\n`);
+  writeFileSync(join(flowDir(id), "handoff-context.md"), `# 待處理交接事項\n\n${sections.length ? sections.join("\n\n") : "目前沒有待處理事項。"}\n`);
   rmSync(responsePath(id), { force: true });
 }
 

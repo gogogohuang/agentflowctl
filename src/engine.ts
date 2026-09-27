@@ -383,7 +383,8 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
   const handoffError = finishHandoff(run, outcome, "writer");
   if (handoffError) {
     restorePlan(run, snap);
-    return retry(run, "plan-fix", handoffError, "plan_fix");
+    // 計畫已還原，要保留原本的審查意見，否則下一次修正不知道要改什麼
+    return retry(run, "plan-fix", `${feedback}\n\n另外，交接回覆不合格，本次修改已還原：${handoffError}`, "plan_fix");
   }
   acceptPlan(run, ordered);
   writeFileSync(flowFile(run, "feedback.md"), feedback); // 保留審查意見，讓下一輪審查者知道上次提了什麼
@@ -701,7 +702,7 @@ async function applyFix(
   const handoffError = finishHandoff(run, outcome, "writer");
   if (handoffError) {
     await resetTo(repo, before);
-    return again(handoffError);
+    return again(`${feedback}\n\n另外，交接回覆不合格，本次修正已還原：${handoffError}`);
   }
   return { agent: actual };
 }
