@@ -12,16 +12,16 @@
 
 ## 設定與 CLI
 
-模型強度設定在 `flow.config.json` 的 `agents.<名稱>.models`，每筆填 `name`、`strength`。`name` 必須是目標 CLI 目前可用、能成功執行最短請求的模型識別名稱；不能填「輕量模型」等自行命名的顯示文字。模型名稱由 `model add` 驗證通過後寫入設定，文件不硬編一份可能過期或與使用者帳號不符的名單。強度只有 `low`、`medium`、`high`；清單順序是同強度模型的優先順序。`modelSelection.stageStrength` 可逐步驟覆蓋強度預設。
+模型強度設定在 `flow.config.json` 的 `agents.<名稱>.models`，每筆填 `name`、`strength`。`name` 可填目標 CLI 接受的模型別名或完整 ID，但必須以目前帳號成功執行最短請求；不能填「輕量模型」等自行命名的顯示文字。模型名稱由 `model add` 驗證通過後寫入設定，文件不硬編一份可能過期或與使用者帳號不符的名單。強度只有 `low`、`medium`、`high`；清單順序是同強度模型的優先順序。`modelSelection.stageStrength` 可逐步驟覆蓋強度預設。
 
 `modelSelection.mode` 為 `balanced` 或 `adaptive`，預設 `balanced`。`run --model-mode balanced|adaptive` 可覆蓋這次 run，選定的 mode 存入 `state.json`，resume 沿用。舊的 `agents.<name>.model` 與 `defaultModels` 在 `balanced` 模式繼續生效，不需遷移。`adaptive` 啟動前要求本次 `cycle` 的每個 agent 至少登記一個模型，且同一 agent 的模型名稱不重複。`agent add`／`agent set` 原有 `--model` 行為不變。
 
 使用者應透過指令管理模型與強度；CLI 會先讀取並驗證整份設定，再寫入 `flow.config.json`：
 
 ```bash
-agentflowctl model add claude <目前可用的模型ID> --strength medium
-agentflowctl model set claude <已登記的模型ID> --strength high
-agentflowctl model remove claude <已登記的模型ID>
+agentflowctl model add claude <目前可用的別名或完整ID> --strength medium
+agentflowctl model set claude <已登記的名稱> --strength high
+agentflowctl model remove claude <已登記的名稱>
 agentflowctl model list claude
 agentflowctl model check claude
 agentflowctl model mode adaptive
@@ -34,7 +34,7 @@ agentflowctl model stage taskReview high
 
 ### 模型可用性檢查
 
-`model add` 用目標 agent 的 CLI 與當前登入身分，指定待新增的模型，在獨立暫存目錄送出一個最短、無工具的測試請求。CLI 成功結束且產生有效回應才視為「目前可呼叫」；只有 `--version` 成功或模型名稱出現在公開清單都不算。檢查有逾時上限；網路、認證、額度、模型名稱錯誤與逾時分別顯示可理解的原因。失敗時不寫設定。測試請求可能耗用少量 token，指令執行前與結果中明示。
+`model add` 用目標 agent 的 CLI 與當前登入身分，指定待新增的別名或完整 ID，在獨立暫存目錄送出一個最短、無工具的測試請求。CLI 成功結束且產生有效回應才視為「目前可呼叫」；只有 `--version` 成功或模型名稱出現在公開清單都不算。若 CLI 回報實際使用的完整模型 ID，檢查結果同時顯示「輸入名稱 → 實際模型」；沒有回報時只聲稱輸入名稱可呼叫，不推測其解析結果。檢查有逾時上限；網路、認證、額度、模型名稱錯誤與逾時分別顯示可理解的原因。失敗時不寫設定。測試請求可能耗用少量 token，指令執行前與結果中明示。
 
 `model check` 以相同方式重新檢查已登記模型，顯示每一個模型的成功、失敗或無法確認狀態與檢查時間；它不自動刪除失敗模型，也不默默換模型。檢查是當下帳號與 CLI 的結果，不能保證未來額度、權限或模型供應不變。若執行 run 時模型失效，仍依正常 agent 錯誤或額度處理流程回報，不能把過期的檢查結果當成執行保證。
 
@@ -65,13 +65,13 @@ Claude、Codex、Gemini adapter 的檢查都透過已安裝 CLI 的非互動模�
 1. `roles.ts` 先依 `cycle`、seed、作者／審查者排除規則分配 agent。模型強度不改變 `tddSplit`、審查 quorum、`fixStrategy` 或仲裁小組。
 2. 對同一邏輯步驟的執行或輸出驗證失敗，依既有 `attempts` 每次將目標強度提高一級，最多 `high`。審查要求修改後面對新內容的下一輪審查重新從基準強度起算。
 3. 在該 agent 的清單中選「強度足夠且最低」的模型；同強度依清單順序。若沒有足夠強度，選最強的已登記模型，在終端機提示強度不足。相同 run 狀態與設定在 resume 時得到相同選擇。
-4. `agentStep()` 把選中模型交給 adapter，終端機每次顯示 `agent`、模型名稱與是否低於目標；log 檔頭與用量紀錄也保存實際模型。預設安靜模式仍要印這一行，`-v` 照舊額外印文字與工具呼叫。`balanced` 也顯示本次的 `model`／`defaultModels`；兩者都沒設定時顯示「CLI 預設（名稱未知）」。
+4. `agentStep()` 把選中的名稱交給 adapter，終端機每次顯示 `agent`、所用模型名稱與是否低於目標；若是別名且 CLI 回報實際模型 ID，完成時再顯示解析結果。log 檔頭與用量紀錄保存送給 CLI 的名稱，實際回報的 ID 另存。CLI 未回報時不宣稱知道別名解析出的 ID。預設安靜模式仍要印模型提示，`-v` 照舊額外印文字與工具呼叫。`balanced` 也顯示本次的 `model`／`defaultModels`；兩者都沒設定時顯示「CLI 預設（名稱未知）」。
 
 額度不足沿用現行政策：審查暫停，寫入呼叫先還原半成品再換另一位有額度的 agent；代打 agent 從自己的清單重新選模。`fixStrategy: author` 與 verify 修正仍交回原作者。換同一 CLI 帳號的模型不視為額度問題的解法。
 
 ## Token 用量與相容性
 
-`costs.jsonl` 每次呼叫新增可選的 `model`、`strength`、`targetStrength` 與 `usageReported`；舊紀錄仍可讀。runner 必須區分「adapter 回報 0 token」與「沒有回報 usage」。`status` 顯示各模型、各 LLM 步驟的輸入、輸出與合計 token；未回報時顯示「未回報」，不當作 0。這些資料用來檢查是否真的減少總 token 與高強度模型使用量。
+`costs.jsonl` 每次呼叫新增可選的 `model`（送給 CLI 的別名或完整 ID）、`resolvedModel`（CLI 若回報）、`strength`、`targetStrength` 與 `usageReported`；舊紀錄仍可讀。runner 必須區分「adapter 回報 0 token」與「沒有回報 usage」。`status` 顯示各模型、各 LLM 步驟的輸入、輸出與合計 token；未回報時顯示「未回報」，不當作 0。這些資料用來檢查是否真的減少總 token 與高強度模型使用量。
 
 `FlowRun` 新狀態欄位設為 optional，舊 `state.json` 視為 `balanced`。不啟用 `adaptive` 時，角色分配與 CLI 模型維持既有行為，終端機新增實際模型提示。新模式在建立 worktree 前驗證清單、強度、階段鍵與 `command` 占位符，錯誤用繁體中文指出設定位置。
 
