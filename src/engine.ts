@@ -110,7 +110,7 @@ async function agentStep(
     if (r.resolvedModel && r.resolvedModel !== selected.name) info(run, `   ↳ CLI 回報實際模型：${r.resolvedModel}`);
     addUsage(run.id, { stage: step, agent, model: selected.name, resolvedModel: r.resolvedModel,
       strength: selected.strength, targetStrength: selected.targetStrength, usageReported: r.usageReported,
-      inputTokens: r.inputTokens, outputTokens: r.outputTokens });
+      inputTokens: r.inputTokens, outputTokens: r.outputTokens, cacheReadTokens: r.cacheReadTokens, cacheWriteTokens: r.cacheWriteTokens });
     if (!r.quotaExhausted) {
       reportMeta(run, agent, r);
       return { r, agent, step, callKey };

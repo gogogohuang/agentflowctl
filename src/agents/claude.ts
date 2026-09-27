@@ -56,8 +56,18 @@ export const claude: Adapter = {
       }
     } else if (ev.type === "result") {
       const usage = (ev.usage ?? {}) as Record<string, unknown>;
-      if (num(usage.input_tokens) !== undefined || num(usage.output_tokens) !== undefined) {
-        out.push({ kind: "usage", inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens) });
+      // Claude 的 input_tokens 不含 cache，要加回來才是實際送入量
+      const input = num(usage.input_tokens);
+      const cacheRead = num(usage.cache_read_input_tokens);
+      const cacheWrite = num(usage.cache_creation_input_tokens);
+      if (input !== undefined || num(usage.output_tokens) !== undefined) {
+        out.push({
+          kind: "usage",
+          inputTokens: input === undefined ? undefined : input + (cacheRead ?? 0) + (cacheWrite ?? 0),
+          outputTokens: num(usage.output_tokens),
+          ...(cacheRead !== undefined && { cacheReadTokens: cacheRead }),
+          ...(cacheWrite !== undefined && { cacheWriteTokens: cacheWrite }),
+        });
       }
       out.push({ kind: "done", ok: ev.is_error !== true, summary: str(ev.result) });
     }

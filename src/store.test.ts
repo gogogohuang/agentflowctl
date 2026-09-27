@@ -54,4 +54,10 @@ describe("檔案儲存", () => {
     expect(byTask["T-2"]).toMatchObject({ tokens: 44, runs: 1 });
     expect(byTask["非任務步驟"]).toMatchObject({ tokens: 176, runs: 3 });
   });
+
+  it("加總 cache 讀寫量，沒有 cache 欄位的紀錄算 0", () => {
+    addUsage("f-cache", { stage: "spec", agent: "c", usageReported: true, inputTokens: 43012, outputTokens: 500, cacheReadTokens: 40000, cacheWriteTokens: 3000 });
+    addUsage("f-cache", { stage: "plan", agent: "c", usageReported: true, inputTokens: 100, outputTokens: 10 });
+    expect(usageByAgent("f-cache").c).toMatchObject({ tokens: 43622, cacheReadTokens: 40000, cacheWriteTokens: 3000 });
+  });
 });

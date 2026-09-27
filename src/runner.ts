@@ -48,6 +48,8 @@ export interface AgentResult {
   meta?: ResultMeta;
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   usageReported: boolean;
   resolvedModel?: string;
 }
@@ -107,6 +109,8 @@ export async function runAgent(
   let outputTokens = 0;
   let inputReported = false;
   let outputReported = false;
+  let cacheReadTokens: number | undefined;
+  let cacheWriteTokens: number | undefined;
   let resolvedModel: string | undefined;
   const r = await exec(inv.cmd, inv.args, {
     cwd: t.cwd,
@@ -124,6 +128,8 @@ export async function runAgent(
         } else if (ev.kind === "usage") {
           if (ev.inputTokens !== undefined) { inputReported = true; inputTokens += ev.inputTokens; }
           if (ev.outputTokens !== undefined) { outputReported = true; outputTokens += ev.outputTokens; }
+          if (ev.cacheReadTokens !== undefined) cacheReadTokens = (cacheReadTokens ?? 0) + ev.cacheReadTokens;
+          if (ev.cacheWriteTokens !== undefined) cacheWriteTokens = (cacheWriteTokens ?? 0) + ev.cacheWriteTokens;
         } else if (ev.kind === "model") {
           resolvedModel = ev.id;
         } else if (ev.kind === "done") {
@@ -141,7 +147,7 @@ export async function runAgent(
   const quotaExhausted = !ok && isQuotaError(`${summary}\n${done?.summary ?? ""}\n${r.stderr}\n${tail(r.stdout, 4000)}`);
   const meta = parseResultMeta(summary) ?? parseResultMeta(lastText);
   return { ok, quotaExhausted, summary, meta, usageReported: inputReported && outputReported,
-    inputTokens: inputReported ? inputTokens : undefined, outputTokens: outputReported ? outputTokens : undefined, resolvedModel };
+    inputTokens: inputReported ? inputTokens : undefined, outputTokens: outputReported ? outputTokens : undefined, cacheReadTokens, cacheWriteTokens, resolvedModel };
 }
 
 /**

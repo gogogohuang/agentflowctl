@@ -12,6 +12,17 @@ describe("adapter 事件解析", () => {
       .toEqual([{ kind: "usage", inputTokens: 10, outputTokens: 2 }, { kind: "done", ok: true, summary: "ok" }]);
   });
 
+  it("claude：input 含 cache 讀寫，cache 另外列出", () => {
+    const line = j({ type: "result", is_error: false, result: "ok", usage: { input_tokens: 12, cache_creation_input_tokens: 3000, cache_read_input_tokens: 40000, output_tokens: 500 } });
+    expect(ADAPTERS.claude.parse(line)[0])
+      .toEqual({ kind: "usage", inputTokens: 43012, outputTokens: 500, cacheReadTokens: 40000, cacheWriteTokens: 3000 });
+  });
+
+  it("codex：cached_input_tokens 已含在 input_tokens 內", () => {
+    expect(ADAPTERS.codex.parse(j({ type: "turn.completed", usage: { input_tokens: 24763, cached_input_tokens: 24448, output_tokens: 122 } })))
+      .toEqual([{ kind: "usage", inputTokens: 24763, outputTokens: 122, cacheReadTokens: 24448 }]);
+  });
+
   it("claude：工具事件帶完整指令或參數", () => {
     const { parse } = ADAPTERS.claude;
     const cmd = `pnpm vitest run src/very/long/path/${"x".repeat(120)}.test.ts && echo done`;

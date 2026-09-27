@@ -13,6 +13,7 @@ import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, TaskList, type FlowRun } from "./schemas.js";
+import { computeStats, formatDuration } from "./stats.js";
 import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
 import { readJsonFile } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
@@ -23,11 +24,14 @@ import { addModel, removeModel, setModelMode, setModelStrength, setStageStrength
 import { DEFAULT_STAGE_STRENGTH, effectiveStageStrengths, validateAdaptiveConfig } from "./modelSelection.js";
 import { probeModel } from "./modelProbe.js";
 
+const cacheNote = (c: UsageSummary) =>
+  c.cacheReadTokens || c.cacheWriteTokens ? `（含 cache 讀 ${c.cacheReadTokens}、寫 ${c.cacheWriteTokens}）` : "";
+
 function printUsage(title: string, rows: Array<[string, UsageSummary]>): void {
   if (!rows.length) return;
   console.log(`\n${title}`);
   for (const [key, c] of rows) {
-    const value = c.reportedRuns ? `輸入 ${c.inputTokens}、輸出 ${c.outputTokens}、合計 ${c.tokens} tokens` : "未回報或回報狀態不明";
+    const value = c.reportedRuns ? `輸入 ${c.inputTokens}${cacheNote(c)}、輸出 ${c.outputTokens}、合計 ${c.tokens} tokens` : "未回報或回報狀態不明";
     console.log(`  ${key}: ${value}；${c.runs} 次（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}）`);
   }
 }
@@ -227,7 +231,7 @@ program
     if (Object.keys(byAgent).length) {
       console.log("\n各 agent 用量");
       for (const [agent, c] of Object.entries(byAgent)) {
-        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}${c.legacyTokens ? `，原始數字 ${c.legacyTokens} tokens` : ""}）`);
+        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens${cacheNote(c)}（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}${c.legacyTokens ? `，原始數字 ${c.legacyTokens} tokens` : ""}）`);
       }
     }
     const byStage = usageByStage(id);
@@ -531,6 +535,28 @@ program
     if (!entry) throw new Error(`找不到 log #${seq}（共 ${logs.length} 份，可用 agentflowctl logs ${id} 列出）`);
     const text = readFileSync(entry.file, "utf8");
     console.log(opts.raw ? text : renderLog(text, entry.file, { full: opts.full }));
+  });
+
+program
+  .command("stats <id>")
+  .description("依步驟統計耗時、執行次數與失敗次數，找出最花時間與最常重試的地方")
+  .action((id: string) => {
+    mustGetRun(id);
+    const stats = computeStats(listLogs(logDir(id)));
+    if (!stats.steps.length) return console.log("還沒有 log");
+    const total = stats.agentMs + stats.cmdMs;
+    const share = (ms: number) => (total ? `${(ms / total * 100).toFixed(0)}%` : "-");
+    console.log(`總經過時間 ${formatDuration(stats.wallMs)}（含暫停與等待核准）`);
+    console.log(`  agent    ${formatDuration(stats.agentMs).padStart(7)}  ${share(stats.agentMs)}`);
+    console.log(`  專案指令 ${formatDuration(stats.cmdMs).padStart(7)}  ${share(stats.cmdMs)}`);
+    if (stats.unfinished) console.log(`  未完成 ${stats.unfinished} 份（沒有結束紀錄，不計入耗時）`);
+    console.log("\n  步驟                 類型   次數  失敗   總耗時     最長   占比");
+    for (const s of stats.steps) {
+      console.log(
+        `  ${s.step.padEnd(19)}  ${s.kind === "cmd" ? "指令 " : "agent"}  ${String(s.runs).padStart(4)}  ${String(s.failed).padStart(4)}  ${formatDuration(s.totalMs).padStart(7)}  ${formatDuration(s.maxMs).padStart(7)}  ${share(s.totalMs).padStart(5)}${s.unfinished ? `  （未完成 ${s.unfinished}）` : ""}`,
+      );
+    }
+    console.log(`\n次數多或失敗多的步驟可用 agentflowctl logs ${id} 找出編號查看原因；token 用量見 agentflowctl status ${id}`);
   });
 
 program.parseAsync().catch((err: unknown) => {
