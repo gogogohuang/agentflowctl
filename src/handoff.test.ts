@@ -91,6 +91,23 @@ describe("交接紀錄", () => {
     expect(reviewHandoffGate(readHandoff("f-info"), "code", "approve")).toBeUndefined();
   });
 
+  it("交接脈絡標出事項類型；審查者誤把參考資訊寫進 dispositions 時略過，不讓審查重試", () => {
+    const created = mergeHandoff("f-info-dispose", source.callKey, source, {
+      newIssues: [{ kind: "info", summary: "routes.test.tsx 不存在", evidence: "src/containers/", targetStage: "plan" }], dispositions: [],
+    }, "writer");
+    const infoId = created.issues[0]!.id;
+    prepareHandoff("f-info-dispose", "next", "plan", false);
+    const context = readFileSync(join(flowDir("f-info-dispose"), "handoff-context.md"), "utf8");
+    expect(context).toContain("## 參考資訊（info，只供參考，不要放進 dispositions）");
+    expect(context).toContain("類型：info");
+    const reviewer = { ...source, stage: "plan_review" as const, step: "plan-review", agent: "claude", callKey: "f-info-dispose:review" };
+    const next = mergeHandoff("f-info-dispose", reviewer.callKey, reviewer, {
+      newIssues: [], dispositions: [{ id: infoId, status: "resolved", reason: "已改測 PageVersionSwitch", evidence: ".flow/tasks.json T-1" }],
+    }, "reviewer");
+    expect(next.issues[0]).toMatchObject({ kind: "info", status: "open" });
+    expect(next.appliedCalls).toContain(reviewer.callKey);
+  });
+
   it("待審核的修正理由與證據會交給審查者", () => {
     const created = mergeHandoff("f-proposal", source.callKey, source, { newIssues: [issue], dispositions: [] }, "writer");
     const id = created.issues[0]!.id;
