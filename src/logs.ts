@@ -23,6 +23,9 @@ export interface LogHeader {
   step: string;
   agent: string;
   adapter?: string;
+  model?: string;
+  strength?: string;
+  targetStrength?: string;
   startedAt: string;
 }
 

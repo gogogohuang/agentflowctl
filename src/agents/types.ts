@@ -3,6 +3,7 @@ export type AgentEvent =
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string; /** 完整的指令或主要參數（shell 指令、檔案路徑……），不截斷 */ detail?: string }
   | { kind: "usage"; inputTokens?: number; outputTokens?: number }
+  | { kind: "model"; id: string }
   | { kind: "done"; ok: boolean; summary?: string };
 
 export interface InvokeOptions {
@@ -29,6 +30,8 @@ export interface Adapter {
   /** 用來確認 CLI 是否已安裝的指令 */
   probe(command?: string[]): { cmd: string; args: string[] };
   invoke(opts: InvokeOptions): Invocation;
+  /** 實際模型可用性檢查；無法強制停用工具的 adapter 不提供。 */
+  invokeModelProbe?(model: string, cwd: string): Invocation;
   /** 解析一行 stdout；不認得的行回傳空陣列 */
   parse(line: string): AgentEvent[];
 }

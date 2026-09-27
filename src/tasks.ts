@@ -3,6 +3,13 @@ import type { AcceptanceItem, TaskItem } from "./schemas.js";
 /** 一個任務最多做兩件事：對應的驗收條件超過這個數量就要再拆 */
 export const MAX_TASK_ACCEPTANCE = 2;
 
+/** adaptive 的新計畫必須明確標註難度；舊 run 仍可讀取缺少欄位的 task。 */
+export function validateTaskComplexity(tasks: TaskItem[], mode: "balanced" | "adaptive"): string | undefined {
+  if (mode === "balanced") return undefined;
+  const missing = tasks.filter((task) => !task.complexity).map((task) => task.id);
+  return missing.length ? `任務缺少 complexity：${missing.join("、")}` : undefined;
+}
+
 /** 只取目前任務負責的驗收條件，避免每次實作都重讀整份清單。 */
 export function taskAcceptance(task: TaskItem, acceptance: AcceptanceItem[]): AcceptanceItem[] {
   const byId = new Map(acceptance.map((item) => [item.id, item]));

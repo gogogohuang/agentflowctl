@@ -32,12 +32,14 @@ const { addWorktree, commitAll } = await import("./git.js");
 const { advance } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, logDir, worktreeDir } = await import("./paths.js");
-const { agentRuns } = await import("./store.js");
+const { agentRuns, listSubstitutions, listUsage } = await import("./store.js");
 
-async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false) {
+async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
-    agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+    agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script, ...(adaptive ? ["{model}"] : [])],
+      ...(adaptive ? { models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }], modelProbe: ["node", script, "{model}"] } : {}) }])),
     cycle: ["a", "b", "c"], reviewQuorum: quorum,
+    ...(adaptive ? { modelSelection: { mode: "adaptive", stageStrength: { review: "low" } } } : {}),
   }));
   const wt = worktreeDir(id);
   await addWorktree(root, wt, "main", `flow/${id}`);
@@ -55,6 +57,7 @@ async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper 
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "review" as const,
     autopilot: true, maxAgentRuns: 10, cycle: ["a", "b", "c"], lastWriter: "a", attempts: {},
+    ...(adaptive ? { modelMode: "adaptive" as const } : {}),
     taskIndex: 1, taskPhase: "tests" as const, createdAt: now, updatedAt: now,
   });
 }
@@ -79,6 +82,14 @@ describe("審查交接關卡", () => {
     const ledger = readHandoff(run.id);
     expect(ledger.issues[0]?.status).toBe("resolved");
     expect(ledger.appliedCalls).toHaveLength(3); // 一位作者、兩位審查者
+  });
+
+  it("adaptive 審查依階段強度選模型，並把名稱寫入 log", async () => {
+    const run = await reviewRun("f-review-adaptive", "close", 1, false, true);
+    expect(run.stage).toBe("done");
+    const file = readdirSync(logDir(run.id)).find((name) => name.includes("-review-"));
+    expect(file).toBeDefined();
+    expect(readFileSync(join(logDir(run.id), file!), "utf8").split("\n")[0]).toContain('"model":"small"');
   });
 
   it("程式碼審查者修改驗收條件時會被還原", async () => {
@@ -352,5 +363,91 @@ describe("任務審查與驗證", () => {
     expect(run.stage).toBe("done");
     expect(steps(run.id)).toEqual(["tests:T-1", "code:T-1", "task-review:T-1", "fix", "task-review:T-1", "tests:T-2", "code:T-2", "task-review:T-2", "review"]);
     expect(readFileSync(join(worktreeDir(run.id), "fixed.txt"), "utf8")).toContain("check 失敗");
+  });
+});
+
+const quotaAgent = join(root, "quota-agent.mjs");
+writeFileSync(quotaAgent, `import { readFileSync, writeFileSync } from "node:fs";
+const [name, quota] = process.argv.slice(2);
+if (quota === "quota") {
+  console.error("usage limit reached");
+  process.exit(1);
+}
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("你是程式碼審查者")) writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+else writeFileSync(\`fixed-\${name}.txt\`, "ok\\n");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+
+async function quotaRun(id: string, stage: "fix" | "review", exhausted: string, models: Record<string, Array<{ name: string; strength: string }>>) {
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    agents: Object.fromEntries(Object.entries(models).map(([name, list]) => [name, {
+      adapter: "command", command: ["node", quotaAgent, name, name === exhausted ? "quota" : "ok", "{model}"],
+      modelProbe: ["node", quotaAgent, "{model}"], models: list,
+    }])),
+    cycle: Object.keys(models), install: "true", test: "true", checks: [], modelSelection: { mode: "adaptive" },
+  }));
+  await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+  writeFileSync(join(worktreeDir(id), "feature.ts"), "export const answer = 42;\n");
+  await commitAll(worktreeDir(id), "feat: 測試功能 [a]");
+  mkdirSync(flowDir(id), { recursive: true });
+  writeFileSync(join(flowDir(id), "feedback.md"), "測試失敗");
+  const now = new Date().toISOString();
+  return advance({
+    id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage, fixSource: "verify",
+    autopilot: true, maxAgentRuns: 3, cycle: Object.keys(models), lastWriter: "a", attempts: {}, modelMode: "adaptive",
+    taskIndex: 1, taskPhase: "tests", createdAt: now, updatedAt: now,
+  });
+}
+
+describe("adaptive 選模與流程串接", () => {
+  it("寫入步驟額度用完時，代打者從自己的模型清單重新選模", async () => {
+    const run = await quotaRun("f-model-sub", "fix", "a", {
+      a: [{ name: "a-small", strength: "low" }],
+      b: [{ name: "b-small", strength: "low" }, { name: "b-large", strength: "high" }],
+    });
+    expect(listSubstitutions(run.id)).toMatchObject([{ step: "fix", planned: "a", actual: "b" }]);
+    const fix = listUsage(run.id).filter((e) => e.stage === "fix").map((e) => ({ agent: e.agent, model: e.model }));
+    expect(fix).toEqual([{ agent: "a", model: "a-small" }, { agent: "b", model: "b-large" }]);
+    expect(existsSync(join(worktreeDir(run.id), "fixed-b.txt"))).toBe(true);
+  });
+
+  it("審查者額度用完時暫停，不計入選模失敗也不升級", async () => {
+    const run = await quotaRun("f-model-review-quota", "review", "b", {
+      a: [{ name: "a-large", strength: "high" }],
+      b: [{ name: "b-large", strength: "high" }],
+    });
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("review");
+    expect(run.pauseReason).toContain("b 的額度已用完");
+    expect(run.modelRetryAttempts ?? {}).toEqual({});
+    expect(listSubstitutions(run.id)).toEqual([]);
+  });
+
+  it("舊 run 的任務沒有難度時，選模視為 medium", async () => {
+    const id = "f-model-legacy-task";
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["c", "d"].map((name) => [name, {
+        adapter: "command", command: ["node", worker, "{model}"], modelProbe: ["node", worker, "{model}"],
+        models: [{ name: "small", strength: "low" }, { name: "middle", strength: "medium" }, { name: "large", strength: "high" }],
+      }])),
+      cycle: ["c", "d"], install: "true", test: "for f in T-*.test.mjs; do node $f || exit 1; done", checks: [],
+      modelSelection: { mode: "adaptive" },
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "T-1 完成" }]));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "任務 T-1", description: "完成 T-1", dependsOn: [], acceptance: ["AC-1"] },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+      autopilot: true, maxAgentRuns: 20, cycle: ["c", "d"], attempts: {}, modelMode: "adaptive",
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.stage).toBe("done");
+    const models = Object.fromEntries(listUsage(run.id).map((e) => [e.stage, e.model]));
+    expect(models).toMatchObject({ "T-1-tests": "middle", "T-1-code": "middle", "T-1-review": "middle", review: "large" });
   });
 });

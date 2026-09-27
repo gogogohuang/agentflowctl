@@ -26,6 +26,11 @@ function settingsFile(o: InvokeOptions): string {
 
 export const claude: Adapter = {
   probe: () => ({ cmd: "claude", args: ["--version"] }),
+  invokeModelProbe: (model) => ({
+    cmd: "claude",
+    args: ["-p", "只回答 OK", "--model", model, "--output-format", "stream-json", "--verbose",
+      "--tools", "", "--strict-mcp-config", "--disable-slash-commands"],
+  }),
   invoke: (o) => ({
     cmd: "claude",
     args: [
@@ -41,7 +46,9 @@ export const claude: Adapter = {
     const ev = tryJson(line);
     if (!ev) return [];
     const out: AgentEvent[] = [];
-    if (ev.type === "assistant") {
+    if (ev.type === "system" && ev.subtype === "init" && str(ev.model)) {
+      out.push({ kind: "model", id: str(ev.model)! });
+    } else if (ev.type === "assistant") {
       const content = (ev.message as { content?: Array<Record<string, unknown>> } | undefined)?.content ?? [];
       for (const b of content) {
         if (b.type === "text" && str(b.text)?.trim()) out.push({ kind: "text", text: str(b.text)! });
@@ -49,11 +56,9 @@ export const claude: Adapter = {
       }
     } else if (ev.type === "result") {
       const usage = (ev.usage ?? {}) as Record<string, unknown>;
-      out.push({
-        kind: "usage",
-        inputTokens: num(usage.input_tokens),
-        outputTokens: num(usage.output_tokens),
-      });
+      if (num(usage.input_tokens) !== undefined || num(usage.output_tokens) !== undefined) {
+        out.push({ kind: "usage", inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens) });
+      }
       out.push({ kind: "done", ok: ev.is_error !== true, summary: str(ev.result) });
     }
     return out;

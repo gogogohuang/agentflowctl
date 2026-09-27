@@ -12,13 +12,25 @@ import { cleanableRuns, cleanRun } from "./cleanup.js";
 import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
-import { TaskList, type FlowRun } from "./schemas.js";
-import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent } from "./store.js";
+import { ModelStage, ModelStrength, TaskList, type FlowRun } from "./schemas.js";
+import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
 import { readJsonFile } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
+import { addModel, removeModel, setModelMode, setModelStrength, setStageStrength } from "./modelConfig.js";
+import { DEFAULT_STAGE_STRENGTH, effectiveStageStrengths, validateAdaptiveConfig } from "./modelSelection.js";
+import { probeModel } from "./modelProbe.js";
+
+function printUsage(title: string, rows: Array<[string, UsageSummary]>): void {
+  if (!rows.length) return;
+  console.log(`\n${title}`);
+  for (const [key, c] of rows) {
+    const value = c.reportedRuns ? `輸入 ${c.inputTokens}、輸出 ${c.outputTokens}、合計 ${c.tokens} tokens` : "未回報或回報狀態不明";
+    console.log(`  ${key}: ${value}；${c.runs} 次（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}）`);
+  }
+}
 
 function mustGetRun(id: string): FlowRun {
   const run = getRun(id);
@@ -104,19 +116,23 @@ program
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
   .option("--cycle <agents>", "參與的 agent，例如 claude,codex,gemini（順序不影響分工）")
-  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string }) => {
+  .option("--model-mode <mode>", "這次 run 的模型模式：balanced 或 adaptive")
+  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string; modelMode?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
     const root = projectRoot();
     const base = opts.base ?? (await git(root, "branch", "--show-current"));
     if (!base) throw new Error("目前不在任何分支上，請用 --base 指定基底分支");
     const cycle = await resolveCycle(opts.cycle);
+    const cfg = loadRepoConfig();
+    const modelMode = opts.modelMode ?? cfg.modelSelection.mode;
+    if (modelMode !== "balanced" && modelMode !== "adaptive") throw new Error(`未知的模型模式：${modelMode}`);
+    if (modelMode === "adaptive") validateAdaptiveConfig(cfg, cycle);
     const id = `f-${Date.now().toString(36)}`;
     const branch = `flow/${id}`;
     console.log(`[${id}] 🌿 從 ${base} 建立 worktree（分支 ${branch}）`);
     await addWorktree(root, worktreeDir(id), base, branch);
     console.log(`[${id}] 🤝 參與的 agent：${cycle.join("、")}（角色隨機分配）`);
-    const cfg = loadRepoConfig();
     const now = new Date().toISOString();
     // worktree 一建好就寫入紀錄：之後在任何地方中斷，都能用 resume 接續或用 clean 清掉
     const run = saveRun({
@@ -129,6 +145,7 @@ program
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
       cycle,
       attempts: {},
+      modelMode,
       taskIndex: 0,
       taskPhase: "tests",
       createdAt: now,
@@ -156,12 +173,13 @@ program
   .option("--max-agent-runs <n>", "調整 agent 執行次數上限")
   .action(async (id: string, opts: { maxAgentRuns?: string }) => {
     let run = mustGetRun(id);
+    if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
     if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
     }
     if (run.stage === "failed") {
-      run = { ...run, stage: run.failedStage ?? "spec", attempts: {}, failedStage: undefined, failureReason: undefined };
+      run = { ...run, stage: run.failedStage ?? "spec", attempts: {}, modelRetryAttempts: {}, failedStage: undefined, failureReason: undefined };
     }
     await drive(saveRun(run));
   });
@@ -209,8 +227,26 @@ program
     if (Object.keys(byAgent).length) {
       console.log("\n各 agent 用量");
       for (const [agent, c] of Object.entries(byAgent)) {
-        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} tokens`);
+        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}${c.legacyTokens ? `，原始數字 ${c.legacyTokens} tokens` : ""}）`);
       }
+    }
+    const byStage = usageByStage(id);
+    const stageOrder = [...Object.keys(DEFAULT_STAGE_STRENGTH), "其他"];
+    printUsage("各階段用量（同一步驟的所有任務合計）", Object.entries(byStage).sort(([a], [b]) => stageOrder.indexOf(a) - stageOrder.indexOf(b)));
+    const taskNo = (key: string) => /^T-(\d+)$/.exec(key) ? Number(key.slice(2)) : Infinity;
+    printUsage("各任務用量（寫測試、實作、任務審查、任務修正）", Object.entries(usageByTask(id)).sort(([a], [b]) => taskNo(a) - taskNo(b)));
+    printUsage("各模型與步驟用量（只加總明確回報）", Object.entries(usageByModelStage(id)));
+    const byStrength = usageByStrength(id);
+    const reportedTotal = Object.values(byStrength).reduce((sum, entry) => sum + entry.tokens, 0);
+    if (Object.keys(byStrength).length) {
+      console.log("\n模型強度用量（占比只計入明確回報）");
+      for (const strength of ["low", "medium", "high", "未知"]) {
+        const entry = byStrength[strength];
+        if (!entry) continue;
+        const share = reportedTotal ? `${(entry.tokens / reportedTotal * 100).toFixed(1)}%` : "無法計算";
+        console.log(`  ${strength}: ${entry.tokens} tokens，占比 ${share}，呼叫 ${entry.runs} 次（未回報 ${entry.unreportedRuns}、舊紀錄不明 ${entry.legacyRuns}）`);
+      }
+      console.log(`  高強度呼叫：${byStrength.high?.runs ?? 0} 次`);
     }
     const subs = listSubstitutions(id);
     if (subs.length) {
@@ -231,6 +267,16 @@ program
 
 const configPath = () => join(projectRoot(), "flow.config.json");
 const collect = (value: string, prev: string[] = []) => [...prev, value];
+const parseStrength = (value: string) => {
+  const result = ModelStrength.safeParse(value);
+  if (!result.success) throw new Error(`未知的模型強度：${value}（請使用 low、medium 或 high）`);
+  return result.data;
+};
+const parseModelStage = (value: string) => {
+  const result = ModelStage.safeParse(value);
+  if (!result.success) throw new Error(`未知的 LLM 階段：${value}`);
+  return result.data;
+};
 
 function applyEdit(edit: (cfg: Record<string, unknown>) => Edit, done: string): void {
   const before = readRawConfig(configPath());
@@ -275,9 +321,10 @@ agent
   .requiredOption("--adapter <adapter>", "claude、codex、gemini 或 command")
   .option("--model <model>", "模型名稱")
   .option("--extra-arg <arg>", "額外參數，可重複；以 - 開頭時寫成 --extra-arg=--sandbox", collect)
-  .action((name: string, command: string[], opts: { adapter: string; model?: string; extraArg?: string[] }) => {
+  .option("--model-probe-arg <arg>", "自訂 command 的模型探測命令參數，可重複", collect)
+  .action((name: string, command: string[], opts: { adapter: string; model?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
     applyEdit(
-      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, command: command.length ? command : undefined }),
+      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
       `已新增 ${name}；要讓它參與請用 agent cycle`,
     );
   });
@@ -288,9 +335,10 @@ agent
   .option("--adapter <adapter>", "claude、codex、gemini 或 command")
   .option("--model <model>", "模型名稱")
   .option("--extra-arg <arg>", "額外參數，可重複，會整個取代原本的設定", collect)
-  .action((name: string, command: string[], opts: { adapter?: string; model?: string; extraArg?: string[] }) => {
+  .option("--model-probe-arg <arg>", "自訂 command 的模型探測命令參數，可重複，會整個取代", collect)
+  .action((name: string, command: string[], opts: { adapter?: string; model?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
     applyEdit(
-      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, command: command.length ? command : undefined }),
+      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
       `已更新 ${name}`,
     );
   });
@@ -345,6 +393,86 @@ agent
     console.log("");
     await doctor();
   });
+
+// ───────────── 模型清單與各階段強度 ─────────────
+
+const model = program.command("model").description("設定模型強度並檢查目前帳號能否呼叫模型");
+
+model.command("add <agent> <name>")
+  .requiredOption("--strength <strength>", "low、medium 或 high")
+  .action(async (agent: string, name: string, opts: { strength: string }) => {
+    const strength = parseStrength(opts.strength);
+    const before = readRawConfig(configPath());
+    const cfg = loadRepoConfig();
+    const def = cfg.agents[agent];
+    if (!def) throw new Error(`未定義的 agent：${agent}`);
+    const next = addModel(before, agent, name, strength);
+    console.log("模型檢查會送出最短請求，可能耗用少量 token。");
+    const checked = await probeModel(def, name);
+    if (checked.status !== "ok") throw new Error(`${agent} 的模型 ${name} 未加入：${checked.reason}`);
+    writeRawConfig(configPath(), next);
+    console.log(`✅ 已新增 ${agent} 的模型 ${name}（${strength}）${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}；探測可能耗用少量 token`);
+  });
+
+model.command("set <agent> <name>")
+  .requiredOption("--strength <strength>", "low、medium 或 high")
+  .action((agent: string, name: string, opts: { strength: string }) => {
+    writeRawConfig(configPath(), setModelStrength(readRawConfig(configPath()), agent, name, parseStrength(opts.strength)));
+    console.log(`✅ 已將 ${agent} 的模型 ${name} 強度設為 ${opts.strength}；此指令不重驗可用性`);
+  });
+
+model.command("remove <agent> <name>").action((agent: string, name: string) => {
+  writeRawConfig(configPath(), removeModel(readRawConfig(configPath()), agent, name));
+  console.log(`✅ 已移除 ${agent} 的模型 ${name}`);
+});
+
+model.command("list [agent]").action((agent?: string) => {
+  const cfg = loadRepoConfig();
+  const names = agent ? [agent] : Object.keys(cfg.agents);
+  for (const name of names) {
+    const def = cfg.agents[name];
+    if (!def) throw new Error(`未定義的 agent：${name}`);
+    console.log(`${name}（${def.adapter}）`);
+    for (const item of def.models ?? []) console.log(`  ${item.name}  ${item.strength}`);
+    if (!def.models?.length) console.log("  尚未設定模型");
+  }
+  console.log("清單只顯示設定內容；要確認當前帳號是否可用，請執行 model check。");
+});
+
+model.command("check [agent]").action(async (agent?: string) => {
+  const cfg = loadRepoConfig();
+  const names = agent ? [agent] : Object.keys(cfg.agents);
+  console.log("模型重驗會逐一送出短請求，可能耗用少量 token。");
+  for (const name of names) {
+    const def = cfg.agents[name];
+    if (!def) throw new Error(`未定義的 agent：${name}`);
+    for (const item of def.models ?? []) {
+      const checked = await probeModel(def, item.name);
+      const at = new Date().toISOString();
+      const mark = checked.status === "ok" ? "✅" : checked.status === "unverifiable" ? "⚪" : "❌";
+      const result = checked.status === "ok" ? `可呼叫${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}` : checked.reason;
+      console.log(`${mark} ${at} ${name} ${item.name}: ${result}`);
+    }
+  }
+});
+
+model.command("mode [mode]").action((mode?: string) => {
+  if (!mode) return console.log(`模型模式：${loadRepoConfig().modelSelection.mode}`);
+  if (mode !== "balanced" && mode !== "adaptive") throw new Error(`未知的模型模式：${mode}`);
+  writeRawConfig(configPath(), setModelMode(readRawConfig(configPath()), mode));
+  console.log(`✅ 模型模式已設為 ${mode}`);
+});
+
+model.command("stage [stage] [strength]").action((stage?: string, strength?: string) => {
+  if (!stage || !strength) {
+    const all = effectiveStageStrengths(loadRepoConfig());
+    const stages = stage ? [parseModelStage(stage)] : (Object.keys(all) as Array<keyof typeof all>);
+    for (const s of stages) console.log(`${s}: ${all[s].strength}${all[s].custom ? "（自訂）" : "（預設）"}`);
+    return;
+  }
+  writeRawConfig(configPath(), setStageStrength(readRawConfig(configPath()), parseModelStage(stage), parseStrength(strength)));
+  console.log(`✅ ${stage} 的最低強度已設為 ${strength}`);
+});
 
 /** 檢查設定的 agent 是否已安裝，印出參與的 agent 與主要設定 */
 async function doctor(): Promise<void> {

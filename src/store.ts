@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { stageOfStep } from "./modelSelection.js";
 import { agentflowctlDir, runDir } from "./paths.js";
 import { FlowRun } from "./schemas.js";
 
@@ -39,8 +40,13 @@ export function listRuns(): FlowRun[] {
 export interface UsageEntry {
   stage: string;
   agent: string;
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  usageReported?: boolean;
+  model?: string;
+  resolvedModel?: string;
+  strength?: "low" | "medium" | "high";
+  targetStrength?: "low" | "medium" | "high";
 }
 
 export function addUsage(id: string, entry: UsageEntry): void {
@@ -48,20 +54,53 @@ export function addUsage(id: string, entry: UsageEntry): void {
   appendFileSync(usagePath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 
-/** 依 agent 加總 token 與執行次數，方便比較各家模型 */
-export function usageByAgent(id: string): Record<string, { tokens: number; runs: number }> {
+export interface UsageSummary {
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  runs: number;
+  reportedRuns: number;
+  unreportedRuns: number;
+  legacyRuns: number;
+  /** 舊紀錄的原始數字，只供查閱，不算進合計與占比 */
+  legacyTokens: number;
+}
+
+const emptySummary = (): UsageSummary => ({ tokens: 0, inputTokens: 0, outputTokens: 0, runs: 0, reportedRuns: 0, unreportedRuns: 0, legacyRuns: 0, legacyTokens: 0 });
+
+export function listUsage(id: string): UsageEntry[] {
   const p = usagePath(id);
-  const out: Record<string, { tokens: number; runs: number }> = {};
-  if (!existsSync(p)) return out;
-  for (const line of readFileSync(p, "utf8").split("\n").filter(Boolean)) {
-    const e = JSON.parse(line) as Partial<UsageEntry>;
-    const key = e.agent ?? "?";
-    const acc = (out[key] ??= { tokens: 0, runs: 0 });
+  return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as UsageEntry) : [];
+}
+
+function addSummary(acc: UsageSummary, e: UsageEntry): void {
+  acc.runs += 1;
+  if (e.usageReported === true && typeof e.inputTokens === "number" && typeof e.outputTokens === "number") {
+    acc.reportedRuns += 1;
+    acc.inputTokens += e.inputTokens ?? 0;
+    acc.outputTokens += e.outputTokens ?? 0;
     acc.tokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
-    acc.runs += 1;
+  } else if (e.usageReported === false || e.usageReported === true) acc.unreportedRuns += 1;
+  else {
+    acc.legacyRuns += 1;
+    acc.legacyTokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
   }
+}
+
+/** 只加總明確回報的 token，舊資料的 0 不視為已回報。 */
+function groupUsage(id: string, keyOf: (e: UsageEntry) => string): Record<string, UsageSummary> {
+  const out: Record<string, UsageSummary> = {};
+  for (const e of listUsage(id)) addSummary(out[keyOf(e)] ??= emptySummary(), e);
   return out;
 }
+
+export const usageByAgent = (id: string) => groupUsage(id, (e) => e.agent);
+export const usageByModelStage = (id: string) => groupUsage(id, (e) => `${e.model ?? "CLI 預設（名稱未知）"} / ${e.stage}`);
+export const usageByStrength = (id: string) => groupUsage(id, (e) => e.strength ?? "未知");
+/** 依階段鍵加總（所有任務的同一步合在一起）；認不得的步驟歸為「其他」。 */
+export const usageByStage = (id: string) => groupUsage(id, (e) => stageOfStep(e.stage) ?? "其他");
+/** 依任務加總寫測試、實作、任務審查與任務修正；規格、計畫與整體階段歸為「非任務步驟」。 */
+export const usageByTask = (id: string) => groupUsage(id, (e) => /^(T-\d+)-/.exec(e.stage)?.[1] ?? "非任務步驟");
 
 /** 這個 run 已執行 agent 的次數（每次執行都會記一筆用量） */
 export function agentRuns(id: string): number {

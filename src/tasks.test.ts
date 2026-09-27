@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TaskItem } from "./schemas.js";
-import { orderTasks, taskAcceptance } from "./tasks.js";
+import { orderTasks, taskAcceptance, validateTaskComplexity } from "./tasks.js";
 
 const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
   TaskItem.parse({ id, title: id, description: id, dependsOn, acceptance });
@@ -50,5 +50,14 @@ describe("taskAcceptance", () => {
 
   it("驗收條件在計畫通過後遺失時明確失敗", () => {
     expect(() => taskAcceptance(task("T-2", [], ["AC-9"]), acceptance)).toThrow("AC-9 不存在");
+  });
+});
+
+describe("任務難度", () => {
+  it("adaptive 必須逐任務標註，balanced 允許舊任務缺少標註", () => {
+    const without = [task("T-1")];
+    expect(validateTaskComplexity(without, "adaptive")).toContain("T-1");
+    expect(validateTaskComplexity(without, "balanced")).toBeUndefined();
+    expect(validateTaskComplexity([TaskItem.parse({ ...without[0], complexity: "high" })], "adaptive")).toBeUndefined();
   });
 });
