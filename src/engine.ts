@@ -252,7 +252,7 @@ function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
   info(run, `📋 共 ${ordered.length} 個任務：${ordered.map((t) => t.id).join(" → ")}`);
   ordered.forEach((t, i) => {
     const a = taskAgents(run.cycle, i, cfg.tddSplit, run.id);
-    info(run, `   ${t.id} 測試：${a.tests}　實作：${a.code}`);
+    info(run, `   ${t.id} 測試：${a.tests}　實作：${a.code}　審查：${a.review}`);
   });
 }
 
@@ -582,6 +582,8 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     prompt: (reviewer, authors) => renderPrompt("task-review", { reviewer, authors, task: taskJson, acceptance: acceptanceJson }),
     saveAs: (reviewer) => `review-${task.id}-${reviewer}.json`,
     testAuthor: run.lastTestsAuthor,
+    // 輪流交換角色：優先由排定的審查者審查，讓各家用量平均
+    prefer: taskAgents(run.cycle, run.taskIndex, loadRepoConfig().tddSplit, run.id).review,
     // 未結交接事項可能屬於後面的任務，由最後的整體審查把關
     gate: false,
     runKey: `${task.id}:review-run`,
@@ -729,12 +731,12 @@ async function codeReview(
     base: string; seed: string; label: string; step: string;
     prompt: (reviewer: string, authors: string) => string;
     saveAs: (reviewer: string) => string;
-    gate: boolean; runKey: string; backTo: Stage; testAuthor?: string;
+    gate: boolean; runKey: string; backTo: Stage; testAuthor?: string; prefer?: string;
   },
 ): Promise<{ run: FlowRun } | { objector?: string; issues: string[] }> {
   const cfg = loadRepoConfig();
   const repo = worktreeDir(run.id);
-  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, opts.seed, opts.testAuthor);
+  const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, opts.seed, opts.testAuthor, opts.prefer);
   writeFileSync(flowFile(run, "diff.patch"), await git(repo, "diff", `${opts.base}...HEAD`));
   const authors = [...new Set((await git(repo, "log", "--format=%s", `${opts.base}..HEAD`)).match(/\[[^\]]+\]$/gm) ?? [])]
     .map((s) => s.slice(1, -1));
