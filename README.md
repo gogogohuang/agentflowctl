@@ -1,470 +1,164 @@
 # agentflowctl
 
-讓 Claude Code、Codex、Gemini CLI（或任何 agent CLI）在同一條流程裡輪流寫規格、寫計畫、寫測試、寫實作、互相審查、互相修正，一路做到開 PR。
+讓 Claude Code、Codex、Gemini CLI 等 agent 在同一個專案裡分工：整理需求、規劃、寫測試與程式、交叉審查，最後建立 PR。agentflowctl 負責推進流程，並用檔案、測試和檢查結果決定能否進到下一步。
 
-```
-需求 → spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁 → implement（每個任務：測試 A → 實作 B → 任務審查 ⇄ 修正 → 任務驗證 ⇄ 修正）→ verify ⇄ fix → review ⇄ fix → pr
-```
+每次執行都會建立獨立的 git worktree 與 `flow/<id>` 分支，不會直接修改你目前的工作目錄。兩個 agent 就能運作；若只有一個，也能執行，但無法做到跨 agent 審查。
 
-從需求到 PR 全程由程式推進。每個步驟都是一次獨立的 agent 執行，用 `.flow/` 裡的檔案交接。是否通過一律由程式檢查：跑測試、比對 git diff、驗證 JSON。兩家模型就能完整運作；有第三家時，仲裁會交給沒參與討論的那一家。
+## 開始使用
 
-## 快速開始
+需要 **Node.js 22 以上**、git，以及至少一個已安裝且完成登入的 agent CLI。建議先準備兩個，例如 Claude Code 與 Codex。
 
-需要 Node.js 22 以上與 git。不需要全域安裝，直接用 `npx` 執行。先讓各家 CLI 完成登入：
-
-```bash
-claude    # 完成登入
-codex     # 完成登入
-```
-
-沒有內建的 agent，只會使用 `flow.config.json` 的 `agents` 裡設定的。用 `agent setup` 互動設定：它會先列出已設定的 agent 與 CLI 是否可以執行，再偵測本機裝了哪些支援的 CLI（目前是 `claude`、`codex`、`gemini`），只針對已安裝的逐一詢問要不要加入、名稱與 model，再設定參與的 agent；沒偵測到的只列出、不詢問。確認後才一次寫入，最後自動跑一次 `doctor`：
+在要開發的專案根目錄執行：
 
 ```bash
 npx agentflowctl agent setup
-```
-
-也可以不經互動，直接用指令新增：
-
-```bash
-npx agentflowctl agent add claude --adapter claude
-npx agentflowctl agent add codex --adapter codex
-```
-
-之後改了設定或換了環境，用 `doctor` 檢查。它會列出設定的 agent 的 CLI 是否已安裝，並印出即將參與的 agent。沒有設定 `cycle` 時，依 `agents` 的順序取已安裝的；一個都沒偵測到就無法執行。
-
-```bash
 npx agentflowctl doctor
+npx agentflowctl run --req "登入表單加入驗證與錯誤訊息"
 ```
 
-從舊版升級：以前沒寫 `agents` 時會自動使用內建的 claude、codex、gemini，現在不會了，要先用 `agent setup` 或 `agent add` 補上。舊設定裡的 `removedAgents` 已不再使用，可以刪掉。
+`agent setup` 會找出本機可用的 Claude Code、Codex、Gemini CLI，讓你選擇要加入哪些 agent，並寫入專案根目錄的 `flow.config.json`。`doctor` 會檢查設定與 CLI 是否可執行。agentflowctl 沒有預設 agent，因此第一次使用要先完成設定。
 
-在專案資料夾內開始一次 run：
+若要使用現成的需求文件，改用：
 
 ```bash
-npx agentflowctl run --req "登入表單加上 zod 驗證與錯誤訊息"
+npx agentflowctl run --req-file ./requirement.md
 ```
 
-想把指令縮成 `agentflowctl` 時，再全域安裝：
+下文以 `agentflowctl` 為例；未全域安裝時，在指令前加 `npx`。想全域安裝可執行 `npm install -g agentflowctl`。
+
+## 執行時會發生什麼
+
+1. agent 整理需求與驗收條件，接著寫計畫，交給其他 agent 審查。
+2. 依計畫逐個任務寫出會失敗的測試，再由另一位 agent 實作到測試通過；每個任務都會經過審查與驗證。
+3. 全部任務完成後，再執行專案檢查與整體程式碼審查。未通過的項目會交回修正。
+4. 有 `origin` 時會推送分支；若 `gh` 可用，會嘗試建立 PR。沒有 `origin` 時，完成的分支留在本機。
+
+流程預設會自動往下走。想在計畫通過審查後親自確認，可加 `--manual-plan`；確認後執行 `agentflowctl approve <id>`。
+
+agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。
+
+## 查看進度
+
+`run` 開始時會印出 run id，例如 `f-xxxx`。執行中預設只顯示階段進度；加 `-v` 可看到 agent 文字、工具呼叫與專案指令。
 
 ```bash
-npm install -g agentflowctl
+agentflowctl list                  # 列出 run
+agentflowctl status f-xxxx         # 看進度、結果與下一步
+agentflowctl logs f-xxxx           # 列出各步驟的 log
+agentflowctl logs f-xxxx --latest  # 看最新一份 log
+agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 ```
 
-下面的指令都寫成 `agentflowctl`；沒有全域安裝時，在前面加上 `npx` 即可。
+`status` 會列出目前階段、未結的交接事項與下一步指令；失敗或暫停時也會顯示原因。要看某一步的詳細輸出，可用 `logs <id> <編號>`；加 `--full` 看完整工具內容，或加 `--raw` 看原始輸出。
 
-這次 run 在專用 git worktree（`.agentflowctl/worktrees/<id>`）裡工作，基底是你目前的分支，新分支名是 `flow/<id>`。你正在編輯的工作目錄不會被改到。
+執行紀錄在 `.agentflowctl/runs/<id>/`，工作分支在 `.agentflowctl/worktrees/<id>/`。不再需要某次 run 時，可用 `agentflowctl clean <id>` 清除 worktree 與紀錄；`flow/<id>` 分支會保留。
 
-從原始碼安裝：
+## 執行停下來時怎麼做
+
+先執行 `agentflowctl status <id>`，看「階段」與「原因」，再依情況處理：
+
+| 狀況 | 下一步 |
+| --- | --- |
+| 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
+| `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>` |
+| `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審 |
+| `paused`：仲裁沒有產生有效裁決 | 依 `status` 的原因查看 log；若有 `.flow/plan-arbiter.json`，也檢查其內容，處理後執行 `agentflowctl resume <id>` |
+| `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
+| `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
+
+例如失敗時，可照終端機列出的 log 編號查看原因：
 
 ```bash
-git clone https://github.com/gogogohuang/agentflowctl.git
-cd agentflowctl
-pnpm install
-pnpm run build
-pnpm link --global
+agentflowctl status f-xxxx
+agentflowctl logs f-xxxx 7
+agentflowctl resume f-xxxx
 ```
 
-## 角色分配怎麼打破同溫層
+若不打算接續，先用 `agentflowctl cancel <id>` 標記放棄，再用 `agentflowctl clean <id>` 清除 worktree 與執行紀錄。仍在執行中的 run，先在原終端機按 Ctrl-C。`clean` 會保留 `flow/<id>` 分支。
 
-同一個模型審查自己的程式碼，容易放過自己的寫法；測試和實作出自同一個模型，也容易寫出剛好會過的測試。角色分配只有四條規則，定義在 `src/roles.ts`：
+## 參數怎麼設定
 
-| 規則 | 效果 |
-|---|---|
-| 審查者永遠不是最後寫程式的 agent，多位審查者彼此不重複 | 每一輪審查都由另一家看 |
-| 同一個任務的測試與實作由不同 agent 負責（`tddSplit`） | A 寫的測試，B 實作到通過，而且不能改測試 |
-| 人選隨機決定，不依 `cycle` 的順序 | 各家輪流當作者、審查者、修正者，不會固定由同一家起頭 |
-| 任務的測試、實作、任務審查輪流交換 | 各家用量平均，不會固定由同一家寫實作 |
+設定分成三處：**這次執行的選項**寫在 `run` 或 `resume` 後面；**專案設定**寫在專案根目錄的 `flow.config.json`；**執行環境設定**用環境變數。先用 `agent setup` 建立 agent 設定，再視需要調整其他欄位。
 
-`cycle` 只決定哪些 agent 參與。隨機以 run id 為種子，同一個 run 的同一步驟 `resume` 後仍是同一家。任務的角色依同一個隨機順序輪流交換：第 i 個任務由順序中的第 i 家寫測試、下一家寫實作、再下一家做任務審查。三家時每三個任務各家把三種角色各做一次；兩家時測試與實作每個任務互換，任務審查由該任務的測試作者負責。任務修正後重新審查，仍優先由同一位審查者審查。
+### 指令選項
 
-兩家時是乒乓，例如：
+| 指令或選項 | 怎麼設定 |
+| --- | --- |
+| `run --req "..."` / `--req-file <檔案>` | 二選一，直接輸入需求或讀取檔案 |
+| `run --manual-plan` | 計畫通過審查後等待你確認，再用 `approve <id>` 繼續 |
+| `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
+| `run --base <分支>` | 指定起始分支；未設定時使用目前分支 |
+| `run --max-agent-runs <次數>` | 覆蓋這次的 `maxAgentRuns`；上限不夠時可用 `resume <id> --max-agent-runs <次數>` 調高 |
+| `-v` / `--verbose` | 執行時顯示 agent 文字、工具呼叫與專案指令，適用於 `run`、`resume`、`approve` |
 
-```
-計畫：codex 撰寫 → claude 審查（要求修改）→ codex 修改 → claude 審查（核准）
-T-1  測試：claude   實作：codex    任務審查：claude
-T-2  測試：codex    實作：claude   任務審查：codex
-審查：codex（最後作者是 claude）→ 要求修改 → claude 修正 → codex 審查（核准）
-```
-
-三家時，任務依輪替分工，例如 T-1 由 claude 測試、codex 實作、gemini 審查，T-2 就是 codex、gemini、claude；程式碼審查的審查者從作者以外隨機挑，修正者從審查者以外隨機挑；仲裁交給沒寫過這份計畫、也沒審過它的那一家（有多家時隨機挑一家）。
-
-每個 commit 訊息結尾會標上實際作者，例如 `feat(T-2): 匯出 [gemini]`。
-
-只裝一家也能跑完，只是審查、測試、實作都會落在同一家。
-
-## 指令
+例如：
 
 ```bash
-agentflowctl run --req "..."
-agentflowctl run --req-file ./req.md --cycle codex,claude --max-agent-runs 40
-agentflowctl run --req "..." --manual-plan   # 計畫通過 AI 審查後，仍停下來等你確認
-
-agentflowctl approve f-xxxx        # 搭配 --manual-plan
-agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄
-agentflowctl list
-agentflowctl logs f-xxxx           # 列出每一份 log 的編號、結果、階段、步驟、agent
-agentflowctl logs f-xxxx 7         # 解析第 7 份 log，最後附上錯誤整理（--latest 看最新一份）
-agentflowctl logs f-xxxx 7 --full  # 逐條顯示 shell 指令，完整顯示多行內容與絕對路徑
-agentflowctl logs f-xxxx 7 --raw   # 原始內容（agent 的 JSON 行）
-agentflowctl resume f-xxxx         # 從暫停、Ctrl-C 或失敗處接續
-agentflowctl cancel f-xxxx
-agentflowctl clean f-xxxx          # 移除 worktree 與 run 紀錄，分支保留
-agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留下的 worktree
+agentflowctl run --req-file ./requirement.md --cycle claude,codex --max-agent-runs 80 --manual-plan
+agentflowctl resume f-xxxx --max-agent-runs 100
 ```
 
-| 選項 | 作用 |
-|---|---|
-| `--req` / `--req-file` | 需求文字，或從檔案讀取 |
-| `--base` | 基底分支，預設為目前分支 |
-| `--cycle` | 這次 run 參與的 agent，例如 `claude,codex,gemini`；順序不影響分工；建立後就固定，`resume` 沿用 |
-| `--max-agent-runs` | 這次 run 的 agent 執行次數上限 |
-| `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
-| `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可設 `AGENTFLOWCTL_VERBOSE=1` |
+### Agent 設定
 
-`status` 會列出任務。進行中的任務會標出目前的步驟：🧪 寫測試、🛠️ 寫實作、👀 任務審查、🔍 任務驗證、🩹 任務修正。
+`agent setup` 可互動選擇已安裝的 CLI。也可以用指令新增或修改；這些指令會寫入 `flow.config.json`：
 
-### 清除 worktree
-
-`run` 建好 worktree 就會寫入 run 紀錄，所以不論在哪一步中斷（包括安裝相依套件時），都能用 `resume` 接續，或用 `clean` 清掉。
-
-- `clean <id>`：移除該 run 的 worktree 與 `.agentflowctl/runs/<id>/`，並清掉 git 裡已失效的 worktree 登記。沒有 run 紀錄的 worktree 也能清，worktree 資料夾被手動刪掉時也一樣。
-- `clean --all`：清掉所有 `done`、`failed` 的 run，以及沒有 run 紀錄的 worktree。進行中、`paused`、`awaiting_approval` 的不動；Ctrl-C 中斷、之後不打算接續的 run，先 `cancel` 再 `clean --all`，或直接 `clean <id>`。
-
-兩者都保留 `flow/<id>` 分支，不需要時用 `git branch -D` 刪除。
-
-### 執行中的終端機輸出
-
-預設是安靜模式，只印出 `[run-id]` 開頭的階段進度（📝 🧐 ✓ ✗ ⚠️ 等）。agent 執行失敗、測試或檢查沒過時，會附上對應 log 的查看指令：
-
-```
-[f-xxxx] 🔍 執行驗證
-[f-xxxx]    ✓ typecheck
-[f-xxxx]    ✗ lint（agentflowctl logs f-xxxx 15）
-    ✗ codex 執行失敗（結束碼 1），可用 agentflowctl logs f-xxxx 16 查看
+```bash
+agentflowctl agent add claude --adapter claude
+agentflowctl agent add codex --adapter codex --model 你要用的模型
+agentflowctl agent set codex --model 另一個模型
+agentflowctl agent list
+agentflowctl agent cycle claude,codex
 ```
 
-加上 `-v` 會另外印出 agent 每一段文字的第一行、每次工具呼叫的完整指令或主要參數（不截斷，多行指令的後續行縮排對齊），以及 install、測試、verify 這些以 `$ ` 開頭的專案指令：
+`agent add` 的 `--adapter` 可填 `claude`、`codex`、`gemini` 或 `command`。`--model` 指定個別 agent 的模型；`--extra-arg=--參數` 可重複使用，傳給該 CLI。使用 `command` adapter 時，把指令寫在 `--` 後，例如 `agentflowctl agent add aider --adapter command -- aider --message {prompt}`。`agent remove <名稱>` 會移除設定與參與名單；`agent cycle` 不帶名單則顯示目前參與者。
 
-```
-    💬 [claude] 先讀現有的表單元件
-    🔧 [claude] Read: /repo/.agentflowctl/worktrees/f-xxxx/src/LoginForm.tsx
-    🔧 [claude] Bash: pnpm vitest run src/LoginForm.test.tsx
-    🔧 [codex] shell: bash -lc 'pnpm test'
-    🔧 [gemini] run_shell_command: npm run lint
-    $ pnpm install
-```
+### 專案設定
 
-工具參數依序取 command、檔案路徑、path、pattern、url、query，都沒有時印出整包 JSON。
-
-### Log
-
-每次執行 agent 或專案指令都會留一份 log，放在 `.agentflowctl/runs/<id>/logs/`，檔名是「序號-階段-步驟-agent」，專案指令的 agent 欄位是 `cmd`：
-
-```
-001-setup-install-cmd.log
-002-spec-spec-claude.log
-007-implement-T1-tests-codex.log
-008-implement-T1-red-cmd.log
-015-verify-lint-cmd.log
-```
-
-檔案保留 agent 的原始輸出，也就是各家 CLI 的 JSON 行。第一行 `# agentflowctl {...}` 記錄階段、步驟、agent 與開始時間；stderr 接在 `[stderr]` 之後；最後一行 `# exit {...}` 記錄結束碼與是否成功，沒有這行就代表還在執行或被中斷。
-
-`agentflowctl logs <id>` 列出所有 log。結果欄的 ✓ 是成功，✗ 是失敗，… 代表沒有結束紀錄：
-
-```
-  #  結果  階段          步驟                 agent       開始時間
-  1  ✓     setup         install              cmd         2026-09-26 11:29:04
-  2  ✓     spec          spec                 claude      2026-09-26 11:29:05
-  3  ✗     plan          plan                 codex       2026-09-26 11:31:40
-```
-
-`agentflowctl logs <id> <編號>` 會把原始 JSON 解析成易讀的格式：
-
-| 標記 | 內容 |
-|---|---|
-| 💬 | agent 的完整文字，不截斷 |
-| 🔧 | 工具呼叫。連續的 shell 指令（多半是讀檔、搜尋）收成一行 `🔧 shell 指令 ×N`；其他工具只顯示第一行，多行時註明共幾行，worktree 內的絕對路徑改成相對路徑 |
-| 📊 | token 用量 |
-| 🏁 | 最後結果。與最後一則 💬 相同時不再重印 |
-| ⚠️ | 工具回報的錯誤。agent 通常會自己換方法繼續，所以不列進錯誤整理 |
-| ❌ | adapter 不認得的錯誤事件 |
-| 📄 | 不是 JSON 的輸出行 |
-
-要逐條看 shell 指令、完整的工具內容與重複的最後結果，加 `--full`。adapter 不認得、也看不出錯誤跡象的 JSON 行不會顯示，只列出行數，要看全部請加 `--raw`。專案指令的 log 本來就是純文字，會原樣顯示。
-
-最後一段「錯誤」整理出結束碼、agent 回報的失敗、錯誤事件與 stderr：
-
-```
-#3  plan / plan / codex
-開始 2026-09-26 11:31:40　結束 2026-09-26 11:31:52　結束碼 1　✗ 失敗
-檔案 /repo/.agentflowctl/runs/f-xxxx/logs/003-plan-plan-codex.log
-
-💬 先讀 spec.md 與 acceptance.json
-🔧 shell 指令 ×1（--full 查看）
-🏁 失敗：stream disconnected before completion
-
-── 錯誤 ──
-結束碼 1
-agent 回報失敗：stream disconnected before completion
-stderr：
-   Error: stream disconnected before completion
-```
-
-執行成功時，stderr 會放在「其他輸出」段落，不算錯誤。
-
-### 停下來時的結果與下一步
-
-run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會直接印出三段；`agentflowctl status <id>` 也會印同樣的內容：
-
-- **結果**：被中斷、還沒有結束紀錄的步驟，以及上一步的結果。agent 的步驟取回覆 `<result>` 的摘要與疑慮；失敗時優先顯示失敗的那一步，並附上結束碼、錯誤事件、stderr 或指令輸出的最後幾行。
-- **未結交接事項**：交接紀錄裡還沒結案的 action 事項（open 或 proposed_resolved）。
-- **下一步**：依狀態列出可以執行的指令，例如 `logs`、`cd` 到 worktree、`resume`、`cancel`、`approve`。
-
-```
-── 結果 ──
-  中斷於 #20 plan_review / plan-review / codex（沒有結束紀錄，resume 時會重跑這一步）
-  #19 plan_fix / plan-fix / claude ✓
-     摘要：接受三條審查意見，拆分 T-3、T-5
-     疑慮：T-15 可能仍太大
-
-── 未結交接事項 ──
-  [plan] c9c730b280e87178 T-3、T-5 各混合多個獨立行為（proposed_resolved）
-
-── 下一步 ──
-  agentflowctl logs f-xxxx 19              看上一步的完整 log
-  agentflowctl resume f-xxxx               從 plan_review 接續
-  agentflowctl cancel f-xxxx               放棄這個 run
-```
-
-### 出錯時怎麼查
-
-1. 先看 run 停下時印出的「結果」與「下一步」，或執行 `agentflowctl status <id>`。
-2. `agentflowctl logs <id> <編號>` 看那份 log 的錯誤段落。
-3. 解析結果看不出原因時，加 `--raw` 看原始輸出。
-4. 必要時直接在 worktree（`.agentflowctl/worktrees/<id>`）裡修正，再執行 `agentflowctl resume <id>`。
-
-## 設定
-
-專案根目錄的 `flow.config.json`。完整範例見 `examples/flow.config.json`。未提供的欄位使用內建預設；`install`、`test`、`checks` 沒寫時，會依專案現況偵測（見下方「專案指令的偵測」）。
+你也可以直接編輯 `flow.config.json`。這是可用的最小範例；沒有寫的欄位會使用預設值：
 
 ```json
 {
-  "cycle": ["claude", "codex"],
-  "fixStrategy": "ring",
-  "tddSplit": true,
-  "tieBreak": "proceed",
-  "defaultModels": { "claude": "Claude 模型名稱", "codex": "Codex 模型名稱", "gemini": "Gemini 模型名稱" },
   "agents": {
     "claude": { "adapter": "claude" },
-    "codex": { "adapter": "codex", "model": "你要用的模型" },
-    "aider": { "adapter": "command", "command": ["aider", "--yes-always", "--no-auto-commits", "--message", "{prompt}"] }
-  }
+    "codex": { "adapter": "codex", "model": "你要用的模型" }
+  },
+  "cycle": ["claude", "codex"],
+  "maxAgentRuns": 80
 }
 ```
 
-| 設定 | 預設 | 說明 |
-|---|---|---|
-| `cycle` | 自動偵測 | 參與的 agent，順序不影響分工（人選隨機決定）。未設定時依 `agents` 的順序取已安裝的 CLI。同一家 CLI 可以登記成不同 agent，例如 `claude-fast` 與 `claude-strong` |
-| `defaultModels` | `{}` | 依 `claude`、`codex`、`gemini` adapter 指定全域預設 model；agent 的 `model` 優先，兩者都沒設時使用各 CLI 的預設。`command` adapter 不套用 |
-| `fixStrategy` | `ring` | `ring`：審查意見隨機交給審查者以外的一家；`author`：交回最後作者 |
-| `tddSplit` | `true` | 測試與實作是否分開 |
-| `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve`（任務審查與最後的程式碼審查都適用） |
-| `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
-| `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
-| `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
-| `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
-| `install` / `test` / `checks` | 依專案偵測 | 安裝、測試與 verify 階段實際執行的指令 |
-| `agents` | `{}` | 可用的 agent，沒有內建的。每個都要指定 adapter（`claude`、`codex`、`gemini`，或用 `command` 接上其他 CLI） |
-
-verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
-
-### 專案指令的偵測
-
-`install`、`test`、`checks` 沒寫在 `flow.config.json` 時，每次讀設定都會依專案現況推出指令，不寫檔。有寫的欄位一律照你的設定。
-
-- 套件管理器：先看 `package.json` 的 `packageManager`，再看 lockfile（`pnpm-lock.yaml`、`yarn.lock`、`bun.lock`／`bun.lockb`、`package-lock.json`），都沒有就用 npm。
-- `install`：`pnpm install`、`yarn install`、`bun install` 或 `npm install --no-audit --no-fund`。不鎖 lockfile，因為實作時 agent 可能新增依賴。
-- `checks`：typecheck、lint、test、build 四項。`package.json` 有對應的 script（`typecheck`／`type-check`、`lint`、`test`、`build`）就用 `<pm> run <script>`，否則用 `tsc --noEmit`、`eslint .`、`vitest run`、`vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`。
-- `test`：`vitest run`，前綴同上。
-
-`run` 建立 worktree 後會印出這次偵測到的指令：
-
-```
-[f-xxxx] 🔧 依專案偵測指令：pnpm（依 package.json 的 packageManager）
-[f-xxxx]    install：pnpm install
-[f-xxxx]    checks.typecheck：pnpm run type-check
-```
-
-### 用指令管理 agent
-
-`agents` 與 `cycle` 也可以用 `agent` 指令修改，不必手動編輯 JSON。每次寫入前都會先驗證整份設定：
-
-```bash
-agentflowctl agent setup                                  # 偵測已安裝的 agent CLI，互動設定與參與的 agent
-agentflowctl agent list                                   # 設定的 agent、是否已安裝、是否參與
-agentflowctl agent add claude-strong --adapter claude --model opus
-agentflowctl agent add aider --adapter command -- aider --yes-always --message {prompt}
-agentflowctl agent set codex --model 你要用的模型 --extra-arg=--search
-agentflowctl agent set aider --adapter gemini             # 換 adapter
-agentflowctl agent remove aider
-agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯示目前參與的 agent
-```
-
-修改會連帶更新相關設定，並在終端機列出：
-
-- `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
-- `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回從 `agents` 自動偵測。
-- `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
-- `setup` 只詢問偵測到已安裝的 CLI，一個都沒有就不變更設定。遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍會參與。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
-
-已建立的 run 會沿用建立時參與的 agent，不受這些修改影響。
-
-## 計畫怎麼在沒有人的情況下通過
-
-人工確認計畫是為了擋住方向錯了還一路做下去。預設用三層機制取代它；加上 `--manual-plan` 時，三層都過了仍會停下來等你。
-
-**格式與覆蓋率。** 每次撰寫或修改計畫之後，都要重新通過 zod、任務相依、無循環、每條驗收條件都有任務負責，而且每個任務最多對應兩條驗收條件（一次只做一件事，最多兩件）。沒過就還原。
-
-**跨模型審查。** 審查看需求覆蓋、驗收條件能不能測且一條只寫一個行為、任務是否只做一件事（最多兩件）與技術方向。審查者只能寫意見。若改了規格或計畫，檔案會被還原。修改者要在 `plan.md` 的「審查回應」逐條回覆；不同意要寫理由。
-
-計畫審查先核對需求與四份計畫交接檔，再查閱任務說明中要修改的既有檔案，有疑慮時才擴大範圍；審查紀錄只列會影響實作的問題，不逐條列已通過項目。計畫修訂先依 `feedback.md` 定位需要改的段落，修改驗收條件或任務時再檢查受影響的對應關係。檔案格式、任務對驗收條件的覆蓋與任務相依仍由程式驗證；原始需求的語意覆蓋由審查者判斷，以減少反覆讀取文件的 token 用量。
-
-**僵持時仲裁。** 兩種情況會觸發：這輪審查意見和上一輪一樣，或已達重試上限。仲裁者只判斷一件事：照這份計畫實作，能不能滿足需求。
-
-| 有幾家 | 誰來仲裁 | 結果 |
+| 欄位 | 預設 | 設定方式與用途 |
 | --- | --- | --- |
-| 三家以上 | 沒參與這次討論的那一家 | 核准就繼續，否則 run 失敗 |
-| 兩家 | 兩家各自在全新 context 裡判斷 | 都核准就繼續；都不核准就依裁決意見修訂並重新審查；分歧依 `tieBreak` |
-| 一家 | 同一家 | 由它自己仲裁 |
+| `agents` | `{}` | 以名稱為 key 定義 agent；每個都要有 `adapter`，可加 `model`、`extraArgs`；`command` adapter 另需 `command` 指令陣列 |
+| `cycle` | 自動偵測 | 填 agent 名稱陣列，例如 `["claude", "codex"]`；未填時使用已設定且可執行的 agent；順序不決定角色 |
+| `defaultModels` | `{}` | 依 adapter 設預設模型，例如 `{ "claude": "模型名稱" }`；個別 agent 的 `model` 優先 |
+| `fixStrategy` | `"ring"` | `"ring"` 由審查者以外的 agent 修正；`"author"` 交回最後作者 |
+| `tddSplit` | `true` | 有多位 agent 時，`true` 會把同一任務的測試與實作分給不同 agent |
+| `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准 |
+| `planReviewQuorum` | `1` | 計畫需要幾位不同審查者核准 |
+| `planArbiter` | `true` | 計畫審查僵持時是否啟用仲裁 |
+| `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
+| `maxAgentRuns` | `60` | 一次 run 最多執行幾次 agent；可用指令選項覆蓋 |
+| `install`、`test` | 依專案偵測 | 寫成指令字串，例如 `"install": "pnpm install"` |
+| `checks` | 依專案偵測 | 檢查清單，例如 `[{ "name": "test", "cmd": "pnpm test" }]`；提供時會取代整份預設清單 |
+| `testPattern` | 常見的 `.test.`、`.spec.` 檔名 | 辨識測試檔的正規表示式字串；非標準檔名時調整 |
 
-兩家時的仲裁是雙盲的。仲裁者只看計畫，以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、任務審查、verify 與程式碼審查。
+`install`、`test`、`checks` 未設定時，會依 `packageManager`、lockfile 和 `package.json` scripts 偵測。完整範例見 [examples/flow.config.json](examples/flow.config.json)。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
 
-計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。兩家都要求修改時不因仲裁輪數而直接失敗；整個 run 仍受 `maxAgentRuns` 限制。
+### 環境變數
 
-仲裁 JSON 的 `verdict` 應為 `approve` 或 `changes_requested`；若模型寫成 `reject`，程式會當成 `changes_requested` 並保留理由。缺少檔案、JSON 格式錯誤或其他不合法輸出不算反對票，run 會暫停並顯示驗證錯誤；檢查 `agentflowctl logs <id>` 與 `.flow/plan-arbiter.json` 後可用 `resume` 重新執行。
+| 變數 | 預設 | 設定方式與用途 |
+| --- | --- | --- |
+| `AGENTFLOWCTL_MAX_ATTEMPTS` | `3` | 同一關連續失敗幾次後停止；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."` |
+| `AGENTFLOWCTL_VERBOSE` | 未開啟 | 設為 `1` 顯示詳細輸出，效果同 `-v` |
+| `AGENTFLOWCTL_MAX_TURNS` | `80` | 目前程式會讀取此值，但尚未用它限制 agent 執行 |
 
-## 階段與通過條件
+環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。
 
-| 階段 | 負責的 agent | 程式認定通過的條件 | 失敗時 |
-|---|---|---|---|
-| spec | 隨機一位 | 檔案存在、zod 驗證、id 不重複 | 重試 |
-| plan | 與 spec 同一位 | zod、相依存在、無循環、每條驗收條件都有任務、每個任務最多兩條驗收條件 | 重試 |
-| plan_review | 計畫作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 進入 plan_fix |
-| plan_fix | 依 `fixStrategy` | 修改後仍通過 plan 的格式與 DAG 檢查 | 還原並重試 |
-| 仲裁 | 見上一節 | 一致核准；分歧依 `tieBreak` | 兩家都不核准時進入 plan_fix 再審查；第三方不核准或 `tieBreak: stop` 時失敗 |
-| 人工確認 | 你（只有 `--manual-plan`） | `agentflowctl approve` | — |
-| implement 紅燈 | 輪替順序中的第 i 家 | 有測試變更，而且測試執行後失敗；規格與計畫檔沒有被修改 | 還原並重試 |
-| implement 綠燈 | 輪替順序中測試作者的下一家 | 測試檔與規格、計畫檔都沒有被修改，而且測試通過 | 還原，或帶著輸出重試 |
-| implement 任務審查 | 輪替順序中實作者的下一家；多位時其餘從作者以外挑，不重複 | 所有審查者都 `approve` 這個任務的變更 | 進入任務修正 |
-| implement 任務驗證 | — | `install` 與所有 `checks` 通過，才換下一個任務 | 進入任務修正 |
-| implement 任務修正 | 與 fix 相同 | 與 fix 相同；修完重新任務審查、任務驗證 | 還原並重試 |
-| verify | — | `install` 與所有 `checks` 通過 | 交回作者修正 |
-| fix | verify 失敗交回作者；審查意見依 `fixStrategy` | 沒有刪除測試檔，也沒有修改規格與計畫檔 | 還原並重試 |
-| review | 作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve`（審查者對程式碼與規格、計畫檔的修改一律還原） | 依 `fixStrategy` 交給他人修正 |
-| pr | — | push 成功；有 `gh` 就開 PR | — |
+## 更多文件
 
-驗收條件寫在 `.flow/acceptance.json`（`AC-1`…），任務寫在 `.flow/tasks.json`（`T-1`…）。
-每個任務的寫測試與寫實作 prompt 只帶入該任務對應的驗收條件；agent 優先讀任務與相關程式碼，遇到資訊不足或矛盾才查規格、計畫的相關段落。agent 可先跑相關測試，紅燈與完整測試仍由外部流程執行與判定，減少重複讀取文件和全套測試輸出所用的 token。
-計畫定案後（實作、修正、程式碼審查）不可修改 `.flow/` 裡的規格與計畫檔（`spec.md`、`acceptance.json`、`plan.md`、`tasks.json`、`tasks.ordered.json`）；實作與修正時被改就還原並重試，因為寫出的程式碼可能依賴被改過的規格，必須重寫；審查者只交出審查結果，修改直接還原即可，不必重跑審查。對規格有疑慮要寫進交接事項。
-每個任務綠燈後先做任務審查：審查者只看這個任務寫測試前到目前的 diff（`.flow/diff.patch`）與這個任務的驗收條件，審查紀錄存成 `.flow/review-<任務>-<審查者>.json`。審查者依輪替排定，而且一定避開最後實作者；有第三家可選時也避開測試作者，只有兩家或審查人數不足時才由測試作者審查。任務審查不要求結清所有交接事項（可能屬於後面的任務），最後的程式碼審查才會擋。審查通過後執行任務驗證（與 verify 相同的 `install` 與 `checks`）。審查要求修改或驗證失敗都進入任務修正，修正者的挑法與 fix 相同，修完回到任務審查再驗證。審查執行或任務修正若先失敗、後成功，會清除各自的連續失敗次數。所有任務完成後，仍照原本流程對整份變更跑一次 verify 與程式碼審查。
-程式碼審查仍逐條核對所有驗收條件，但只在 `review.json` 列出未通過或其他重要問題；先看 diff 與相關檔案，驗收條件不清楚時才查規格。修正階段先依 `feedback.md` 定位問題並執行相關檢查，完整檢查仍由後續 verify 執行，以減少反覆讀取完整文件與測試輸出。
-
-## Prompt 結構
-
-每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、任務審查者、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
-
-Agent 的最後回覆要附上 XML 中繼資料：
-
-```xml
-<result>
-  <status>done 或 blocked</status>
-  <summary>做了什麼</summary>
-  <files_changed><file>src/form.ts</file></files_changed>
-  <concerns>對規格或測試的疑慮</concerns>
-</result>
-```
-
-`blocked` 與 `concerns` 會印在終端機上，完整回覆留在 log，可用 `agentflowctl logs` 查看。這份中繼資料只給人看；缺少或格式錯誤都不影響流程，是否通過仍由上表的程式檢查決定。
-
-### Agent 交接紀錄
-
-每次 agent 執行前，程式會把與當前階段有關的未結事項寫入 `.flow/handoff-context.md`。agent 完成時必須寫 `.flow/handoff-response.json`，包含 `newIssues` 和 `dispositions` 兩個陣列；沒有事項也要明確寫成 `{ "newIssues": [], "dispositions": [] }`。缺少檔案或 JSON 格式不合法，會依該步驟的重試規則處理。
-
-程式只在原有關卡通過後接收交接回覆，並將正式紀錄原子儲存於 `.agentflowctl/runs/<id>/handoff.json`。`action` 是需要後續處理的事項；`info` 只供參考。`.flow/handoff-context.md` 把兩者分成「待處理事項」與「參考資訊」並標出類型；只有 `action` 能處置，agent 若把 `info` 或已結案的事項寫進 `dispositions`，程式會略過，不會讓整個步驟重試。計畫修正與程式修正的交接回覆不合格時，修改會還原，但原本的審查意見會保留在 `feedback.md`，下一次修正仍知道要改什麼。作者只能提出已修正並附證據，審查者才能確認結案或附理由接受。XML `<concerns>` 可以供人閱讀，但重要疑慮必須寫進交接 JSON，才能交給下一位 agent。額度代打與重試不會接收失敗呼叫的交接內容；中斷後可用 `resume` 接續。
-
-計畫審查或程式碼審查若核准，但該階段仍有未結的 `action`，程式會視為互相矛盾的審查結果並重試。計畫定案和開 PR 前也會再檢查一次；`info` 會提供給目標階段閱讀，但不阻擋通關。審查結果本身也要一致：核准時 `items` 不可有未通過的項目，要求修改時至少要列一筆，否則視為格式錯誤並重新審查。
-
-## Adapter
-
-| adapter | 執行方式 | 權限 |
-|---|---|---|
-| `claude` | `claude -p --output-format stream-json` | acceptEdits、禁止 git 寫入、設定檔在 `.agentflowctl/runs/<id>/claude-settings.json` |
-| `codex` | `codex exec --json --sandbox workspace-write`（prompt 走 stdin） | 只能改工作目錄，預設不能連網 |
-| `gemini` | `gemini -p --output-format stream-json --approval-mode yolo` | 沒有細緻權限；可在 `extraArgs` 加 `--sandbox`，或放在可丟棄環境 |
-| `command` | 任意指令；`{prompt}` 替換，或走 stdin | 取決於該工具 |
-
-Codex 沙箱預設不能連網，所以建立 worktree 時會先跑 `install`。CLI 參數與事件格式更新得很快，第一次使用前先 `doctor`，再用一個小需求實測。
-
-各家讀的專案說明檔不同：Claude Code 讀 `CLAUDE.md`，Codex 讀 `AGENTS.md`，Gemini 讀 `GEMINI.md`。把專案慣例寫在 `AGENTS.md`，另外兩個檔案各用一行引用它。agentflowctl 的 prompt 在 `prompts/`，不依賴任何一家的 skills 或 plugins。
-
-## 額度與代打
-
-上限是執行次數（`maxAgentRuns`，預設 60），不是金額。`status` 會列出各 agent 的執行次數與 token 數。
-
-額度用完時：
-
-| 步驟 | 行為 |
-| --- | --- |
-| 計畫審查、程式碼審查、仲裁 | 暫停。額度恢復後 `agentflowctl resume`。換人代審會變成作者審自己 |
-| 規格、計畫、修改計畫、寫測試、寫實作、修正 | 隨機由另一家還有額度的 agent 代打 |
-| 每家都用完 | 暫停 |
-
-換人或暫停前，額度用完的 agent 留下的半成品會先清掉。代打寫在 `.agentflowctl/runs/<id>/substitutions.jsonl`，`status` 會列出。commit 結尾標的是實際執行的模型。
-
-若寫實作的那家額度用完、改由寫測試的那家代打，這個任務的測試與實作就會出自同一家，`status` 會標註。審查步驟仍然暫停，等原本的另一家，因為那是此時剩下的交叉檢查。
-
-額度錯誤靠錯誤訊息辨識（usage limit、rate limit、quota、429 等），只在 agent 執行失敗時判斷。辨識不到時，會當成一般失敗重試。
-
-## 在哪裡跑
-
-agentflowctl 本身只依賴 Node.js 與 git。專案指令透過系統 shell 執行。
-
-| 環境 | 適合的用法 |
-|---|---|
-| 自己的電腦 | 自己的專案、自己寫的需求。剛開始可以加 `--manual-plan`，確認審查品質後再拿掉 |
-| 容器、遠端開發機 | 無人值守。先在該環境內完成各家 CLI 的登入 |
-| Claude Code、Codex 裡面 | 讓它們用 shell 執行 `npx agentflowctl` |
-
-沒有容器隔離時，verify 會在你的電腦上執行 agent 寫出來的程式碼。Gemini 在無人值守時是 yolo 模式。處理外部 issue，或需求文字不是你自己寫的，放到可丟棄的環境。AI 審查計畫擋不住夾在需求裡的指示。
-
-## 專案結構
-
-```
-src/
-  cli.ts            指令列（run、doctor、status……）
-  engine.ts         狀態機與各階段
-  roles.ts          角色分配規則（含計畫修正者與仲裁者）
-  runner.ts         執行 agent、正規化結果、執行專案指令
-  logs.ts           log 檔名、檔頭檔尾、列表與解析
-  stopReport.ts     run 停下時的結果、未結交接事項與下一步指令
-  agents/           claude、codex、gemini、command
-  setup.ts          agent setup 互動精靈
-  git.ts            worktree 與 git 操作
-  cleanup.ts        clean：移除 worktree 與 run 紀錄
-  store.ts          狀態、用量、代打紀錄
-  tasks.ts          任務 DAG
-  schemas.ts        zod schema
-prompts/            各階段 prompt
-examples/           flow.config.json 與 GitHub Actions
-```
-
-開發：
-
-```bash
-pnpm run typecheck
-pnpm test
-```
+- [完整指令、設定與流程說明](docs/reference.md)：選項、角色分配、審查規則、log、額度處理與技術細節。
+- [各階段讀寫的檔案](docs/engine-stage-files.md)：`.flow/`、回饋與審查檔案如何交接。
 
 ## 授權
 
