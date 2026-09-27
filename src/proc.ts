@@ -14,6 +14,7 @@ export interface ExecOptions {
   /** 透過系統 shell 執行（macOS／Linux 為 sh，Windows 為 cmd） */
   shell?: boolean;
   onStdoutLine?: (line: string) => void;
+  timeoutMs?: number;
 }
 
 export function exec(cmd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
@@ -23,6 +24,8 @@ export function exec(cmd: string, args: string[], opts: ExecOptions = {}): Promi
       env: { ...process.env, ...opts.env },
       shell: opts.shell ?? false,
     });
+    let timedOut = false;
+    const timer = opts.timeoutMs ? setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, opts.timeoutMs) : undefined;
     let stdout = "";
     let stderr = "";
     let pending = "";
@@ -38,10 +41,11 @@ export function exec(cmd: string, args: string[], opts: ExecOptions = {}): Promi
     child.stderr.on("data", (d: Buffer) => {
       stderr += d.toString();
     });
-    child.on("error", reject);
+    child.on("error", (error) => { if (timer) clearTimeout(timer); reject(error); });
     child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
       if (opts.onStdoutLine && pending) opts.onStdoutLine(pending);
-      resolve({ code: code ?? 1, stdout, stderr });
+      resolve({ code: timedOut ? 124 : code ?? 1, stdout, stderr: timedOut ? `${stderr}\n執行逾時` : stderr });
     });
     child.stdin.on("error", () => {}); // 子程序不讀 stdin 時忽略 EPIPE
     child.stdin.end(opts.input ?? "");

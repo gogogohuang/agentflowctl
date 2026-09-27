@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
-const { addSubstitution, addUsage, agentRuns, listSubstitutions, getRun, listRuns, saveRun, usageByAgent } = await import("./store.js");
+const { addSubstitution, addUsage, agentRuns, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStrength } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -20,9 +20,18 @@ describe("檔案儲存", () => {
     expect(listRuns().map((r) => r.id)).toEqual(["f-a"]);
     addUsage("f-a", { stage: "spec", agent: "claude", inputTokens: 100, outputTokens: 10 });
     addUsage("f-a", { stage: "review", agent: "codex", inputTokens: 50, outputTokens: 5 });
-    expect(usageByAgent("f-a").codex).toEqual({ tokens: 55, runs: 1 });
+    expect(usageByAgent("f-a").codex).toMatchObject({ tokens: 0, runs: 1, legacyRuns: 1 });
     expect(agentRuns("f-a")).toBe(2);
     addSubstitution("f-a", { step: "T-1-code", planned: "codex", actual: "claude" });
     expect(listSubstitutions("f-a").map((x) => x.actual)).toEqual(["claude"]);
+  });
+
+  it("區分明確回報 0、未回報與舊資料", () => {
+    addUsage("f-usage", { stage: "spec", agent: "a", model: "small", strength: "low", usageReported: true, inputTokens: 0, outputTokens: 0 });
+    addUsage("f-usage", { stage: "plan", agent: "a", model: "large", strength: "high", usageReported: false });
+    addUsage("f-usage", { stage: "review", agent: "a", inputTokens: 0, outputTokens: 0 });
+    expect(usageByAgent("f-usage").a).toMatchObject({ tokens: 0, runs: 3, reportedRuns: 1, unreportedRuns: 1, legacyRuns: 1 });
+    expect(usageByStrength("f-usage").low).toMatchObject({ tokens: 0, runs: 1, reportedRuns: 1 });
+    expect(usageByStrength("f-usage").high).toMatchObject({ tokens: 0, runs: 1, unreportedRuns: 1 });
   });
 });

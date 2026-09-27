@@ -38,6 +38,7 @@
     "id": "T-1",
     "title": "建立表單驗證 schema",
     "description": "具體要做什麼、要動哪些檔案、測試要驗證什麼行為",
+    "complexity": "low",
     "dependsOn": [],
     "acceptance": ["AC-1"]
   }
@@ -51,6 +52,7 @@
 - `title` 用一句話說出這件事；需要用「並且」「以及」串起來的，就是兩個任務。
 - `description` 寫清楚要動哪些檔案、測試要驗證哪個行為，以及這個任務不做什麼。
 - 每個任務都必須能寫出「在實作前會失敗」的測試；純設定或重構類工作請併入相關任務。
+- 每個任務依影響範圍與技術不確定性標註 `complexity`：`low`、`medium` 或 `high`。
 - 測試檔名必須符合正規表示式 `{{testPattern}}`。
 - 每一條驗收條件都至少要有一個任務負責；`dependsOn` 不可有循環。
 </guidelines>

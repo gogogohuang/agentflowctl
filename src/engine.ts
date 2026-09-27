@@ -23,7 +23,8 @@ import {
   type Stage,
 } from "./schemas.js";
 import { addSubstitution, addUsage, agentRuns, saveRun } from "./store.js";
-import { orderTasks, taskAcceptance } from "./tasks.js";
+import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
+import { orderTasks, taskAcceptance, validateTaskComplexity } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
@@ -98,10 +99,18 @@ async function agentStep(
       info(run, `🔁 ${agent} 額度已用完，${step} 由 ${sub} 代打${note ? `（注意：${note}）` : ""}`);
       agent = sub;
     }
+    const selected = selectModel(run, cfg, agent, step,
+      /^T-\d+-/.test(step) ? loadOrderedTasks(run)[run.taskIndex]?.complexity : undefined,
+      mode.kind === "review" ? agent : undefined);
+    info(run, `🤖 ${step}：${agent} 使用 ${selected.name ?? "CLI 預設（名稱未知）"}${selected.insufficient ? `（低於目標 ${selected.targetStrength}）` : ""}`);
     const callKey = handoffKey(run, step, mode.slot ?? 0, agent);
     prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false);
-    const r = await runAgent(agent, resolveAgent(cfg, agent), target(run, step, agent), prompt);
-    addUsage(run.id, { stage: step, agent, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
+    const r = await runAgent(agent, { ...resolveAgent(cfg, agent), model: selected.name },
+      { ...target(run, step, agent), strength: selected.strength, targetStrength: selected.targetStrength }, prompt);
+    if (r.resolvedModel && r.resolvedModel !== selected.name) info(run, `   ↳ CLI 回報實際模型：${r.resolvedModel}`);
+    addUsage(run.id, { stage: step, agent, model: selected.name, resolvedModel: r.resolvedModel,
+      strength: selected.strength, targetStrength: selected.targetStrength, usageReported: r.usageReported,
+      inputTokens: r.inputTokens, outputTokens: r.outputTokens });
     if (!r.quotaExhausted) {
       reportMeta(run, agent, r);
       return { r, agent, step, callKey };
@@ -240,6 +249,8 @@ function validatePlan(run: FlowRun): TaskItem[] | string {
   if (new Set(ids).size !== ids.length) return "驗收條件 id 有重複";
   const tasks = readJsonFile(flowFile(run, "tasks.json"), TaskList);
   if (!tasks.ok) return tasks.error;
+  const complexityError = validateTaskComplexity(tasks.data, run.modelMode ?? "balanced");
+  if (complexityError) return complexityError;
   return orderTasks(tasks.data, new Set(ids));
 }
 
@@ -311,11 +322,12 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
     await discardChanges(worktreeDir(run.id));
     const tampered = restorePlan(run, snap);
     if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
-    if (!r.ok) return retry(run, "plan-review-run", `Agent 執行失敗：${r.summary}`, "plan_review");
+    if (!r.ok) return retry(recordModelReviewFailure(run, "plan-review", reviewer), "plan-review-run", `Agent 執行失敗：${r.summary}`, "plan_review");
     const review = readJsonFile(flowFile(run, "plan-review.json"), ConsistentReviewResult);
-    if (!review.ok) return retry(run, "plan-review-run", review.error, "plan_review");
+    if (!review.ok) return retry(recordModelReviewFailure(run, "plan-review", reviewer), "plan-review-run", review.error, "plan_review");
     const handoffError = finishHandoff(run, outcome, "reviewer", { target: "plan", verdict: review.data.verdict });
-    if (handoffError) return retry(run, "plan-review-run", handoffError, "plan_review");
+    if (handoffError) return retry(recordModelReviewFailure(run, "plan-review", reviewer), "plan-review-run", handoffError, "plan_review");
+    run = clearModelReviewFailure(run, "plan-review", reviewer);
     // 審查紀錄移到 worktree 外面：之後的仲裁者看不到是哪一家提的意見
     mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
     renameSync(flowFile(run, "plan-review.json"), join(runDir(run.id), "reviews", `plan-review-${round}-${reviewer}.json`));
@@ -331,6 +343,10 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
     issueLines.push(...lines);
     issues.push(opinion(reviewer, lines));
   }
+  run = clearModelReviewStage(run, "plan-review");
+  const attempts = { ...run.attempts };
+  delete attempts["plan-review-run"];
+  run = { ...run, attempts };
   if (!firstObjector) return planSettled(run, "plan-review");
 
   const report = `計畫審查要求修改：\n\n${issues.join("\n\n")}`;
@@ -591,7 +607,7 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     backTo: "implement",
   });
   if ("run" in result) return result.run;
-  const reviewed = succeed(run, `${task.id}:review-run`, "implement");
+  const reviewed = succeed(result.state, `${task.id}:review-run`, "implement");
   if (!result.objector) return { ...succeed(reviewed, key, "implement"), taskPhase: "verify" };
   return {
     ...retry(reviewed, key, `任務審查要求修改：\n\n${result.issues.join("\n\n")}`, "implement"),
@@ -718,7 +734,7 @@ async function fixStage(run: FlowRun): Promise<FlowRun> {
   });
   if ("run" in result) return result.run;
   // 修正者成為新的作者，下一輪審查會換成別人
-  return { ...to(run, "verify"), lastWriter: result.agent };
+  return { ...succeed(run, "fix", "verify"), lastWriter: result.agent };
 }
 
 /**
@@ -734,7 +750,7 @@ async function codeReview(
     saveAs: (reviewer: string) => string;
     gate: boolean; runKey: string; backTo: Stage; testAuthor?: string; prefer?: string;
   },
-): Promise<{ run: FlowRun } | { objector?: string; issues: string[] }> {
+): Promise<{ run: FlowRun } | { state: FlowRun; objector?: string; issues: string[] }> {
   const cfg = loadRepoConfig();
   const repo = worktreeDir(run.id);
   const panel = reviewers(run.cycle, run.lastWriter, cfg.reviewQuorum, opts.seed, opts.testAuthor, opts.prefer);
@@ -755,12 +771,13 @@ async function codeReview(
     await discardChanges(repo); // 審查者不可改程式碼
     const tampered = restorePlan(run, snap); // .flow/ 不受 git 管理，要另外還原
     if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
-    if (!r.ok) return { run: retry(run, opts.runKey, `Agent 執行失敗：${r.summary}`, opts.backTo) };
+    if (!r.ok) return { run: retry(opts.step === "review" ? recordModelReviewFailure(run, "review", reviewer) : run, opts.runKey, `Agent 執行失敗：${r.summary}`, opts.backTo) };
     const review = readJsonFile(flowFile(run, "review.json"), ConsistentReviewResult);
-    if (!review.ok) return { run: retry(run, opts.runKey, review.error, opts.backTo) };
+    if (!review.ok) return { run: retry(opts.step === "review" ? recordModelReviewFailure(run, "review", reviewer) : run, opts.runKey, review.error, opts.backTo) };
     const gate = opts.gate ? { target: "code" as const, verdict: review.data.verdict } : undefined;
     const handoffError = finishHandoff(run, outcome, "reviewer", gate);
-    if (handoffError) return { run: retry(run, opts.runKey, handoffError, opts.backTo) };
+    if (handoffError) return { run: retry(opts.step === "review" ? recordModelReviewFailure(run, "review", reviewer) : run, opts.runKey, handoffError, opts.backTo) };
+    if (opts.step === "review") run = clearModelReviewFailure(run, "review", reviewer);
     renameSync(flowFile(run, "review.json"), flowFile(run, opts.saveAs(reviewer)));
     if (review.data.verdict === "approve") {
       info(run, `   ✓ ${reviewer} 核准`);
@@ -772,7 +789,10 @@ async function codeReview(
       .filter((i) => i.status !== "met")
       .map((i) => reviewIssue(i.criterion, i.status, i.note))));
   }
-  return { objector, issues };
+  if (opts.step === "review") run = clearModelReviewStage(run, "review");
+  const attempts = { ...run.attempts };
+  delete attempts[opts.runKey];
+  return { state: { ...run, attempts }, objector, issues };
 }
 
 async function reviewStage(run: FlowRun): Promise<FlowRun> {
@@ -788,9 +808,9 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     backTo: "review",
   });
   if ("run" in result) return result.run;
-  if (!result.objector) return succeed(run, "review", "pr");
+  if (!result.objector) return succeed(result.state, "review", "pr");
   return {
-    ...retry(run, "review", `程式碼審查要求修改：\n\n${result.issues.join("\n\n")}`, "fix"),
+    ...retry(result.state, "review", `程式碼審查要求修改：\n\n${result.issues.join("\n\n")}`, "fix"),
     fixSource: "review",
     lastReviewer: result.objector,
   };

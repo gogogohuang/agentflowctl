@@ -318,12 +318,69 @@ agentflowctl agent cycle claude-strong,codex,gemini       # 不帶參數時顯�
 
 修改會連帶更新相關設定，並在終端機列出：
 
-- `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`extraArgs`、`command`，這次有重新指定的除外。
+- `set --adapter` 換 adapter 時，會清掉舊 adapter 的 `model`、`models`、`modelProbe`、`extraArgs`、`command`，這次有重新指定的除外。同一 adapter 的 `agent set` 只改指定欄位，不會覆寫既有 `models`；`model add/set/remove` 也只改指定 agent 的模型清單。
 - `remove` 會一併從 `cycle` 移除。`cycle` 變空就刪除這個欄位，改回從 `agents` 自動偵測。
 - `--extra-arg` 可以重複指定，會整個取代原本的 `extraArgs`。參數以 `-` 開頭時，寫成 `--extra-arg=--sandbox`。
 - `setup` 只詢問偵測到已安裝的 CLI，一個都沒有就不變更設定。遇到已存在的名稱會先問要不要覆寫；不覆寫時保留原設定，但仍會參與。在非互動式環境（CI、管線）裡請改用 `agent add`。`command` adapter 要自己寫指令，不在 `setup` 裡。
 
 已建立的 run 會沿用建立時參與的 agent，不受這些修改影響。
+
+## 模型設定與自動選模
+
+`modelSelection.mode` 預設為 `balanced`，沿用 `agents.<名稱>.model`、`defaultModels` 與 CLI 預設。`adaptive` 只看該 agent 的 `models` 清單與 `modelSelection.stageStrength`；舊欄位不作後備。`run --model-mode balanced|adaptive` 只覆蓋新 run，模式存在 `state.json`，`resume` 不改變模式。已建立的 run 在每次 LLM 呼叫前重新讀取模型清單與階段強度，因此設定變更會影響後續呼叫。
+
+```json
+{
+  "agents": {
+    "claude": {
+      "adapter": "claude",
+      "models": [
+        { "name": "請用 model add 登記目前可呼叫的名稱", "strength": "low" }
+      ]
+    }
+  },
+  "modelSelection": {
+    "mode": "adaptive",
+    "stageStrength": { "taskReview": "high" }
+  }
+}
+```
+
+上例只說明欄位形狀，並非可直接呼叫的模型設定。建議用指令管理：
+
+```bash
+agentflowctl model add claude MODEL_NAME --strength low
+agentflowctl model set claude MODEL_NAME --strength medium
+agentflowctl model remove claude MODEL_NAME
+agentflowctl model list
+agentflowctl model check
+agentflowctl model mode adaptive
+agentflowctl model stage taskReview high
+```
+
+`name` 接受 CLI 的別名或完整 ID；`model add` 以當前登入帳號送出短請求，成功後才寫設定，可能耗用少量 token。`model set` 只改強度，不重驗；`model check` 重驗已登記模型，並顯示檢查時間。檢查結果只適用於當下帳號與 CLI 狀態，不保證往後的額度或權限。手動編輯 JSON 不會得到可用性驗證。`model mode adaptive` 會檢查參與者有模型清單；`run` 另會在建立 worktree 前檢查本次實際參與者、模型參數衝突與自訂命令占位符。
+
+| 階段鍵 | LLM 步驟 | 預設強度 |
+| --- | --- | --- |
+| `spec` | 寫規格 | medium |
+| `plan` | 拆任務 | high |
+| `planReview` | 計畫審查 | high |
+| `planFix` | 修改計畫 | medium |
+| `planArbiter` | 仲裁 | high |
+| `taskTests` | 任務寫測試 | low |
+| `taskCode` | 任務實作 | low |
+| `taskReview` | 任務審查 | medium |
+| `taskFix` | 任務修正 | low |
+| `fix` | 整體修正 | medium |
+| `review` | 整體審查 | high |
+
+計畫 agent 會在 `tasks.json` 為每個 task 寫 `complexity: low|medium|high`；`adaptive` 計畫缺少此欄位時重試，舊 run 缺少時選模視為 medium。任務相關步驟的基準強度取階段強度與任務難度較高者；其他步驟取階段強度。從已分配角色的 agent 清單選足夠且最低強度的模型，同強度按清單順序；沒有足夠強度時用它最強的模型並提示。模型選擇不更改測試、實作、審查與作者修正的分工。
+
+同一步執行失敗會逐級升強度，最多到 high。審查要求修改本身不讓審查升級；修正後仍未通過才讓修正升級。計畫與整體審查小組只升級失敗的審查者，成功者下次仍從基準強度開始。額度用完沿用原政策：審查暫停，寫入工作可由另一位有額度的 agent 代打，並從代打者自己的清單重新選模。
+
+終端機每次呼叫都顯示送給 CLI 的模型名稱；別名若沒有 CLI 的實際模型回報，不推測解析結果。`status` 按模型、步驟與強度顯示呼叫和 token；只有明確回報的 token 納入合計與占比。沒有 usage 事件顯示「未回報」，舊紀錄因無法分辨真實 0 與補值而顯示「回報狀態不明」。
+
+探測使用專用無工具呼叫與暫存目錄，不沿用正常工作時的工具權限或 `extraArgs`。目前 Codex CLI 沒有可確認的無工具模式，因此 `model add` 對 Codex 回報無法安全驗證；仍可用 `balanced` 模式。自訂 `command` adapter 若要參與 `adaptive`，執行指令須含 `{model}`，還需以可重複的 `agent set NAME --model-probe-arg=ARG` 設定 `modelProbe` 命令陣列。第一個值是執行檔，命令必須含 `{model}`，並輸出單一 JSON 物件：`{"requestedModel":"輸入名稱","resolvedModel":"實際模型 ID"}`。agentflowctl 會核對格式與名稱；底層服務是否真的被呼叫，仍由這支自訂探測命令負責。
 
 ## 計畫怎麼在沒有人的情況下通過
 

@@ -14,6 +14,7 @@ export interface AgentPatch {
   model?: string;
   extraArgs?: string[];
   command?: string[];
+  modelProbe?: string[];
 }
 
 /** 每次編輯的結果：新的設定，以及連帶更新了哪些其他設定（給使用者看） */
@@ -23,7 +24,7 @@ export interface Edit {
 }
 
 /** 這些欄位的意義取決於 adapter，換 adapter 時要清掉 */
-const ADAPTER_FIELDS = ["model", "extraArgs", "command"] as const;
+const ADAPTER_FIELDS = ["model", "models", "modelProbe", "extraArgs", "command"] as const;
 
 const agentsOf = (cfg: RawConfig) => ({ ...((cfg.agents ?? {}) as Record<string, RawAgent>) });
 const isDefined = (cfg: RawConfig, name: string) => name in agentsOf(cfg);
@@ -51,13 +52,13 @@ export function addAgent(cfg: RawConfig, name: string, def: AgentPatch & { adapt
 export function setAgent(cfg: RawConfig, name: string, patch: AgentPatch): Edit {
   if (!isDefined(cfg, name)) throw new Error(`未定義的 agent：${name}`);
   if (Object.values(patch).every((v) => v === undefined)) {
-    throw new Error("沒有要修改的欄位（--adapter、--model、--extra-arg 或 -- <command>）");
+    throw new Error("沒有要修改的欄位（--adapter、--model、--model-probe-arg、--extra-arg 或 -- <command>）");
   }
   const agents = agentsOf(cfg);
   const base: RawAgent = { ...agents[name] };
   const changes: string[] = [];
   if (patch.adapter !== undefined && patch.adapter !== base.adapter) {
-    const cleared = ADAPTER_FIELDS.filter((f) => base[f] !== undefined && patch[f] === undefined);
+    const cleared = ADAPTER_FIELDS.filter((f) => base[f] !== undefined && !(f in patch));
     for (const f of cleared) delete base[f];
     if (cleared.length) changes.push(`adapter 從 ${String(base.adapter)} 換成 ${patch.adapter}，已清掉舊的 ${cleared.join("、")}`);
   }

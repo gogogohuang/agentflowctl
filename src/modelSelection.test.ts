@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vitest";
+import { clearModelReviewFailure, recordModelReviewFailure, selectModel, validateAdaptiveConfig } from "./modelSelection.js";
+import { FlowRun, RepoConfig } from "./schemas.js";
+
+const run = (overrides: Record<string, unknown> = {}) => FlowRun.parse({
+  id: "f-test", baseBranch: "main", branch: "flow/f-test", requirement: "測試", stage: "implement",
+  autopilot: true, maxAgentRuns: 60, cycle: ["a"], attempts: {}, taskIndex: 0,
+  taskPhase: "tests", createdAt: "2026-01-01", updatedAt: "2026-01-01",
+  modelMode: "adaptive", ...overrides,
+});
+
+const cfg = () => RepoConfig.parse({ agents: { a: { adapter: "codex", models: [
+  { name: "small", strength: "low" },
+  { name: "middle", strength: "medium" },
+  { name: "large", strength: "high" },
+] } } });
+
+describe("依階段與任務難度選模", () => {
+  it("低難度任務選最低足夠強度，高難度任務提高底線", () => {
+    expect(selectModel(run(), cfg(), "a", "T-1-code", "low").name).toBe("small");
+    expect(selectModel(run(), cfg(), "a", "T-1-code", "high").name).toBe("large");
+  });
+
+  it("任務執行失敗後升級，但不超過 high", () => {
+    expect(selectModel(run({ attempts: { "T-1:code": 1 } }), cfg(), "a", "T-1-code", "low").name).toBe("middle");
+    expect(selectModel(run({ attempts: { "T-1:code": 3 } }), cfg(), "a", "T-1-code", "low").name).toBe("large");
+  });
+
+  it("審查小組只依各審查者的失敗次數升級", () => {
+    const current = run({ modelRetryAttempts: { "review:b": 1 }, stage: "review" });
+    const config = RepoConfig.parse({ agents: { ...cfg().agents, b: cfg().agents.a } });
+    expect(selectModel(current, config, "a", "review", undefined, "a").name).toBe("large");
+    expect(selectModel(current, config, "b", "review", undefined, "b").name).toBe("large");
+    const lowReview = RepoConfig.parse({ agents: config.agents, modelSelection: { stageStrength: { review: "low" } } });
+    expect(selectModel(current, lowReview, "a", "review", undefined, "a").name).toBe("small");
+    expect(selectModel(current, lowReview, "b", "review", undefined, "b").name).toBe("middle");
+  });
+
+  it("一位審查者失敗不會提高其他人的計數，成功後清掉自己的計數", () => {
+    const failed = recordModelReviewFailure(run(), "review", "b");
+    expect(failed.modelRetryAttempts).toEqual({ "review:b": 1 });
+    expect(clearModelReviewFailure(failed, "review", "a").modelRetryAttempts).toEqual({ "review:b": 1 });
+    expect(clearModelReviewFailure(failed, "review", "b").modelRetryAttempts).toEqual({});
+  });
+
+  it("沒有足夠強度時選最強模型並標示不足", () => {
+    const config = RepoConfig.parse({ agents: { a: { adapter: "codex", models: [{ name: "small", strength: "low" }] } } });
+    expect(selectModel(run(), config, "a", "plan")).toMatchObject({ name: "small", targetStrength: "high", insufficient: true });
+  });
+
+  it("balanced 沿用單一模型與預設模型", () => {
+    const config = RepoConfig.parse({ agents: { a: { adapter: "codex" } }, defaultModels: { codex: "default" } });
+    expect(selectModel(run({ modelMode: "balanced" }), config, "a", "plan").name).toBe("default");
+    expect(selectModel(run({ modelMode: "balanced" }), RepoConfig.parse({ agents: { a: { adapter: "codex", model: "custom" } } }), "a", "plan").name).toBe("custom");
+  });
+});
+
+describe("adaptive 設定檢查", () => {
+  it("拒絕沒有模型清單或與 extraArgs 衝突的 agent", () => {
+    expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex" } } }), ["a"])).toThrow(/a.*models/);
+    expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex", models: [{ name: "x", strength: "low" }], extraArgs: ["-m", "other"] } } }), ["a"])).toThrow(/extraArgs/);
+  });
+});

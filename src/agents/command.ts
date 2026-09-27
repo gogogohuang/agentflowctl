@@ -11,9 +11,10 @@ export const command: Adapter = {
     const [cmd, ...rest] = o.command ?? [];
     if (!cmd) throw new Error("command adapter 需要設定 command 陣列");
     const hasPlaceholder = rest.some((a) => a.includes("{prompt}"));
+    if (o.command?.some((a) => a.includes("{model}")) && !o.model) throw new Error("command 含 {model}，但沒有設定 model");
     return {
-      cmd,
-      args: [...rest.map((a) => a.replaceAll("{prompt}", o.prompt)), ...o.extraArgs],
+      cmd: cmd.replaceAll("{model}", o.model ?? ""),
+      args: [...rest.map((a) => a.replaceAll("{prompt}", o.prompt).replaceAll("{model}", o.model ?? "")), ...o.extraArgs],
       input: hasPlaceholder ? undefined : o.prompt,
     };
   },

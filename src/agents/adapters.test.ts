@@ -51,4 +51,14 @@ describe("adapter 事件解析", () => {
     expect(ADAPTERS.command.invoke({ ...base, prompt: "P", command: ["my-agent"] }).input).toBe("P");
     expect(ADAPTERS.claude.parse("not json")).toEqual([]);
   });
+
+  it("command：{model} 只代入設定的模型，不留下字面占位符", () => {
+    const base = { cwd: "/w", extraArgs: [], runDir: "/r", projectRoot: "/p" };
+    expect(ADAPTERS.command.invoke({ ...base, prompt: "P", model: "actual-id", command: ["agent", "--model", "{model}"] }).args)
+      .toEqual(["--model", "actual-id"]);
+    expect(ADAPTERS.command.invoke({ ...base, prompt: "P", model: "actual-id", command: ["run-{model}"] }).cmd)
+      .toBe("run-actual-id");
+    expect(() => ADAPTERS.command.invoke({ ...base, prompt: "P", command: ["agent", "--model", "{model}"] })).toThrow(/model/);
+    expect(() => ADAPTERS.command.invoke({ ...base, prompt: "P", command: ["run-{model}"] })).toThrow(/model/);
+  });
 });

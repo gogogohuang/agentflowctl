@@ -87,6 +87,7 @@ agentflowctl resume f-xxxx
 | `run --req "..."` / `--req-file <檔案>` | 二選一，直接輸入需求或讀取檔案 |
 | `run --manual-plan` | 計畫通過審查後等待你確認，再用 `approve <id>` 繼續 |
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
+| `run --model-mode balanced\|adaptive` | 只覆蓋這次 run 的模型模式；`resume` 沿用建立時的模式 |
 | `run --base <分支>` | 指定起始分支；未設定時使用目前分支 |
 | `run --max-agent-runs <次數>` | 覆蓋這次的 `maxAgentRuns`；上限不夠時可用 `resume <id> --max-agent-runs <次數>` 調高 |
 | `-v` / `--verbose` | 執行時顯示 agent 文字、工具呼叫與專案指令，適用於 `run`、`resume`、`approve` |
@@ -112,6 +113,26 @@ agentflowctl agent cycle claude,codex
 
 `agent add` 的 `--adapter` 可填 `claude`、`codex`、`gemini` 或 `command`。`--model` 指定個別 agent 的模型；`--extra-arg=--參數` 可重複使用，傳給該 CLI。使用 `command` adapter 時，把指令寫在 `--` 後，例如 `agentflowctl agent add aider --adapter command -- aider --message {prompt}`。`agent remove <名稱>` 會移除設定與參與名單；`agent cycle` 不帶名單則顯示目前參與者。
 
+`model add/set/remove` 只修改指定 agent 的模型清單。同一 adapter 的 `agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`agent setup` 遇到同名 agent 會先詢問是否覆寫。
+
+### 依階段與任務難度選模型
+
+預設是 `balanced`：沿用每個 agent 的 `model`、`defaultModels` 或 CLI 預設。想啟用自動選模，先為**每個參與的 agent** 登記可用模型與強度，再切換模式：
+
+```bash
+agentflowctl model add claude MODEL_NAME --strength low
+agentflowctl model add claude ANOTHER_MODEL --strength high
+agentflowctl model list
+agentflowctl model mode adaptive
+agentflowctl run --req-file ./requirement.md
+```
+
+把 `MODEL_NAME` 換成該 CLI 目前可呼叫的別名或完整 ID。`model add` 會用目前登入的帳號送出短請求，可能耗用少量 token；成功才寫入設定。需要重驗時執行 `model check`。用 `model set claude MODEL_NAME --strength medium` 改強度、`model remove claude MODEL_NAME` 移除模型，或用 `model stage taskReview high` 調整階段最低強度。終端機每次呼叫會顯示送給 CLI 的模型名稱；`status <id>` 會按模型與步驟顯示用量。`run --model-mode balanced` 可暫時回到原設定。
+
+計畫會為每個任務標註 `low`／`medium`／`high` 難度。自動選模先遵守角色分配，再取階段強度與任務難度中較高者；失敗重試會提高強度。若分配到的 agent 沒有足夠強度的模型，會選它最強的模型並提示。這些強度是你對模型能力的設定，不由 CLI 自動評分。
+
+模型探測必須能禁止工具。這版 Codex CLI 沒有可確認的無工具探測參數，因此 `model add` 無法驗證並登記 Codex 模型；手動寫入 `models` 仍可執行，但不代表已驗證可用。`balanced` 仍可照原方式使用。自訂 `command` adapter 另需提供會實際呼叫模型的探測命令；設定方式與限制見[詳細參考](docs/reference.md#模型設定與自動選模)。
+
 ### 專案設定
 
 你也可以直接編輯 `flow.config.json`。這是可用的最小範例；沒有寫的欄位會使用預設值：
@@ -132,6 +153,8 @@ agentflowctl agent cycle claude,codex
 | `agents` | `{}` | 以名稱為 key 定義 agent；每個都要有 `adapter`，可加 `model`、`extraArgs`；`command` adapter 另需 `command` 指令陣列 |
 | `cycle` | 自動偵測 | 填 agent 名稱陣列，例如 `["claude", "codex"]`；未填時使用已設定且可執行的 agent；順序不決定角色 |
 | `defaultModels` | `{}` | 依 adapter 設預設模型，例如 `{ "claude": "模型名稱" }`；個別 agent 的 `model` 優先 |
+| `modelSelection` | `balanced` | `mode` 可為 `balanced` 或 `adaptive`；`stageStrength` 可覆蓋各 LLM 階段強度 |
+| `agents.<名稱>.models` | 無 | 自動選模時使用；每筆有 `name` 與 `strength`，建議用 `model add` 設定並實際驗證 |
 | `fixStrategy` | `"ring"` | `"ring"` 由審查者以外的 agent 修正；`"author"` 交回最後作者 |
 | `tddSplit` | `true` | 有多位 agent 時，`true` 會把同一任務的測試與實作分給不同 agent |
 | `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准 |

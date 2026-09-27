@@ -34,10 +34,12 @@ const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, logDir, worktreeDir } = await import("./paths.js");
 const { agentRuns } = await import("./store.js");
 
-async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false) {
+async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
-    agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+    agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script, ...(adaptive ? ["{model}"] : [])],
+      ...(adaptive ? { models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }], modelProbe: ["node", script, "{model}"] } : {}) }])),
     cycle: ["a", "b", "c"], reviewQuorum: quorum,
+    ...(adaptive ? { modelSelection: { mode: "adaptive", stageStrength: { review: "low" } } } : {}),
   }));
   const wt = worktreeDir(id);
   await addWorktree(root, wt, "main", `flow/${id}`);
@@ -55,6 +57,7 @@ async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper 
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "review" as const,
     autopilot: true, maxAgentRuns: 10, cycle: ["a", "b", "c"], lastWriter: "a", attempts: {},
+    ...(adaptive ? { modelMode: "adaptive" as const } : {}),
     taskIndex: 1, taskPhase: "tests" as const, createdAt: now, updatedAt: now,
   });
 }
@@ -79,6 +82,14 @@ describe("審查交接關卡", () => {
     const ledger = readHandoff(run.id);
     expect(ledger.issues[0]?.status).toBe("resolved");
     expect(ledger.appliedCalls).toHaveLength(3); // 一位作者、兩位審查者
+  });
+
+  it("adaptive 審查依階段強度選模型，並把名稱寫入 log", async () => {
+    const run = await reviewRun("f-review-adaptive", "close", 1, false, true);
+    expect(run.stage).toBe("done");
+    const file = readdirSync(logDir(run.id)).find((name) => name.includes("-review-"));
+    expect(file).toBeDefined();
+    expect(readFileSync(join(logDir(run.id), file!), "utf8").split("\n")[0]).toContain('"model":"small"');
   });
 
   it("程式碼審查者修改驗收條件時會被還原", async () => {

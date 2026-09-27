@@ -16,6 +16,8 @@ export interface AgentTarget {
   logFile: string;
   stage: string;
   step: string;
+  strength?: "low" | "medium" | "high";
+  targetStrength?: "low" | "medium" | "high";
 }
 
 /**
@@ -44,8 +46,10 @@ export interface AgentResult {
   summary: string;
   /** 回覆裡的 XML 中繼資料；agent 沒附上時為 undefined */
   meta?: ResultMeta;
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  usageReported: boolean;
+  resolvedModel?: string;
 }
 
 function appendLog(file: string, text: string): void {
@@ -95,12 +99,15 @@ export async function runAgent(
     projectRoot: projectRoot(),
     command: def.command,
   });
-  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: name, adapter: def.adapter, startedAt: new Date().toISOString() }));
+  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: name, adapter: def.adapter, model: def.model, strength: t.strength, targetStrength: t.targetStrength, startedAt: new Date().toISOString() }));
 
   let done: { ok: boolean; summary?: string } | undefined;
   let lastText = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let inputReported = false;
+  let outputReported = false;
+  let resolvedModel: string | undefined;
   const r = await exec(inv.cmd, inv.args, {
     cwd: t.cwd,
     env: inv.env,
@@ -115,8 +122,10 @@ export async function runAgent(
         } else if (ev.kind === "tool") {
           if (config.verbose) console.log(formatToolLine(name, ev));
         } else if (ev.kind === "usage") {
-          inputTokens += ev.inputTokens ?? 0;
-          outputTokens += ev.outputTokens ?? 0;
+          if (ev.inputTokens !== undefined) { inputReported = true; inputTokens += ev.inputTokens; }
+          if (ev.outputTokens !== undefined) { outputReported = true; outputTokens += ev.outputTokens; }
+        } else if (ev.kind === "model") {
+          resolvedModel = ev.id;
         } else if (ev.kind === "done") {
           done = { ok: ev.ok, summary: ev.summary };
         }
@@ -131,7 +140,8 @@ export async function runAgent(
   const summary = done?.summary || lastText || tail(r.stdout, 2000) || tail(r.stderr, 2000);
   const quotaExhausted = !ok && isQuotaError(`${summary}\n${done?.summary ?? ""}\n${r.stderr}\n${tail(r.stdout, 4000)}`);
   const meta = parseResultMeta(summary) ?? parseResultMeta(lastText);
-  return { ok, quotaExhausted, summary, meta, inputTokens, outputTokens };
+  return { ok, quotaExhausted, summary, meta, usageReported: inputReported && outputReported,
+    inputTokens: inputReported ? inputTokens : undefined, outputTokens: outputReported ? outputTokens : undefined, resolvedModel };
 }
 
 /**

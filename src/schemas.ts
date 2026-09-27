@@ -87,6 +87,7 @@ export const TaskItem = z.object({
   description: z.string().min(1),
   dependsOn: z.array(z.string()).default([]),
   acceptance: z.array(z.string()).min(1, "每個任務至少要對應一條驗收條件"),
+  complexity: z.enum(["low", "medium", "high"]).optional(),
 });
 export type TaskItem = z.infer<typeof TaskItem>;
 
@@ -121,12 +122,22 @@ export const ArbiterResult = ReviewResult.extend({
 });
 
 /** 一個 agent 的定義；名稱（agents 的 key）用在 cycle 裡 */
+export const ModelStrength = z.enum(["low", "medium", "high"]);
+export type ModelStrength = z.infer<typeof ModelStrength>;
+
+export const ModelStage = z.enum(["spec", "plan", "planReview", "planFix", "planArbiter", "taskTests", "taskCode", "taskReview", "taskFix", "fix", "review"]);
+export type ModelStage = z.infer<typeof ModelStage>;
+
+export const ModelEntry = z.object({ name: z.string().trim().min(1), strength: ModelStrength });
+
 export const AgentDef = z.object({
   adapter: z.enum(["claude", "codex", "gemini", "command"]),
   model: z.string().optional(),
+  models: z.array(ModelEntry).optional(),
   extraArgs: z.array(z.string()).default([]),
   /** 只有 command adapter 使用，`{prompt}` 會被替換成 prompt */
   command: z.array(z.string()).optional(),
+  modelProbe: z.array(z.string()).optional(),
 });
 export type AgentDef = z.infer<typeof AgentDef>;
 
@@ -140,6 +151,15 @@ export const RepoConfig = z.object({
     codex: z.string().trim().min(1).optional(),
     gemini: z.string().trim().min(1).optional(),
   }).default({}),
+  modelSelection: z.object({
+    mode: z.enum(["balanced", "adaptive"]).default("balanced"),
+    stageStrength: z.strictObject({
+      spec: ModelStrength.optional(), plan: ModelStrength.optional(), planReview: ModelStrength.optional(),
+      planFix: ModelStrength.optional(), planArbiter: ModelStrength.optional(), taskTests: ModelStrength.optional(),
+      taskCode: ModelStrength.optional(), taskReview: ModelStrength.optional(), taskFix: ModelStrength.optional(),
+      fix: ModelStrength.optional(), review: ModelStrength.optional(),
+    }).default({}),
+  }).default({ mode: "balanced", stageStrength: {} }),
   /** 參與的 agent（順序不影響分工）；未設定時取 agents 裡已安裝的 CLI */
   cycle: z.array(z.string()).min(1).optional(),
   /** review 後的修正由誰做：ring＝輪到下一位；author＝最後寫程式的 agent */
@@ -199,6 +219,8 @@ export const FlowRun = z.object({
   fixSource: z.enum(["verify", "review"]).optional(),
   /** 各關卡的連續失敗次數 */
   attempts: z.record(z.string(), z.number()),
+  modelMode: z.enum(["balanced", "adaptive"]).optional(),
+  modelRetryAttempts: z.record(z.string(), z.number().int().nonnegative()).optional(),
   taskIndex: z.number().int().nonnegative(),
   /** 目前任務進行到哪一步：寫測試 → 實作 → 審查 → 驗證，審查或驗證未通過時進入修正 */
   taskPhase: z.enum(["tests", "code", "review", "verify", "fix"]),

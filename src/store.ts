@@ -39,8 +39,13 @@ export function listRuns(): FlowRun[] {
 export interface UsageEntry {
   stage: string;
   agent: string;
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  usageReported?: boolean;
+  model?: string;
+  resolvedModel?: string;
+  strength?: "low" | "medium" | "high";
+  targetStrength?: "low" | "medium" | "high";
 }
 
 export function addUsage(id: string, entry: UsageEntry): void {
@@ -48,18 +53,51 @@ export function addUsage(id: string, entry: UsageEntry): void {
   appendFileSync(usagePath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 
-/** 依 agent 加總 token 與執行次數，方便比較各家模型 */
-export function usageByAgent(id: string): Record<string, { tokens: number; runs: number }> {
+export interface UsageSummary {
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  runs: number;
+  reportedRuns: number;
+  unreportedRuns: number;
+  legacyRuns: number;
+}
+
+const emptySummary = (): UsageSummary => ({ tokens: 0, inputTokens: 0, outputTokens: 0, runs: 0, reportedRuns: 0, unreportedRuns: 0, legacyRuns: 0 });
+
+export function listUsage(id: string): UsageEntry[] {
   const p = usagePath(id);
-  const out: Record<string, { tokens: number; runs: number }> = {};
-  if (!existsSync(p)) return out;
-  for (const line of readFileSync(p, "utf8").split("\n").filter(Boolean)) {
-    const e = JSON.parse(line) as Partial<UsageEntry>;
-    const key = e.agent ?? "?";
-    const acc = (out[key] ??= { tokens: 0, runs: 0 });
+  return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as UsageEntry) : [];
+}
+
+function addSummary(acc: UsageSummary, e: UsageEntry): void {
+  acc.runs += 1;
+  if (e.usageReported === true && typeof e.inputTokens === "number" && typeof e.outputTokens === "number") {
+    acc.reportedRuns += 1;
+    acc.inputTokens += e.inputTokens ?? 0;
+    acc.outputTokens += e.outputTokens ?? 0;
     acc.tokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
-    acc.runs += 1;
-  }
+  } else if (e.usageReported === false || e.usageReported === true) acc.unreportedRuns += 1;
+  else acc.legacyRuns += 1;
+}
+
+/** 只加總明確回報的 token，舊資料的 0 不視為已回報。 */
+export function usageByAgent(id: string): Record<string, UsageSummary> {
+  const out: Record<string, UsageSummary> = {};
+  for (const e of listUsage(id)) addSummary(out[e.agent] ??= emptySummary(), e);
+  return out;
+}
+
+/** 依模型與 LLM 步驟提供相同的統計語意。 */
+export function usageByModelStage(id: string): Record<string, UsageSummary> {
+  const out: Record<string, UsageSummary> = {};
+  for (const e of listUsage(id)) addSummary(out[`${e.model ?? "CLI 預設（名稱未知）"} / ${e.stage}`] ??= emptySummary(), e);
+  return out;
+}
+
+export function usageByStrength(id: string): Record<string, UsageSummary> {
+  const out: Record<string, UsageSummary> = {};
+  for (const e of listUsage(id)) addSummary(out[e.strength ?? "未知"] ??= emptySummary(), e);
   return out;
 }
 

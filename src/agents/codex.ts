@@ -27,7 +27,9 @@ export const codex: Adapter = {
       }
     } else if (ev.type === "turn.completed") {
       const usage = (ev.usage ?? {}) as Record<string, unknown>;
-      out.push({ kind: "usage", inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens) });
+      if (num(usage.input_tokens) !== undefined || num(usage.output_tokens) !== undefined) {
+        out.push({ kind: "usage", inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens) });
+      }
     } else if (ev.type === "turn.failed" || ev.type === "error") {
       const err = (ev.error ?? {}) as Record<string, unknown>;
       out.push({ kind: "done", ok: false, summary: str(err.message) ?? str(ev.message) ?? "Codex 執行失敗" });

@@ -32,6 +32,7 @@
 - 每一條驗收條件都至少要有一個任務負責；`dependsOn` 不可有循環。
 - 一個任務只做一件事，最多兩件：`acceptance` 最多列兩條驗收條件；驗收條件一條只描述一個行為。修改時若任務變大，請拆開，不要合併。
 - 測試檔名必須符合正規表示式 `{{testPattern}}`。
+- 修改 task 時保留或補上 `complexity`（`low`、`medium`、`high`），依影響範圍與技術不確定性調整。
 </output_format>
 
 <constraints>

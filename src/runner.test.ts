@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { formatToolLine, isQuotaError, parseResultMeta, resolveAgent } from "./runner.js";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { formatToolLine, isQuotaError, parseResultMeta, resolveAgent, runAgent } from "./runner.js";
 import { RepoConfig } from "./schemas.js";
 
 describe("回覆的 XML 中繼資料", () => {
@@ -92,5 +95,17 @@ describe("resolveAgent", () => {
     expect(resolveAgent(RepoConfig.parse({ agents: { c: { adapter: "claude" } } }), "c").model).toBeUndefined();
     expect(() => RepoConfig.parse({ defaultModels: { codex: "  " } })).toThrow();
     expect(() => RepoConfig.parse({ defaultModels: { unknown: "model" } })).toThrow();
+  });
+});
+
+describe("runAgent 用量與模型", () => {
+  it("沒有 usage 事件時標記未回報，log 記下送入的模型", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentflowctl-runner-"));
+    const logFile = join(dir, "probe.log");
+    const result = await runAgent("custom", { adapter: "command", model: "small", extraArgs: [], command: [process.execPath, "-e", "console.log('ok')"] },
+      { runId: "runner-usage-test", cwd: dir, logFile, stage: "spec", step: "spec" }, "P");
+    expect(result.usageReported).toBe(false);
+    expect(result.inputTokens).toBeUndefined();
+    expect(readFileSync(logFile, "utf8")).toContain('"model":"small"');
   });
 });
