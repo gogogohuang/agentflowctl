@@ -35,26 +35,27 @@ export function setModelStrength(cfg: RawConfig, agent: string, name: string, st
   });
 }
 
+/** 有 cycle 時看 cycle，否則看全部 agent；只做設定層的保守檢查。 */
+function assertModelsPresent(cfg: RawConfig): void {
+  const agents = agentsOf(cfg);
+  const affected = (cfg.cycle as string[] | undefined) ?? Object.keys(agents);
+  const missing = affected.filter((name) => !agents[name] || !modelsOf(agents[name]).length);
+  if (missing.length) throw new Error(`以下 agent 缺少模型：${missing.join("、")}`);
+}
+
 export function removeModel(cfg: RawConfig, agent: string, name: string): RawConfig {
-  return withAgent(cfg, agent, (def) => {
+  const next = withAgent(cfg, agent, (def) => {
     const models = modelsOf(def);
     if (!models.some((m) => m.name === name)) throw new Error(`agent ${agent} 沒有模型 ${name}`);
-    const remaining = models.filter((m) => m.name !== name);
-    const mode = ((cfg.modelSelection ?? {}) as { mode?: string }).mode;
-    const affected = (cfg.cycle as string[] | undefined) ?? Object.keys(agentsOf(cfg));
-    if (mode === "adaptive" && affected.includes(agent) && !remaining.length) throw new Error(`不能移除 agent ${agent} 的最後一個模型`);
-    return { ...def, models: remaining };
+    return { ...def, models: models.filter((m) => m.name !== name) };
   });
+  if (((cfg.modelSelection ?? {}) as { mode?: string }).mode === "adaptive") assertModelsPresent(next);
+  return next;
 }
 
 export function setModelMode(cfg: RawConfig, mode: "balanced" | "adaptive"): RawConfig {
   if (mode !== "balanced" && mode !== "adaptive") throw new Error(`未知的模型模式：${mode}`);
-  if (mode === "adaptive") {
-    const agents = agentsOf(cfg);
-    const affected = (cfg.cycle as string[] | undefined) ?? Object.keys(agents);
-    const missing = affected.filter((name) => !agents[name] || !modelsOf(agents[name]).length);
-    if (missing.length) throw new Error(`以下 agent 缺少模型：${missing.join("、")}`);
-  }
+  if (mode === "adaptive") assertModelsPresent(cfg);
   const next = { ...cfg, modelSelection: { ...((cfg.modelSelection ?? {}) as Record<string, unknown>), mode } };
   RepoConfig.parse(next);
   return next;

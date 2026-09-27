@@ -164,6 +164,7 @@ program
   .option("--max-agent-runs <n>", "調整 agent 執行次數上限")
   .action(async (id: string, opts: { maxAgentRuns?: string }) => {
     let run = mustGetRun(id);
+    if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
     if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };

@@ -33,6 +33,23 @@ describe("模型即時探測", () => {
     expect((await probeModel({ adapter: "codex", extraArgs: [] }, "model-x", 100)).status).toBe("unverifiable");
   });
 
+  it("會發 done 事件的 CLI 沒回報完成時不算通過", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "agentflowctl-probe-bin-"));
+    const text = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "OK" }] } });
+    const result = JSON.stringify({ type: "result", is_error: false, result: "OK" });
+    const fake = join(bin, "claude");
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      writeFileSync(fake, `#!/bin/sh\necho '${text}'\n`, { mode: 0o755 });
+      expect(await probeModel({ adapter: "claude", extraArgs: [] }, "model-x", 5000)).toMatchObject({ status: "failed" });
+      writeFileSync(fake, `#!/bin/sh\necho '${text}'\necho '${result}'\n`, { mode: 0o755 });
+      expect((await probeModel({ adapter: "claude", extraArgs: [] }, "model-x", 5000)).status).toBe("ok");
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
   it("把常見失敗歸類成使用者看得懂的原因", () => {
     expect(probeFailureReason("HTTP 429 quota exceeded")).toContain("額度");
     expect(probeFailureReason("invalid model id")).toContain("模型名稱");

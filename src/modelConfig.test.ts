@@ -19,7 +19,14 @@ describe("模型設定編輯", () => {
   it("修改強度不改名稱，移除最後一個參與模型時拒絕", () => {
     const cfg = setModelStrength(base(), "a", "small", "medium");
     expect(((cfg.agents as Record<string, { models: Array<{ strength: string }> }>).a?.models[0]?.strength)).toBe("medium");
-    expect(() => removeModel(setModelMode(cfg, "adaptive"), "a", "small")).toThrow(/最後一個/);
+    expect(() => removeModel(setModelMode(cfg, "adaptive"), "a", "small")).toThrow(/缺少模型：a/);
+  });
+
+  it("adaptive 下移除最後一個模型時，列出受影響範圍內所有缺模型的 agent", () => {
+    const cfg = { agents: { a: { adapter: "claude", models: [{ name: "small", strength: "low" }] }, b: { adapter: "gemini" } }, modelSelection: { mode: "adaptive" } };
+    expect(() => removeModel(cfg, "a", "small")).toThrow("以下 agent 缺少模型：a、b");
+    const onlyB = { ...cfg, cycle: ["b"], agents: { ...cfg.agents, b: { adapter: "gemini", models: [{ name: "large", strength: "high" }] } } };
+    expect(removeModel(onlyB, "a", "small").agents).toMatchObject({ a: { models: [] } });
   });
 
   it("啟用 adaptive 檢查 cycle；階段強度只接受已定義的鍵", () => {

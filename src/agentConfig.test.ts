@@ -50,6 +50,14 @@ describe("setAgent", () => {
     expect(() => setAgent({ agents: { x: { adapter: "codex" } } }, "x", { adapter: "command" })).toThrow(/command/);
   });
 
+  it("CLI 傳入未指定的欄位為 undefined 時，換 adapter 仍會清掉舊欄位", () => {
+    const cfg = { agents: { x: { adapter: "codex", model: "gpt", extraArgs: ["--foo"], models: [{ name: "gpt", strength: "high" }] } } };
+    const patch = { adapter: "claude", model: undefined, extraArgs: undefined, modelProbe: undefined, command: undefined };
+    const r = setAgent(cfg, "x", patch);
+    expect(r.cfg.agents).toEqual({ x: { adapter: "claude" } });
+    expect(r.changes.join("\n")).toMatch(/model、models、extraArgs/);
+  });
+
   it("未定義的 agent 或沒有要改的欄位時報錯", () => {
     expect(() => setAgent({}, "nope", { model: "x" })).toThrow(/未定義/);
     expect(() => setAgent({}, "claude", { model: "x" })).toThrow(/未定義/);

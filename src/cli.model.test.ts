@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
@@ -59,5 +59,21 @@ describe("model CLI", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("models");
     expect(existsSync(join(root, ".agentflowctl", "worktrees"))).toBe(false);
+  });
+
+  it("resume 前重新檢查 adaptive 設定，缺模型時不接續也不改狀態", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentflowctl-model-resume-"));
+    execFileSync("git", ["init", "-q", "-b", "main", root]);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ agents: { local: { adapter: "command", command: ["custom", "{model}"] } }, cycle: ["local"] }));
+    const runDir = join(root, ".agentflowctl", "runs", "f-old");
+    mkdirSync(runDir, { recursive: true });
+    const now = new Date().toISOString();
+    const state = JSON.stringify({ id: "f-old", baseBranch: "main", branch: "flow/f-old", requirement: "測試", stage: "paused", pausedStage: "spec",
+      autopilot: true, maxAgentRuns: 10, cycle: ["local"], attempts: {}, modelMode: "adaptive", taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now });
+    writeFileSync(join(runDir, "state.json"), state);
+    const result = spawnSync(process.execPath, ["--import", tsx, cli, "resume", "f-old"], { cwd: root, encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("models");
+    expect(readFileSync(join(runDir, "state.json"), "utf8")).toBe(state);
   });
 });

@@ -52,6 +52,16 @@ describe("adapter 事件解析", () => {
     expect(ADAPTERS.claude.parse("not json")).toEqual([]);
   });
 
+  it("結束事件沒有 token 數字時不送 usage，runner 才能分辨未回報", () => {
+    expect(ADAPTERS.claude.parse('{"type":"result","subtype":"success","is_error":false,"result":"OK"}'))
+      .toEqual([{ kind: "done", ok: true, summary: "OK" }]);
+    expect(ADAPTERS.codex.parse('{"type":"turn.completed","usage":{}}')).toEqual([]);
+    expect(ADAPTERS.gemini.parse('{"type":"result","status":"success","stats":{}}'))
+      .toEqual([{ kind: "done", ok: true, summary: undefined }]);
+    expect(ADAPTERS.codex.parse('{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":3}}'))
+      .toEqual([{ kind: "usage", inputTokens: 0, outputTokens: 3 }]);
+  });
+
   it("command：{model} 只代入設定的模型，不留下字面占位符", () => {
     const base = { cwd: "/w", extraArgs: [], runDir: "/r", projectRoot: "/p" };
     expect(ADAPTERS.command.invoke({ ...base, prompt: "P", model: "actual-id", command: ["agent", "--model", "{model}"] }).args)

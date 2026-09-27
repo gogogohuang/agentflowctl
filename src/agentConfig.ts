@@ -58,7 +58,8 @@ export function setAgent(cfg: RawConfig, name: string, patch: AgentPatch): Edit 
   const base: RawAgent = { ...agents[name] };
   const changes: string[] = [];
   if (patch.adapter !== undefined && patch.adapter !== base.adapter) {
-    const cleared = ADAPTER_FIELDS.filter((f) => base[f] !== undefined && !(f in patch));
+    const given = patch as Record<string, unknown>;
+    const cleared = ADAPTER_FIELDS.filter((f) => base[f] !== undefined && given[f] === undefined);
     for (const f of cleared) delete base[f];
     if (cleared.length) changes.push(`adapter 從 ${String(base.adapter)} 換成 ${patch.adapter}，已清掉舊的 ${cleared.join("、")}`);
   }

@@ -53,7 +53,8 @@ export async function probeModel(def: AgentDef, model: string, timeoutMs = 30000
     }
     if (events.some((e) => e.kind === "tool")) return { status: "failed", reason: "模型檢查期間出現工具呼叫，未通過無工具驗證" };
     const done = events.filter((e) => e.kind === "done").at(-1);
-    if (done?.kind === "done" && !done.ok) return { status: "failed", reason: done.summary ?? "CLI 回報失敗" };
+    if (done?.kind !== "done") return { status: "failed", reason: "CLI 沒有回報完成" };
+    if (!done.ok) return { status: "failed", reason: done.summary ?? "CLI 回報失敗" };
     if (!events.some((e) => e.kind === "text" && e.text.trim())) return { status: "failed", reason: "CLI 沒有回傳文字內容" };
     const resolved = events.find((e) => e.kind === "model");
     return { status: "ok", resolvedModel: resolved?.kind === "model" ? resolved.id : undefined };
