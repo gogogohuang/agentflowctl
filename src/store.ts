@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { stageOfStep } from "./modelSelection.js";
 import { agentflowctlDir, runDir } from "./paths.js";
 import { FlowRun } from "./schemas.js";
 
@@ -87,24 +88,19 @@ function addSummary(acc: UsageSummary, e: UsageEntry): void {
 }
 
 /** 只加總明確回報的 token，舊資料的 0 不視為已回報。 */
-export function usageByAgent(id: string): Record<string, UsageSummary> {
+function groupUsage(id: string, keyOf: (e: UsageEntry) => string): Record<string, UsageSummary> {
   const out: Record<string, UsageSummary> = {};
-  for (const e of listUsage(id)) addSummary(out[e.agent] ??= emptySummary(), e);
+  for (const e of listUsage(id)) addSummary(out[keyOf(e)] ??= emptySummary(), e);
   return out;
 }
 
-/** 依模型與 LLM 步驟提供相同的統計語意。 */
-export function usageByModelStage(id: string): Record<string, UsageSummary> {
-  const out: Record<string, UsageSummary> = {};
-  for (const e of listUsage(id)) addSummary(out[`${e.model ?? "CLI 預設（名稱未知）"} / ${e.stage}`] ??= emptySummary(), e);
-  return out;
-}
-
-export function usageByStrength(id: string): Record<string, UsageSummary> {
-  const out: Record<string, UsageSummary> = {};
-  for (const e of listUsage(id)) addSummary(out[e.strength ?? "未知"] ??= emptySummary(), e);
-  return out;
-}
+export const usageByAgent = (id: string) => groupUsage(id, (e) => e.agent);
+export const usageByModelStage = (id: string) => groupUsage(id, (e) => `${e.model ?? "CLI 預設（名稱未知）"} / ${e.stage}`);
+export const usageByStrength = (id: string) => groupUsage(id, (e) => e.strength ?? "未知");
+/** 依階段鍵加總（所有任務的同一步合在一起）；認不得的步驟歸為「其他」。 */
+export const usageByStage = (id: string) => groupUsage(id, (e) => stageOfStep(e.stage) ?? "其他");
+/** 依任務加總寫測試、實作、任務審查與任務修正；規格、計畫與整體階段歸為「非任務步驟」。 */
+export const usageByTask = (id: string) => groupUsage(id, (e) => /^(T-\d+)-/.exec(e.stage)?.[1] ?? "非任務步驟");
 
 /** 這個 run 已執行 agent 的次數（每次執行都會記一筆用量） */
 export function agentRuns(id: string): number {

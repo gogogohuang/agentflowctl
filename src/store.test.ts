@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
-const { addSubstitution, addUsage, agentRuns, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStrength } = await import("./store.js");
+const { addSubstitution, addUsage, agentRuns, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStage, usageByStrength, usageByTask } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -33,5 +33,25 @@ describe("檔案儲存", () => {
     expect(usageByAgent("f-usage").a).toMatchObject({ tokens: 0, runs: 3, reportedRuns: 1, unreportedRuns: 1, legacyRuns: 1 });
     expect(usageByStrength("f-usage").low).toMatchObject({ tokens: 0, runs: 1, reportedRuns: 1 });
     expect(usageByStrength("f-usage").high).toMatchObject({ tokens: 0, runs: 1, unreportedRuns: 1 });
+  });
+
+  it("依階段與任務加總用量，非任務步驟與未知步驟另外歸類", () => {
+    const reported = (stage: string, inputTokens: number, outputTokens: number) =>
+      addUsage("f-rollup", { stage, agent: "a", usageReported: true, inputTokens, outputTokens });
+    reported("plan", 100, 10);
+    reported("T-1-tests", 20, 2);
+    reported("T-1-code", 30, 3);
+    reported("T-1-fix", 5, 1);
+    reported("T-2-code", 40, 4);
+    reported("review", 60, 6);
+    addUsage("f-rollup", { stage: "old-step", agent: "a", inputTokens: 7, outputTokens: 0 });
+    const byStage = usageByStage("f-rollup");
+    expect(byStage.taskCode).toMatchObject({ tokens: 77, runs: 2 });
+    expect(byStage.plan).toMatchObject({ tokens: 110, runs: 1 });
+    expect(byStage["其他"]).toMatchObject({ tokens: 0, runs: 1, legacyRuns: 1, legacyTokens: 7 });
+    const byTask = usageByTask("f-rollup");
+    expect(byTask["T-1"]).toMatchObject({ tokens: 61, inputTokens: 55, outputTokens: 6, runs: 3 });
+    expect(byTask["T-2"]).toMatchObject({ tokens: 44, runs: 1 });
+    expect(byTask["非任務步驟"]).toMatchObject({ tokens: 176, runs: 3 });
   });
 });

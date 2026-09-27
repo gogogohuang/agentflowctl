@@ -13,15 +13,24 @@ import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, TaskList, type FlowRun } from "./schemas.js";
-import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStrength } from "./store.js";
+import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
 import { readJsonFile } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 import { addModel, removeModel, setModelMode, setModelStrength, setStageStrength } from "./modelConfig.js";
-import { effectiveStageStrengths, validateAdaptiveConfig } from "./modelSelection.js";
+import { DEFAULT_STAGE_STRENGTH, effectiveStageStrengths, validateAdaptiveConfig } from "./modelSelection.js";
 import { probeModel } from "./modelProbe.js";
+
+function printUsage(title: string, rows: Array<[string, UsageSummary]>): void {
+  if (!rows.length) return;
+  console.log(`\n${title}`);
+  for (const [key, c] of rows) {
+    const value = c.reportedRuns ? `輸入 ${c.inputTokens}、輸出 ${c.outputTokens}、合計 ${c.tokens} tokens` : "未回報或回報狀態不明";
+    console.log(`  ${key}: ${value}；${c.runs} 次（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}）`);
+  }
+}
 
 function mustGetRun(id: string): FlowRun {
   const run = getRun(id);
@@ -221,14 +230,12 @@ program
         console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}${c.legacyTokens ? `，原始數字 ${c.legacyTokens} tokens` : ""}）`);
       }
     }
-    const byModelStage = usageByModelStage(id);
-    if (Object.keys(byModelStage).length) {
-      console.log("\n各模型與步驟用量（只加總明確回報）");
-      for (const [key, c] of Object.entries(byModelStage)) {
-        const value = c.reportedRuns ? `輸入 ${c.inputTokens}、輸出 ${c.outputTokens}、合計 ${c.tokens} tokens` : "未回報或回報狀態不明";
-        console.log(`  ${key}: ${value}；${c.runs} 次（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}）`);
-      }
-    }
+    const byStage = usageByStage(id);
+    const stageOrder = [...Object.keys(DEFAULT_STAGE_STRENGTH), "其他"];
+    printUsage("各階段用量（同一步驟的所有任務合計）", Object.entries(byStage).sort(([a], [b]) => stageOrder.indexOf(a) - stageOrder.indexOf(b)));
+    const taskNo = (key: string) => /^T-(\d+)$/.exec(key) ? Number(key.slice(2)) : Infinity;
+    printUsage("各任務用量（寫測試、實作、任務審查、任務修正）", Object.entries(usageByTask(id)).sort(([a], [b]) => taskNo(a) - taskNo(b)));
+    printUsage("各模型與步驟用量（只加總明確回報）", Object.entries(usageByModelStage(id)));
     const byStrength = usageByStrength(id);
     const reportedTotal = Object.values(byStrength).reduce((sum, entry) => sum + entry.tokens, 0);
     if (Object.keys(byStrength).length) {

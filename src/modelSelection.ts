@@ -39,14 +39,19 @@ export function clearModelReviewStage(run: FlowRun, step: "plan-review" | "revie
   return { ...run, modelRetryAttempts: attempts };
 }
 
-function stepStage(step: string): ModelStage {
+/** 把步驟名稱（例如 `T-1-code`、`plan-review`）對應到階段鍵；不認得時回傳 undefined。 */
+export function stageOfStep(step: string): ModelStage | undefined {
   const task = /^T-\d+-(tests|code|review|fix)$/.exec(step);
   if (task) return ({ tests: "taskTests", code: "taskCode", review: "taskReview", fix: "taskFix" } as const)[task[1] as "tests" | "code" | "review" | "fix"];
   const stage: Record<string, ModelStage> = {
     spec: "spec", plan: "plan", "plan-review": "planReview", "plan-fix": "planFix",
     "plan-arbiter": "planArbiter", fix: "fix", review: "review",
   };
-  const found = stage[step];
+  return stage[step];
+}
+
+function stepStage(step: string): ModelStage {
+  const found = stageOfStep(step);
   if (!found) throw new Error(`未知的 LLM 步驟：${step}`);
   return found;
 }
