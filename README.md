@@ -46,10 +46,13 @@ agentflowctl list                  # 列出 run
 agentflowctl status f-xxxx         # 看進度、結果與下一步
 agentflowctl logs f-xxxx           # 列出各步驟的 log
 agentflowctl logs f-xxxx --latest  # 看最新一份 log
+agentflowctl stats f-xxxx          # 各步驟耗時、執行與失敗次數
 agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 ```
 
 `status` 會列出目前階段、未結的交接事項與下一步指令；失敗或暫停時也會顯示原因。要看某一步的詳細輸出，可用 `logs <id> <編號>`；加 `--full` 看完整工具內容，或加 `--raw` 看原始輸出。
+
+`stats` 依 log 的開始與結束時間統計每個步驟的執行次數、失敗次數、總耗時與最長一次，並分開列出 agent 與專案指令（install、測試、checks）各占多少時間，最耗時的步驟排在最前面。沒有結束紀錄的 log 列為未完成，不計入耗時；總經過時間包含暫停與等待核准。
 
 執行紀錄在 `.agentflowctl/runs/<id>/`，工作分支在 `.agentflowctl/worktrees/<id>/`。不再需要某次 run 時，可用 `agentflowctl clean <id>` 清除 worktree 與紀錄；`flow/<id>` 分支會保留。
 
@@ -129,7 +132,7 @@ agentflowctl run --req-file ./requirement.md
 
 把 `MODEL_NAME` 換成該 CLI 目前可呼叫的別名或完整 ID。`model add` 會用目前登入的帳號送出短請求，可能耗用少量 token；成功才寫入設定。需要重驗時執行 `model check`。用 `model set claude MODEL_NAME --strength medium` 改強度、`model remove claude MODEL_NAME` 移除模型，或用 `model stage taskReview high` 調整階段最低強度；`model stage` 不帶強度時列出各階段實際生效的強度。終端機每次呼叫會顯示送給 CLI 的模型名稱，Claude Code 與 Gemini CLI 回報的實際模型不同時也會顯示；`status <id>` 會按階段、任務、模型與步驟顯示用量。`run --model-mode balanced` 可暫時回到原設定。
 
-`status <id>` 的用量以每次 LLM 呼叫為一筆，失敗、額度用完及代打也會計入呼叫次數。只有 CLI 同時回報輸入與輸出 token，才把兩者納入合計與模型強度占比；明確回報的 0 仍算已回報。缺少任一數字列為「未回報」；舊紀錄無法分辨真實 0 與預設補值，列為「舊紀錄不明」，原始數字只供查閱。各 agent、階段、任務、模型與步驟、模型強度是同一批呼叫的不同分組，不應跨組相加。`model add/check` 的探測請求可能耗用 token，但不屬於 run，因此不在 `status` 內。
+`status <id>` 的用量以每次 LLM 呼叫為一筆，失敗、額度用完及代打也會計入呼叫次數。只有 CLI 同時回報輸入與輸出 token，才把兩者納入合計與模型強度占比；明確回報的 0 仍算已回報。缺少任一數字列為「未回報」；舊紀錄無法分辨真實 0 與預設補值，列為「舊紀錄不明」，原始數字只供查閱。各 agent、階段、任務、模型與步驟、模型強度是同一批呼叫的不同分組，不應跨組相加。輸入 token 一律包含 cache 讀取與寫入：Claude Code 回報的 `input_tokens` 不含 cache，agentflowctl 會把 cache 讀寫加回去；Codex 的 `input_tokens` 本來就包含 cache。有回報 cache 時，`status` 與 `logs` 會另外標出其中讀取與寫入 cache 各多少。`model add/check` 的探測請求可能耗用 token，但不屬於 run，因此不在 `status` 內。
 
 計畫 agent 會查閱相關程式碼，依影響範圍、技術不確定性與失敗後果為每個任務標註 `low`／`medium`／`high` 難度，取三者中最高等級，並在計畫中寫出依據；計畫審查會逐項核對。自動選模先遵守角色分配，再取階段強度與任務難度中較高者；失敗重試會提高強度。若分配到的 agent 沒有足夠強度的模型，會選它最強的模型並提示。這些強度是你對模型能力的設定，不由 CLI 自動評分。
 

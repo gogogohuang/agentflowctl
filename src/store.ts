@@ -42,6 +42,10 @@ export interface UsageEntry {
   agent: string;
   inputTokens?: number;
   outputTokens?: number;
+  /** inputTokens 中讀取 cache 的部分；舊紀錄與不回報 cache 的 CLI 沒有這個欄位 */
+  cacheReadTokens?: number;
+  /** inputTokens 中寫入 cache 的部分 */
+  cacheWriteTokens?: number;
   usageReported?: boolean;
   model?: string;
   resolvedModel?: string;
@@ -58,6 +62,9 @@ export interface UsageSummary {
   tokens: number;
   inputTokens: number;
   outputTokens: number;
+  /** 已含在 inputTokens 內 */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   runs: number;
   reportedRuns: number;
   unreportedRuns: number;
@@ -66,7 +73,7 @@ export interface UsageSummary {
   legacyTokens: number;
 }
 
-const emptySummary = (): UsageSummary => ({ tokens: 0, inputTokens: 0, outputTokens: 0, runs: 0, reportedRuns: 0, unreportedRuns: 0, legacyRuns: 0, legacyTokens: 0 });
+const emptySummary = (): UsageSummary => ({ tokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, runs: 0, reportedRuns: 0, unreportedRuns: 0, legacyRuns: 0, legacyTokens: 0 });
 
 export function listUsage(id: string): UsageEntry[] {
   const p = usagePath(id);
@@ -80,6 +87,8 @@ function addSummary(acc: UsageSummary, e: UsageEntry): void {
     acc.inputTokens += e.inputTokens ?? 0;
     acc.outputTokens += e.outputTokens ?? 0;
     acc.tokens += (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
+    acc.cacheReadTokens += e.cacheReadTokens ?? 0;
+    acc.cacheWriteTokens += e.cacheWriteTokens ?? 0;
   } else if (e.usageReported === false || e.usageReported === true) acc.unreportedRuns += 1;
   else {
     acc.legacyRuns += 1;

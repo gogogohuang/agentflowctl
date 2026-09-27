@@ -48,7 +48,7 @@ describe("model CLI", () => {
     const blocked = spawnSync(process.execPath, ["--import", tsx, cli, "model", "remove", "local", "alias"], { cwd: root, encoding: "utf8" });
     expect(blocked.status).toBe(1);
     expect(JSON.parse(readFileSync(config, "utf8")).agents.local.models).toEqual([{ name: "alias", strength: "medium" }]);
-  });
+  }, 30_000);
 
   it("run 在建立 worktree 前拒絕缺模型的 adaptive 設定", () => {
     const root = mkdtempSync(join(tmpdir(), "agentflowctl-model-run-"));

@@ -2,7 +2,16 @@
 export type AgentEvent =
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string; /** 完整的指令或主要參數（shell 指令、檔案路徑……），不截斷 */ detail?: string }
-  | { kind: "usage"; inputTokens?: number; outputTokens?: number }
+  | {
+      kind: "usage";
+      /** 全部送入的 token，含 cache 讀取與寫入 */
+      inputTokens?: number;
+      outputTokens?: number;
+      /** inputTokens 中讀取 cache 的部分 */
+      cacheReadTokens?: number;
+      /** inputTokens 中寫入 cache 的部分 */
+      cacheWriteTokens?: number;
+    }
   | { kind: "model"; id: string }
   | { kind: "done"; ok: boolean; summary?: string };
 

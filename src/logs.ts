@@ -154,7 +154,7 @@ function renderEvent(ev: AgentEvent, full: boolean, lastText?: string): string |
       return `🔧 ${ev.name}: ${full ? indent(detail) : compactDetail(detail)}`;
     }
     case "usage":
-      return `📊 用量 input ${ev.inputTokens ?? "?"} / output ${ev.outputTokens ?? "?"} tokens`;
+      return `📊 用量 input ${ev.inputTokens ?? "?"} / output ${ev.outputTokens ?? "?"} tokens${ev.cacheReadTokens !== undefined || ev.cacheWriteTokens !== undefined ? `（input 含 cache 讀 ${ev.cacheReadTokens ?? 0}、寫 ${ev.cacheWriteTokens ?? 0}）` : ""}`;
     case "done": {
       const summary = ev.summary?.trim();
       // 最後一則回覆通常就是 summary，精簡模式不再重印一次
