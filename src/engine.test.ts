@@ -251,6 +251,34 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
     expect(run.failureReason).not.toMatch(/矛盾/);
     expect(readHandoff(id).issues[0]?.status).toBe("resolved");
   });
+
+  it("計畫審查者修改 .flow/plan-replies.md 時會被還原", async () => {
+    const id = "f-plan-replies-tamper";
+    const script = join(root, "plan-replies-tamper.mjs");
+    writeFileSync(script, `import { writeFileSync } from "node:fs";
+writeFileSync(".flow/plan-replies.md", "被審查者亂改");
+writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["r1", "r2"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+      cycle: ["r1", "r2"],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n");
+    writeFileSync(join(flowDir(id), "plan-replies.md"), "## 整體\n原本的回應\n");
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
+      autopilot: true, maxAgentRuns: 3, cycle: ["r1", "r2"], planWriter: "r1", attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    // 計畫審查一次就核准（沒有因為改檔被判為交接矛盾而重試），代表覆寫在關卡判斷前已經還原
+    expect(listRetries(run.id).map((r) => r.key)).not.toContain("plan-review-run");
+    expect(readFileSync(join(flowDir(id), "plan-replies.md"), "utf8")).toBe("## 整體\n原本的回應\n");
+  });
 });
 
 const implementer = join(root, "implementer.mjs");

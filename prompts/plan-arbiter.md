@@ -22,7 +22,7 @@
 </requirement>
 
 <inputs>
-- .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json：目前的規格與計畫（plan.md 最後有作者對審查意見的回應）
+- .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json：目前的規格與計畫（審查意見的處理在 .flow/plan-replies.md；沒有這份檔表示尚未回應）
 - .flow/dispute.md：尚未被接受的審查意見
 </inputs>
 

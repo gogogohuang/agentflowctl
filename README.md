@@ -199,6 +199,8 @@ Codex 另有幾點差異：
 
 計畫審查會依任務規模選做法。同時符合下列條件時，每輪先做一次索引審查，再只審查有變動的任務群：任務達到 `planReviewLayers.minTasks` 個；依 description 寫的檔案路徑能分成至少兩群，而且最大一群不超過三分之二；`plan.md` 每個任務都有 `## T-<數字>` 標題。索引審查讀規格、全部任務描述、驗收條件與整體做法，人數是 `planReviewQuorum`。群數最多 `maxGroups`，也不超過任務數除以 `tasksPerGroup`；每群一位審查者，含 `high` 任務的群改由 `planReviewQuorum` 位審查。改了 `plan.md` 的整體做法時所有群都重審；某一次審查失敗時只重跑還沒完成的部分。已達門檻卻不符其他條件時，終端機會印出原因並改由審查者讀完整份規格與計畫。`"planReviewLayers": { "enabled": false }` 可以關閉，`doctor` 會顯示目前的設定。
 
+審查意見的處理寫在 `.flow/plan-replies.md`，每輪覆寫，不寫進 `plan.md` 文末。下一輪索引會看到整份回應；任務群只看到自己的 `## T-<數字>` 節。
+
 `install`、`test`、`checks` 未設定時，會依 `packageManager`、lockfile 和 `package.json` scripts 偵測。完整範例見 [examples/flow.config.json](examples/flow.config.json)。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
 
 ### 環境變數

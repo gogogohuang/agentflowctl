@@ -24,6 +24,7 @@
 <inputs>
 - 先核對原始需求、.flow/spec.md、.flow/acceptance.json、.flow/plan.md 與 .flow/tasks.json，確認需求、驗收條件與任務的對應。
 - 依 .flow/tasks.json 各任務 `description` 列出要動的檔案，查閱其中既有的檔案，確認計畫符合專案的架構與慣例；有疑慮時再擴大查閱範圍。
+- 若 .flow/plan-replies.md 存在，先讀它，那是上一輪審查意見的處理結果；不要在 plan.md 文末找審查回應。
 </inputs>
 
 <review_focus>

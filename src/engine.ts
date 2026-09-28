@@ -574,7 +574,7 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
   });
   info(run, `✏️  依 ${run.planReviewer ?? "審查者"} 的意見修改計畫（${agent}）`);
   const feedback = readFeedback(run);
-  const snap = snapshotPlan(run);
+  const snap = snapshotPlan(run, PLAN_REPLY_FILES);
   const outcome = await agentStep(
     run, agent, "plan-fix",
     renderPrompt("plan-fix", { requirement: run.requirement, testPattern: cfg.testPattern }),
@@ -617,7 +617,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
 
   for (const [slot, arbiter] of panel.entries()) {
     info(run, `⚖️  ${mode}（${arbiter}）`);
-    const snap = snapshotPlan(run);
+    const snap = snapshotPlan(run, PLAN_REPLY_FILES);
     rmSync(flowFile(run, "plan-arbiter.json"), { force: true });
     const outcome = await agentStep(run, arbiter, "plan-arbiter", renderPrompt("plan-arbiter", { requirement: run.requirement }), {
       kind: "review", slot, blind: true,

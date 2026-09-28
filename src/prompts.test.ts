@@ -66,4 +66,17 @@ describe("prompts", () => {
     expect(plan).toContain("## T-1");
     expect(plan).toContain("含目錄的路徑");
   });
+
+  it("計畫修訂把審查回應覆寫到獨立檔，並保留整體做法與任務標題", () => {
+    const fix = renderPrompt("plan-fix", vars);
+    expect(fix).toContain(".flow/plan-replies.md");
+    expect(fix).toContain("## T-1");
+    expect(fix).toContain("覆寫");
+    expect(fix).toContain("所有任務群都要重審");
+    expect(fix).not.toContain("## 審查回應");
+    const arbiter = renderPrompt("plan-arbiter", vars);
+    expect(arbiter).toContain(".flow/plan-replies.md");
+    expect(arbiter).not.toContain("plan.md 最後有作者對審查意見的回應");
+    expect(renderPrompt("plan-review", vars)).toContain(".flow/plan-replies.md");
+  });
 });
