@@ -57,7 +57,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 
 `stats` 依 log 的開始與結束時間統計每個步驟的執行次數、失敗次數、總耗時與最長一次，並分開列出 agent 與專案指令（install、測試、checks）各占多少時間，最耗時的步驟排在最前面。沒有結束紀錄的 log 列為未完成，不計入耗時；總經過時間包含暫停與等待核准。
 
-`insights` 彙總所有 run 的最終狀態，以及每次關卡失敗的原因代碼（例如輸出格式錯誤、紅燈測試未失敗）。舊 run 沒有這份紀錄，不會回填。單一 run 的重試明細在 `status <id>`。
+`insights` 彙總所有 run 的最終狀態、失敗 run 的失敗原因（重試達上限、仲裁停止、agent 次數用完等），以及每次關卡重試的原因代碼（例如輸出格式錯誤、紅燈測試未失敗）。任務關卡不分 task id 合併計算。舊 run 沒有這些紀錄，不會回填。單一 run 的重試明細在 `status <id>`。
 
 執行紀錄在 `.agentflowctl/runs/<id>/`，工作分支在 `.agentflowctl/worktrees/<id>/`。不再需要某次 run 時，可用 `agentflowctl clean <id>` 清除 worktree 與紀錄；`flow/<id>` 分支會保留。
 

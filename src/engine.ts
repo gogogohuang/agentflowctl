@@ -164,9 +164,9 @@ function retry(run: FlowRun, key: string, reason: string, backTo: Stage, categor
   const final = n >= config.maxAttempts;
   mkdirSync(flowDir(run.id), { recursive: true });
   writeFileSync(flowFile(run, "feedback.md"), `# 前次嘗試未通過（第 ${n} 次）\n\n${reason}\n`);
-  addRetry(run.id, { key, stage: backTo, category, attempt: n, final });
+  addRetry(run.id, { key, backTo, category, attempt: n, final }, run.updatedAt);
   if (final) {
-    return { ...run, attempts, stage: "failed", failedStage: backTo, failureReason: `${key} 連續失敗 ${n} 次：${tail(reason, 500)}` };
+    return { ...run, attempts, stage: "failed", failedStage: backTo, failureCategory: "retry_limit", failureReason: `${key} 連續失敗 ${n} 次：${tail(reason, 500)}` };
   }
   info(run, `⚠️  ${key} 未通過，重試（${n}/${config.maxAttempts}）`);
   return { ...run, attempts, stage: backTo };
@@ -466,6 +466,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     const attempts: Record<string, number> = { ...run.attempts, "plan-arbitration": arbitrationRound };
     delete attempts["plan-review"];
     rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
+    addRetry(run.id, { key: "plan-arbitration", backTo: "plan_fix", category: "arbitration_revise", attempt: arbitrationRound, final: false }, run.updatedAt);
     writeFileSync(flowFile(run, "feedback.md"), `# 仲裁要求修訂（第 ${arbitrationRound} 次）\n\n${summary}\n\n${feedbackRecord}\n`);
     info(run, `   → ${summary}`);
     return { ...run, attempts, stage: "plan_fix" };
@@ -478,7 +479,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     info(run, `   → ${summary}`);
     return planSettled(run, "plan-review");
   }
-  return { ...run, stage: "failed", failedStage: "plan_review", failureReason: `${summary}，需要人工決定（見 plan.md 的仲裁紀錄）` };
+  return { ...run, stage: "failed", failedStage: "plan_review", failureCategory: "arbitration_stop", failureReason: `${summary}，需要人工決定（見 plan.md 的仲裁紀錄）` };
 }
 
 function planTamperedMessage(files: string[]): string {
@@ -820,7 +821,7 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
 
 async function prStage(run: FlowRun): Promise<FlowRun> {
   const pending = openActions(readHandoff(run.id));
-  if (pending.length) return { ...run, stage: "failed", failedStage: "pr", failureReason: `仍有未結交接事項：${pending.map((item) => item.id).join("、")}` };
+  if (pending.length) return { ...run, stage: "failed", failedStage: "pr", failureCategory: "open_handoff", failureReason: `仍有未結交接事項：${pending.map((item) => item.id).join("、")}` };
   const repo = worktreeDir(run.id);
   const remotes = (await git(repo, "remote")).split("\n").filter(Boolean);
   if (!remotes.includes("origin")) {
@@ -877,6 +878,7 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
         ...run,
         stage: "failed",
         failedStage: stage,
+        failureCategory: "agent_budget",
         failureReason: `已執行 agent ${runs} 次，達到上限 ${run.maxAgentRuns}（可用 resume --max-agent-runs 調高）`,
       });
     }
@@ -887,7 +889,7 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
         info(run, `⏸️  暫停：${err.message}`);
         return saveRun({ ...run, stage: "paused", pausedStage: stage, pauseReason: err.message });
       }
-      return saveRun({ ...run, stage: "failed", failedStage: stage, failureReason: (err as Error).message });
+      return saveRun({ ...run, stage: "failed", failedStage: stage, failureCategory: "error", failureReason: (err as Error).message });
     }
   }
 }

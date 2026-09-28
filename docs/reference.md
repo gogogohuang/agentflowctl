@@ -218,7 +218,11 @@ stderr：
 
 ### 重試紀錄
 
-關卡沒通過而重試時，原因代碼 append 到 `.agentflowctl/runs/<id>/retries.jsonl`，與 log、用量放在同一份執行紀錄裡。`insights` 彙總所有 run 的最終狀態與這些原因；`status <id>` 列出該 run 的明細。舊 run 沒有這份檔案，不會回填。分類由程式在重試當下寫入，不從 `feedback.md` 的文字回推。
+關卡沒通過而重試時，原因代碼 append 到 `.agentflowctl/runs/<id>/retries.jsonl`，與 log、用量放在同一份執行紀錄裡。每筆紀錄包含關卡 `key`、退回的階段 `backTo`、分類 `category`、第幾次 `attempt`，以及是否達上限 `final`。`insights` 彙總所有 run 的最終狀態與這些原因；`status <id>` 列出該 run 的明細。舊 run 沒有這份檔案，不會回填。分類由程式在重試當下寫入，不從 `feedback.md` 的文字回推。
+
+- 任務關卡的 key 帶有 task id（例如 `T1:tests`）。`insights` 的「最常重試的關卡」會去掉 task id，合併成 `任務:tests` 這類關卡；`status <id>` 仍顯示原本的 key。
+- 寫入重試紀錄之後、存回 `state.json` 之前若被中斷，resume 重跑同一步時不會重複記錄。
+- 寫到一半的殘行會被略過，不影響 `status` 與 `insights`。
 
 | category | 顯示 | 呼叫點 |
 |---|---|---|
@@ -228,6 +232,7 @@ stderr：
 | `handoff_invalid` | 交接回覆不合格 | `finishHandoff` 回傳錯誤 |
 | `open_handoff` | 未結交接事項 | `planSettled` 的未結 action |
 | `review_changes` | 審查要求修改 | 計畫／任務／整體審查 `changes_requested` |
+| `arbitration_revise` | 仲裁要求修訂 | 兩家雙盲仲裁都不核准，退回 plan_fix（不計入重試上限） |
 | `plan_tampered` | 改動已鎖定的計畫檔 | `planTamperedMessage` |
 | `tests_not_written` | 未寫測試 | 無 commit、或沒改測試檔 |
 | `tests_not_red` | 紅燈測試未失敗 | 實作前測試就全過 |
@@ -235,6 +240,19 @@ stderr：
 | `tests_not_green` | 測試仍未通過 | 實作後測試失敗 |
 | `tests_deleted` | 刪除測試檔 | fix 刪測試 |
 | `checks_failed` | 專案檢查失敗 | `runChecks` 有失敗 |
+
+run 失敗時，`state.json` 另外記錄 `failureCategory`，`insights` 依此列出「失敗原因」。關卡重試達上限只是其中一種，其他失敗不會出現在 `retries.jsonl`：
+
+| failureCategory | 顯示 | 情況 |
+|---|---|---|
+| `retry_limit` | 關卡重試達上限 | `retries.jsonl` 最後一筆 `final: true` |
+| `arbitration_stop` | 仲裁停止 | 第三方仲裁不核准，或雙盲仲裁意見分歧且 `tieBreak=stop` |
+| `open_handoff` | PR 前仍有未結事項 | pr 階段仍有未結交接事項 |
+| `agent_budget` | agent 次數用完 | 達到 `--max-agent-runs` |
+| `error` | 執行時發生錯誤 | 階段丟出例外 |
+| `cancelled` | 使用者取消 | `agentflowctl cancel` |
+
+舊 run 沒有這個欄位，在 `insights` 列為「未分類（舊 run）」。
 
 ### 停下來時的結果與下一步
 

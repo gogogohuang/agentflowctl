@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
+const { runDir } = await import("./paths.js");
 const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStage, usageByStrength, usageByTask } = await import("./store.js");
 
 describe("檔案儲存", () => {
@@ -63,9 +64,29 @@ describe("檔案儲存", () => {
 
   it("依序記錄重試原因，沒有紀錄時回傳空陣列", () => {
     expect(listRetries("f-retry")).toEqual([]);
-    addRetry("f-retry", { key: "T-1:tests", stage: "implement", category: "tests_not_red", attempt: 1, final: false });
-    addRetry("f-retry", { key: "T-1:tests", stage: "implement", category: "agent_error", attempt: 2, final: true });
+    addRetry("f-retry", { key: "T-1:tests", backTo: "implement", category: "tests_not_red", attempt: 1, final: false });
+    addRetry("f-retry", { key: "T-1:tests", backTo: "implement", category: "agent_error", attempt: 2, final: true });
     expect(listRetries("f-retry").map((r) => [r.category, r.attempt, r.final])).toEqual([["tests_not_red", 1, false], ["agent_error", 2, true]]);
     expect(listRetries("f-retry")[0]?.at).toMatch(/^\d{4}-/);
+  });
+
+  it("jsonl 有寫到一半的殘行時略過該行", () => {
+    addRetry("f-torn", { key: "spec", backTo: "spec", category: "agent_error", attempt: 1, final: false });
+    appendFileSync(join(runDir("f-torn"), "retries.jsonl"), `{"key":"spec","ba`);
+    addSubstitution("f-torn", { step: "spec", planned: "a", actual: "b" });
+    appendFileSync(join(runDir("f-torn"), "substitutions.jsonl"), "{");
+    expect(listRetries("f-torn").map((r) => r.key)).toEqual(["spec"]);
+    expect(listSubstitutions("f-torn")).toHaveLength(1);
+  });
+
+  it("重試寫入後尚未存回 state 就中斷，resume 重跑同一步不重複記錄", () => {
+    const saved = new Date(Date.now() - 60_000).toISOString();
+    const entry = { key: "plan", backTo: "plan", category: "format_invalid" as const, attempt: 1, final: false };
+    addRetry("f-dup", entry, saved);
+    addRetry("f-dup", entry, saved); // state 仍是寫入前的版本
+    expect(listRetries("f-dup")).toHaveLength(1);
+    // state 已存過（updatedAt 晚於紀錄），resume 後重新計數的 attempt 1 要照常記錄
+    addRetry("f-dup", entry, new Date(Date.now() + 60_000).toISOString());
+    expect(listRetries("f-dup")).toHaveLength(2);
   });
 });

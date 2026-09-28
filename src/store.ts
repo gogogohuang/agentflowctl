@@ -131,22 +131,33 @@ export function addSubstitution(id: string, s: Substitution): void {
   appendFileSync(subPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...s })}\n`);
 }
 
-export function listSubstitutions(id: string): (Substitution & { at: string })[] {
-  const p = subPath(id);
+/** 逐行讀取 jsonl；寫到一半被中斷的殘行直接略過，不讓 status、insights 整個讀不出來 */
+function readJsonl<T>(p: string): T[] {
   if (!existsSync(p)) return [];
-  return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Substitution & { at: string });
+  return readFileSync(p, "utf8").split("\n").filter(Boolean).flatMap((l) => {
+    try {
+      return [JSON.parse(l) as T];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function listSubstitutions(id: string): (Substitution & { at: string })[] {
+  return readJsonl(subPath(id));
 }
 
 export const RetryCategories = [
   "agent_error", "missing_artifact", "format_invalid", "handoff_invalid", "open_handoff",
-  "review_changes", "plan_tampered", "tests_not_written", "tests_not_red", "tests_modified",
+  "review_changes", "arbitration_revise", "plan_tampered", "tests_not_written", "tests_not_red", "tests_modified",
   "tests_not_green", "tests_deleted", "checks_failed",
 ] as const;
 export type RetryCategory = (typeof RetryCategories)[number];
 
 export interface RetryEntry {
   key: string;
-  stage: string;
+  /** 重試時退回的階段 */
+  backTo: string;
   category: RetryCategory;
   attempt: number;
   final: boolean;
@@ -154,13 +165,19 @@ export interface RetryEntry {
 
 const retryPath = (id: string) => join(runDir(id), "retries.jsonl");
 
-export function addRetry(id: string, entry: RetryEntry): void {
+/**
+ * savedAt 是目前 state.json 的 updatedAt。上一筆同 key、同 attempt 的紀錄若晚於它，
+ * 代表上次寫入重試後還沒存到 state 就中斷了，resume 重跑同一步時不再重複記一筆。
+ */
+export function addRetry(id: string, entry: RetryEntry, savedAt?: string): void {
+  if (savedAt) {
+    const last = listRetries(id).filter((r) => r.key === entry.key).at(-1);
+    if (last && last.attempt === entry.attempt && last.at > savedAt) return;
+  }
   mkdirSync(runDir(id), { recursive: true });
   appendFileSync(retryPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 
 export function listRetries(id: string): (RetryEntry & { at: string })[] {
-  const p = retryPath(id);
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as RetryEntry & { at: string });
+  return readJsonl(retryPath(id));
 }

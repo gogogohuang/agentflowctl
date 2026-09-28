@@ -13,10 +13,10 @@ import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, TaskList, type FlowRun } from "./schemas.js";
-import { computeInsights, RETRY_LABEL } from "./insights.js";
+import { computeInsights, failureLabel, retryLabel } from "./insights.js";
 import { computeStats, formatDuration } from "./stats.js";
 import { agentRuns, getRun, listRetries, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
-import { readJsonFile } from "./util.js";
+import { padDisplay, readJsonFile } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
@@ -184,7 +184,7 @@ program
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
     }
     if (run.stage === "failed") {
-      run = { ...run, stage: run.failedStage ?? "spec", attempts: {}, modelRetryAttempts: {}, failedStage: undefined, failureReason: undefined };
+      run = { ...run, stage: run.failedStage ?? "spec", attempts: {}, modelRetryAttempts: {}, failedStage: undefined, failureReason: undefined, failureCategory: undefined };
     }
     await drive(saveRun(run));
   });
@@ -194,7 +194,7 @@ program
   .description("標記 run 為失敗（執行中的 run 請直接在該終端機按 Ctrl-C）")
   .action((id: string) => {
     const run = mustGetRun(id);
-    saveRun({ ...run, stage: "failed", failedStage: run.stage, failureReason: "使用者取消" });
+    saveRun({ ...run, stage: "failed", failedStage: run.stage, failureCategory: "cancelled", failureReason: "使用者取消" });
     console.log(`已取消 ${id}`);
   });
 
@@ -262,7 +262,7 @@ program
     if (retries.length) {
       console.log("\n重試紀錄");
       for (const r of retries) {
-        console.log(`  ${r.key.padEnd(19)}  ${RETRY_LABEL[r.category]}${r.final ? "（達上限）" : `（第 ${r.attempt} 次）`}`);
+        console.log(`  ${r.key.padEnd(19)}  ${retryLabel(r.category)}${r.final ? "（達上限）" : `（第 ${r.attempt} 次）`}`);
       }
     }
     const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), TaskList);
@@ -573,23 +573,27 @@ program
   .action(() => {
     const runs = listRuns();
     if (!runs.length) return console.log("還沒有 run");
-    const insights = computeInsights(runs.map((r) => ({ id: r.id, stage: r.stage, retries: listRetries(r.id) })));
+    const insights = computeInsights(runs.map((r) => ({ id: r.id, stage: r.stage, failureCategory: r.failureCategory, retries: listRetries(r.id) })));
     const o = insights.byOutcome;
     console.log(`專案彙總（${insights.runCount} 個 run）`);
     console.log(`  完成 ${o.done}  失敗 ${o.failed}  暫停 ${o.paused}  等待核准 ${o.awaiting_approval}  進行中 ${o.active}`);
+    if (insights.byFailure.length) {
+      console.log("\n失敗原因");
+      for (const row of insights.byFailure) console.log(`  ${padDisplay(failureLabel(row.category), 20)}  ${String(row.count).padStart(4)} 個 run`);
+    }
     if (!insights.byCategory.length) return console.log("\n還沒有重試紀錄（舊 run 不會回填）");
     console.log("\n重試原因");
     for (const row of insights.byCategory) {
       const finals = row.finals ? `，其中 ${row.finals} 次達上限` : "";
-      console.log(`  ${RETRY_LABEL[row.category].padEnd(14)}  ${String(row.count).padStart(4)} 次${finals}`);
+      console.log(`  ${padDisplay(retryLabel(row.category), 20)}  ${String(row.count).padStart(4)} 次${finals}`);
     }
-    console.log("\n最常重試的關卡");
-    for (const row of insights.byKey.slice(0, 10)) {
-      console.log(`  ${row.key.padEnd(19)}  ${String(row.count).padStart(4)} 次`);
+    console.log("\n最常重試的關卡（任務關卡不分 task id 合併計算）");
+    for (const row of insights.byGate.slice(0, 10)) {
+      console.log(`  ${padDisplay(row.gate, 19)}  ${String(row.count).padStart(4)} 次`);
     }
     console.log("\n各 run");
     for (const r of insights.runs) {
-      const cat = r.topCategory ? `  最多 ${RETRY_LABEL[r.topCategory]}` : "";
+      const cat = r.topCategory ? `  最多 ${retryLabel(r.topCategory)}` : "";
       console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${cat}`);
     }
     console.log("\n次數多的原因對應 prompt 或關卡；單一 run 用 agentflowctl status <id> 與 stats <id>");

@@ -33,3 +33,17 @@ export function readJsonFile<T extends z.ZodType>(path: string, schema: T): Json
     ? { ok: true, data: parsed.data }
     : { ok: false, error: `${path} 格式錯誤：\n${z.prettifyError(parsed.error)}` };
 }
+
+// 中日韓文字與全形符號在終端機占兩格
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꥠ-꥿가-힣豈-﫿︰-﹏＀-｠￠-￦]/u;
+
+export function displayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) w += WIDE.test(ch) ? 2 : 1;
+  return w;
+}
+
+/** 依終端機顯示寬度補空白，讓中英混排的欄位對齊 */
+export function padDisplay(s: string, width: number): string {
+  return s + " ".repeat(Math.max(0, width - displayWidth(s)));
+}

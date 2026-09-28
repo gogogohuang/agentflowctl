@@ -193,6 +193,10 @@ export const RepoConfig = z.object({
 });
 export type RepoConfig = z.infer<typeof RepoConfig>;
 
+/** 讓 run 進入 failed 的原因：關卡重試達上限以外，還有仲裁停止、PR 前仍有未結事項、agent 次數用完、例外與使用者取消 */
+export const FailureCategory = z.enum(["retry_limit", "arbitration_stop", "open_handoff", "agent_budget", "error", "cancelled"]);
+export type FailureCategory = z.infer<typeof FailureCategory>;
+
 export const FlowRun = z.object({
   id: z.string(),
   baseBranch: z.string(),
@@ -231,6 +235,8 @@ export const FlowRun = z.object({
   lastTestsAuthor: z.string().optional(),
   failedStage: Stage.optional(),
   failureReason: z.string().optional(),
+  /** run 為什麼失敗，供 insights 跨 run 彙總；舊 run 沒有這個欄位 */
+  failureCategory: FailureCategory.optional(),
   prUrl: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),

@@ -73,6 +73,7 @@ describe("審查交接關卡", () => {
     expect(retries.every((r) => r.key === "review-run")).toBe(true);
     expect(retries.at(-1)).toMatchObject({ final: true });
     expect(retries.slice(0, -1).every((r) => r.final === false)).toBe(true);
+    expect(run.failureCategory).toBe("retry_limit");
   });
 
   it("審查者附證據結案後才進入 PR", async () => {
@@ -172,6 +173,56 @@ if (prompt.includes("plan-arbiter.json")) {
     ]);
     expect(listRetries(id).map((r) => [r.key, r.category])).toEqual([["plan-handoff", "open_handoff"]]);
     expect(run.failedStage).toBe("plan_fix");
+    expect(run.failureCategory).toBe("agent_budget");
+  });
+
+  async function arbitrate(id: string, approver: string | undefined, tieBreak: "proceed" | "stop") {
+    const script = join(root, `${id}.mjs`);
+    writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
+const agent = process.argv[2];
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("plan-arbiter.json")) {
+  const approve = agent === ${JSON.stringify(approver ?? "")};
+  writeFileSync(".flow/plan-arbiter.json", JSON.stringify({
+    verdict: approve ? "approve" : "changes_requested",
+    items: [{ criterion: "範圍", status: approve ? "met" : "not_met", note: "仲裁意見" }],
+  }));
+} else {
+  writeFileSync(".flow/plan-review.json", JSON.stringify({
+    verdict: "changes_requested",
+    items: [{ criterion: "範圍", status: "not_met", note: "仍有缺口" }],
+  }));
+}
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script, name] }])),
+      cycle: ["a", "b"], planArbiter: true, tieBreak,
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n");
+    writeFileSync(join(flowDir(id), "plan-review-last.txt"), `<issue criterion="範圍" status="not_met">仍有缺口</issue>`);
+    const now = new Date().toISOString();
+    return advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
+      autopilot: true, maxAgentRuns: 3, cycle: ["a", "b"], planWriter: "a", attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+  }
+
+  it("仲裁意見分歧且 tieBreak=stop 時，失敗原因記為 arbitration_stop", async () => {
+    const run = await arbitrate("f-arb-stop", "a", "stop");
+    expect(run.stage).toBe("failed");
+    expect(run.failureCategory).toBe("arbitration_stop");
+    expect(listRetries(run.id)).toEqual([]);
+  });
+
+  it("仲裁要求修訂時記一筆 arbitration_revise；agent 次數用完時失敗原因為 agent_budget", async () => {
+    const run = await arbitrate("f-arb-revise", undefined, "proceed");
+    expect(listRetries(run.id).map((r) => [r.key, r.backTo, r.category, r.final])).toEqual([["plan-arbitration", "plan_fix", "arbitration_revise", false]]);
+    expect(run.stage).toBe("failed");
+    expect(run.failureCategory).toBe("agent_budget");
   });
 
   it("後面輪次的重試次數與先前輪次相同時，審查者的結案仍會套用", async () => {
