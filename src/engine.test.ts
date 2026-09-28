@@ -32,7 +32,7 @@ const { addWorktree, commitAll } = await import("./git.js");
 const { advance } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, logDir, worktreeDir } = await import("./paths.js");
-const { agentRuns, listSubstitutions, listUsage } = await import("./store.js");
+const { agentRuns, listRetries, listSubstitutions, listUsage } = await import("./store.js");
 
 async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
@@ -68,6 +68,11 @@ describe("審查交接關卡", () => {
     expect(run.stage).toBe("failed");
     expect(run.failedStage).toBe("review");
     expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toMatch(/未結/);
+    const retries = listRetries(run.id);
+    expect(retries.map((r) => r.category)).toContain("handoff_invalid");
+    expect(retries.every((r) => r.key === "review-run")).toBe(true);
+    expect(retries.at(-1)).toMatchObject({ final: true });
+    expect(retries.slice(0, -1).every((r) => r.final === false)).toBe(true);
   });
 
   it("審查者附證據結案後才進入 PR", async () => {
@@ -115,6 +120,11 @@ describe("審查交接關卡", () => {
     expect(run.stage).toBe("failed");
     expect(run.failedStage).toBe("plan_review");
     expect(readFileSync(join(flowDir(id), "feedback.md"), "utf8")).toMatch(/未結/);
+    // 核准與未結事項矛盾時，reviewHandoffGate 在 finishHandoff 失敗，尚未進入 planSettled
+    const retries = listRetries(id);
+    expect(retries.map((r) => [r.key, r.category])).toContainEqual(["plan-review-run", "handoff_invalid"]);
+    expect(retries.every((r) => r.key === "plan-review-run")).toBe(true);
+    expect(retries.at(-1)).toMatchObject({ final: true });
   });
 
   it("後面輪次的重試次數與先前輪次相同時，審查者的結案仍會套用", async () => {
