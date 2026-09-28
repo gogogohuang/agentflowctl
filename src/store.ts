@@ -136,3 +136,31 @@ export function listSubstitutions(id: string): (Substitution & { at: string })[]
   if (!existsSync(p)) return [];
   return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Substitution & { at: string });
 }
+
+export const RetryCategories = [
+  "agent_error", "missing_artifact", "format_invalid", "handoff_invalid", "open_handoff",
+  "review_changes", "plan_tampered", "tests_not_written", "tests_not_red", "tests_modified",
+  "tests_not_green", "tests_deleted", "checks_failed",
+] as const;
+export type RetryCategory = (typeof RetryCategories)[number];
+
+export interface RetryEntry {
+  key: string;
+  stage: string;
+  category: RetryCategory;
+  attempt: number;
+  final: boolean;
+}
+
+const retryPath = (id: string) => join(runDir(id), "retries.jsonl");
+
+export function addRetry(id: string, entry: RetryEntry): void {
+  mkdirSync(runDir(id), { recursive: true });
+  appendFileSync(retryPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+}
+
+export function listRetries(id: string): (RetryEntry & { at: string })[] {
+  const p = retryPath(id);
+  if (!existsSync(p)) return [];
+  return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as RetryEntry & { at: string });
+}

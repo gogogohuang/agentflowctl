@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
-const { addSubstitution, addUsage, agentRuns, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStage, usageByStrength, usageByTask } = await import("./store.js");
+const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStage, usageByStrength, usageByTask } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -59,5 +59,13 @@ describe("檔案儲存", () => {
     addUsage("f-cache", { stage: "spec", agent: "c", usageReported: true, inputTokens: 43012, outputTokens: 500, cacheReadTokens: 40000, cacheWriteTokens: 3000 });
     addUsage("f-cache", { stage: "plan", agent: "c", usageReported: true, inputTokens: 100, outputTokens: 10 });
     expect(usageByAgent("f-cache").c).toMatchObject({ tokens: 43622, cacheReadTokens: 40000, cacheWriteTokens: 3000 });
+  });
+
+  it("依序記錄重試原因，沒有紀錄時回傳空陣列", () => {
+    expect(listRetries("f-retry")).toEqual([]);
+    addRetry("f-retry", { key: "T-1:tests", stage: "implement", category: "tests_not_red", attempt: 1, final: false });
+    addRetry("f-retry", { key: "T-1:tests", stage: "implement", category: "agent_error", attempt: 2, final: true });
+    expect(listRetries("f-retry").map((r) => [r.category, r.attempt, r.final])).toEqual([["tests_not_red", 1, false], ["agent_error", 2, true]]);
+    expect(listRetries("f-retry")[0]?.at).toMatch(/^\d{4}-/);
   });
 });
