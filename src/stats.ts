@@ -60,6 +60,37 @@ export function computeStats(entries: LogEntry[]): RunStats {
   return { steps, agentMs, cmdMs, wallMs: last > first ? last - first : 0, unfinished };
 }
 
+export interface MergedStats {
+  steps: StepStat[];
+  agentMs: number;
+  cmdMs: number;
+  unfinished: number;
+}
+
+export function mergeStats(runs: RunStats[]): MergedStats {
+  const byKey = new Map<string, StepStat>();
+  let agentMs = 0;
+  let cmdMs = 0;
+  let unfinished = 0;
+  for (const run of runs) {
+    agentMs += run.agentMs;
+    cmdMs += run.cmdMs;
+    unfinished += run.unfinished;
+    for (const s of run.steps) {
+      const key = `${s.kind}:${s.step}`;
+      const acc = byKey.get(key) ?? { step: s.step, kind: s.kind, runs: 0, failed: 0, unfinished: 0, totalMs: 0, maxMs: 0 };
+      acc.runs += s.runs;
+      acc.failed += s.failed;
+      acc.unfinished += s.unfinished;
+      acc.totalMs += s.totalMs;
+      acc.maxMs = Math.max(acc.maxMs, s.maxMs);
+      byKey.set(key, acc);
+    }
+  }
+  const steps = [...byKey.values()].sort((a, b) => b.failed - a.failed || b.runs - a.runs || b.totalMs - a.totalMs);
+  return { steps, agentMs, cmdMs, unfinished };
+}
+
 /** 毫秒轉成 1h02m、3m05s、12s */
 export function formatDuration(ms: number): string {
   const sec = Math.round(ms / 1000);
