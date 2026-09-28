@@ -3,6 +3,9 @@ import type { FlowRun, ModelStage, ModelStrength, RepoConfig } from "./schemas.j
 const LEVEL: Record<ModelStrength, number> = { low: 0, medium: 1, high: 2 };
 const STRENGTHS: ModelStrength[] = ["low", "medium", "high"];
 
+/** 支援小組審查與索引審查的步驟名稱。 */
+type ReviewStep = "plan-review" | "plan-review-group" | "review";
+
 export const DEFAULT_STAGE_STRENGTH: Record<ModelStage, ModelStrength> = {
   spec: "medium", plan: "high", planReview: "high", planFix: "medium", planArbiter: "high",
   taskTests: "low", taskCode: "low", taskReview: "medium", taskFix: "low", fix: "medium", review: "high",
@@ -23,28 +26,31 @@ export interface SelectedModel {
 }
 
 /** 小組審查失敗只影響該審查者的下一次選模。 */
-export function recordModelReviewFailure(run: FlowRun, step: "plan-review" | "review", reviewer: string): FlowRun {
+export function recordModelReviewFailure(run: FlowRun, step: ReviewStep, reviewer: string): FlowRun {
   const key = `${step}:${reviewer}`;
   return { ...run, modelRetryAttempts: { ...run.modelRetryAttempts, [key]: (run.modelRetryAttempts?.[key] ?? 0) + 1 } };
 }
 
-export function clearModelReviewFailure(run: FlowRun, step: "plan-review" | "review", reviewer: string): FlowRun {
+export function clearModelReviewFailure(run: FlowRun, step: ReviewStep, reviewer: string): FlowRun {
   const attempts = { ...run.modelRetryAttempts };
   delete attempts[`${step}:${reviewer}`];
   return { ...run, modelRetryAttempts: attempts };
 }
 
 export function clearModelReviewStage(run: FlowRun, step: "plan-review" | "review"): FlowRun {
-  const attempts = Object.fromEntries(Object.entries(run.modelRetryAttempts ?? {}).filter(([key]) => !key.startsWith(`${step}:`)));
+  const prefixes = step === "plan-review" ? ["plan-review:", "plan-review-group:"] : ["review:"];
+  const attempts = Object.fromEntries(
+    Object.entries(run.modelRetryAttempts ?? {}).filter(([key]) => !prefixes.some((prefix) => key.startsWith(prefix))),
+  );
   return { ...run, modelRetryAttempts: attempts };
 }
 
-/** 把步驟名稱（例如 `T-1-code`、`plan-review`）對應到階段鍵；不認得時回傳 undefined。 */
+/** 把步驟名稱（例如 `T-1-code`、`plan-review`、`plan-review-group`）對應到階段鍵；不認得時回傳 undefined。 */
 export function stageOfStep(step: string): ModelStage | undefined {
   const task = /^T-\d+-(tests|code|review|fix)$/.exec(step);
   if (task) return ({ tests: "taskTests", code: "taskCode", review: "taskReview", fix: "taskFix" } as const)[task[1] as "tests" | "code" | "review" | "fix"];
   const stage: Record<string, ModelStage> = {
-    spec: "spec", plan: "plan", "plan-review": "planReview", "plan-fix": "planFix",
+    spec: "spec", plan: "plan", "plan-review": "planReview", "plan-review-group": "planReview", "plan-fix": "planFix",
     "plan-arbiter": "planArbiter", fix: "fix", review: "review",
   };
   return stage[step];
