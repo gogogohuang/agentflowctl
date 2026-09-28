@@ -13,6 +13,8 @@ export type AgentEvent =
       cacheWriteTokens?: number;
     }
   | { kind: "model"; id: string }
+  /** CLI 回報但不影響執行結果的錯誤，例如缺少模型 metadata 改用預設值 */
+  | { kind: "warning"; message: string }
   | { kind: "done"; ok: boolean; summary?: string };
 
 export interface InvokeOptions {
@@ -41,6 +43,10 @@ export interface Adapter {
   invoke(opts: InvokeOptions): Invocation;
   /** 實際模型可用性檢查；無法強制停用工具的 adapter 不提供。 */
   invokeModelProbe?(model: string, cwd: string): Invocation;
+  /** 模型探測時解析一行 stdout；可以比 parse 更嚴格（例如尚未完成的工具也算），未提供時用 parse */
+  parseModelProbe?(line: string): AgentEvent[];
+  /** 從模型探測的 stderr 找出讓驗證失敗的診斷，回傳失敗原因 */
+  modelProbeFailure?(stderr: string): string | undefined;
   /** 解析一行 stdout；不認得的行回傳空陣列 */
   parse(line: string): AgentEvent[];
 }

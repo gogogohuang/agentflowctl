@@ -19,13 +19,37 @@ export interface ExecOptions {
 
 export function exec(cmd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
+    const processGroup = Boolean(opts.timeoutMs) && process.platform !== "win32";
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env },
       shell: opts.shell ?? false,
+      detached: processGroup,
     });
+    // npm 安裝的 CLI 常再啟動原生執行檔；只殺啟動器會留下持續呼叫模型的程序。
+    const killTree = () => {
+      if (processGroup && child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+      } else child.kill("SIGKILL");
+    };
+    // 獨立程序群組收不到終端機的 Ctrl-C，要自己轉達；處理完再把訊號交回原本的處理方式。
+    const onSignal = (signal: NodeJS.Signals) => {
+      killTree();
+      detachSignals();
+      if (!process.listenerCount(signal)) process.kill(process.pid, signal);
+    };
+    const detachSignals = () => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      process.off("exit", killTree);
+    };
+    if (processGroup) {
+      process.once("SIGINT", onSignal);
+      process.once("SIGTERM", onSignal);
+      process.once("exit", killTree);
+    }
     let timedOut = false;
-    const timer = opts.timeoutMs ? setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, opts.timeoutMs) : undefined;
+    const timer = opts.timeoutMs ? setTimeout(() => { timedOut = true; killTree(); }, opts.timeoutMs) : undefined;
     let stdout = "";
     let stderr = "";
     let pending = "";
@@ -41,9 +65,10 @@ export function exec(cmd: string, args: string[], opts: ExecOptions = {}): Promi
     child.stderr.on("data", (d: Buffer) => {
       stderr += d.toString();
     });
-    child.on("error", (error) => { if (timer) clearTimeout(timer); reject(error); });
+    child.on("error", (error) => { if (timer) clearTimeout(timer); detachSignals(); reject(error); });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
+      detachSignals();
       if (opts.onStdoutLine && pending) opts.onStdoutLine(pending);
       resolve({ code: timedOut ? 124 : code ?? 1, stdout, stderr: timedOut ? `${stderr}\n執行逾時` : stderr });
     });

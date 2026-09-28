@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
@@ -11,6 +11,48 @@ const cli = join(repo, "src", "cli.ts");
 const tsx = createRequire(import.meta.url).resolve("tsx");
 
 describe("model CLI", () => {
+  it.each(["codex", "gemini"] as const)("%s 新增與重驗使用隔離短請求，失敗不寫設定", (adapter) => {
+    const root = mkdtempSync(join(tmpdir(), "agentflowctl-model-cli-"));
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    execFileSync("git", ["init", "-q", root]);
+    const config = join(root, "flow.config.json");
+    const captured = join(root, "captured.json");
+    const fake = join(bin, adapter);
+    writeFileSync(config, JSON.stringify({ agents: { local: { adapter, extraArgs: ["--yolo"] } } }));
+    const events = adapter === "codex"
+      ? [{ type: "item.completed", item: { type: "agent_message", text: "OK" } }, { type: "turn.completed", usage: {} }]
+      : [{ type: "init", model: "actual-id" }, { type: "message", role: "assistant", content: "OK" }, { type: "result", status: "success" }];
+    const emit = (lines: unknown[]) => writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs');
+      fs.writeFileSync(${JSON.stringify(captured)},JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2)}));
+      ${lines.map((line) => `console.log(${JSON.stringify(JSON.stringify(line))});`).join("\n")}`, { mode: 0o755 });
+    const run = (...args: string[]) => spawnSync(process.execPath, ["--import", tsx, cli, "model", ...args], {
+      cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    try {
+      emit(events);
+      const added = run("add", "local", "model-x", "--strength", "medium");
+      expect(added.status, added.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(config, "utf8")).agents.local.models).toEqual([{ name: "model-x", strength: "medium" }]);
+      const invocation = JSON.parse(readFileSync(captured, "utf8"));
+      expect(invocation.cwd).not.toBe(root);
+      expect(existsSync(invocation.cwd)).toBe(false);
+      expect(invocation.args).toContain("model-x");
+      expect(invocation.args).not.toContain("--yolo");
+      const before = readFileSync(config, "utf8");
+      expect(run("check", "local").status).toBe(0);
+      expect(readFileSync(config, "utf8")).toBe(before);
+      emit([{ type: "error", message: "invalid model" }]);
+      expect(run("add", "local", "bad-model", "--strength", "high").status).toBe(1);
+      const checked = run("check", "local");
+      expect(checked.stdout).toContain("❌");
+      expect(checked.stdout).not.toContain("可呼叫");
+      expect(readFileSync(config, "utf8")).toBe(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("探測成功才新增模型；名稱不符時設定保持原狀", () => {
     const root = mkdtempSync(join(tmpdir(), "agentflowctl-model-cli-"));
     execFileSync("git", ["init", "-q", root]);

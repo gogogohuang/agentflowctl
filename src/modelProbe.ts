@@ -11,6 +11,7 @@ export type ModelProbeResult =
   | { status: "failed" | "unverifiable"; reason: string };
 
 export function probeFailureReason(message: string): string {
+  if (/unknown (option|argument|feature)|unexpected argument|unrecognized (option|argument)/i.test(message)) return `CLI 不支援模型探測參數（版本過舊或參數已改名），請更新 CLI 或回報：${message}`;
   if (/\b429\b|quota|rate.?limit|usage limit/i.test(message)) return `額度或速率限制：${message}`;
   if (/invalid model|model.*(not found|unknown|unavailable)|unknown model/i.test(message)) return `模型名稱無效或目前不可用：${message}`;
   if (/auth|unauthori[sz]ed|forbidden|\b401\b|\b403\b/i.test(message)) return `認證或權限失敗：${message}`;
@@ -18,7 +19,7 @@ export function probeFailureReason(message: string): string {
   return message;
 }
 
-/** 在獨立暫存目錄對指定模型送出最短請求；安全能力不足時直接拒絕。 */
+/** 在獨立暫存目錄對指定模型送出最短請求；停用工具或限制成唯讀，工具事件一律不通過。 */
 export async function probeModel(def: AgentDef, model: string, timeoutMs = 30000): Promise<ModelProbeResult> {
   const dir = mkdtempSync(join(tmpdir(), "agentflowctl-model-"));
   try {
@@ -35,11 +36,14 @@ export async function probeModel(def: AgentDef, model: string, timeoutMs = 30000
       inv = adapter.invokeModelProbe(model, dir);
     }
     const events: AgentEvent[] = [];
+    const parseLine = adapter.parseModelProbe ?? adapter.parse;
     const result = await exec(inv.cmd, inv.args, {
       cwd: dir, env: inv.env, input: inv.input, timeoutMs,
-      onStdoutLine: (line) => { if (def.adapter !== "command") events.push(...adapter.parse(line)); },
+      onStdoutLine: (line) => { if (def.adapter !== "command") events.push(...parseLine(line)); },
     });
     if (result.code !== 0) return { status: "failed", reason: result.code === 124 ? "模型檢查逾時" : probeFailureReason(result.stderr.trim() || result.stdout.trim() || `結束碼 ${result.code}`) };
+    const diagnostic = adapter.modelProbeFailure?.(result.stderr);
+    if (diagnostic) return { status: "failed", reason: diagnostic };
     if (def.adapter === "command") {
       try {
         const data = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
@@ -52,9 +56,10 @@ export async function probeModel(def: AgentDef, model: string, timeoutMs = 30000
       }
     }
     if (events.some((e) => e.kind === "tool")) return { status: "failed", reason: "模型檢查期間出現工具呼叫，未通過無工具驗證" };
+    const failed = events.find((e) => e.kind === "done" && !e.ok);
+    if (failed?.kind === "done") return { status: "failed", reason: probeFailureReason(failed.summary ?? "CLI 回報失敗") };
     const done = events.filter((e) => e.kind === "done").at(-1);
     if (done?.kind !== "done") return { status: "failed", reason: "CLI 沒有回報完成" };
-    if (!done.ok) return { status: "failed", reason: done.summary ?? "CLI 回報失敗" };
     if (!events.some((e) => e.kind === "text" && e.text.trim())) return { status: "failed", reason: "CLI 沒有回傳文字內容" };
     const resolved = events.find((e) => e.kind === "model");
     return { status: "ok", resolvedModel: resolved?.kind === "model" ? resolved.id : undefined };
