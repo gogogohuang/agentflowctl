@@ -313,6 +313,7 @@ run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會
 | `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve`（任務審查與最後的程式碼審查都適用） |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
 | `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
+| `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 計畫分層審查（見「計畫」一節）。`enabled`：`false` 時一律整份審查；`minTasks`：任務數達到這個值才考慮分層，整數至少 2；`maxGroups`：每輪最多幾群，整數至少 2；`tasksPerGroup`：群數也不超過任務數除以這個值（無條件捨去），整數至少 1。子欄位都可省略；寫了未知子欄位會驗證失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
 | `install` / `test` / `checks` | 依專案偵測 | 安裝、測試與 verify 階段實際執行的指令 |
@@ -456,6 +457,21 @@ agentflowctl model stage taskReview high
 
 計畫審查先核對需求與四份計畫交接檔，再查閱任務說明中要修改的既有檔案，有疑慮時才擴大範圍；審查紀錄只列會影響實作的問題，不逐條列已通過項目。計畫修訂先依 `feedback.md` 定位需要改的段落，修改驗收條件或任務時再檢查受影響的對應關係。檔案格式、任務對驗收條件的覆蓋與任務相依仍由程式驗證；原始需求的語意覆蓋由審查者判斷，以減少反覆讀取文件的 token 用量。
 
+**分層審查。** 任務多時，計畫審查改成每輪一次索引審查加上只審有變動的任務群。依序檢查下列條件，全部成立才分層：
+
+1. `planReviewLayers.enabled` 為 `true`，且 `tasks.json` 與 `acceptance.json` 格式正確。
+2. 任務數達到 `minTasks`。
+3. 依 description 裡含目錄的檔案路徑（例如 `src/a.ts`）分群，至少分成兩群。共用檔案的任務同一群；沒寫路徑的任務併入它第一個有路徑的直接相依任務，其餘沒寫路徑的任務併成一群。
+4. 最大的一群不超過任務總數的三分之二。
+5. 依 `maxGroups` 與「任務數 ÷ `tasksPerGroup`」合併相鄰的群之後，仍至少兩群。
+6. `plan.md` 對每個任務都有 `## T-<數字>` 這種標題（`##` 到 `######` 皆可）。
+
+前兩項不成立時直接整份審查，不印訊息；第 3 到 6 項不成立時印出 `📋 這次計畫審查讀整份計畫：<原因>`，原因是「任務要改的檔案互相重疊，只能分成一群」、「最大的一群有 k 個任務，超過總數 n 的三分之二」、「任務數 n 不足以讓每群平均至少 m 個」或「plan.md 缺少 T-1, T-2 的「## T-<數字>」標題」。整份審查會刪掉分層審查的狀態，之後切回分層時全部重審。
+
+索引審查者讀需求、`.flow/spec.md`、全部任務的標題與描述、驗收條文全文，以及 `plan.md` 第一個任務標題之前的整體做法；負責需求覆蓋、驗收條件、順序、技術方向與跨任務一致性（重複負責、介面假設矛盾、漏寫相依），人數是 `planReviewQuorum`，每輪都跑。群審查者讀該群任務、跨群的直接相依任務、對應的驗收條文、`plan.md` 裡該群任務標題下的難度摘錄，以及 description 點名的檔案，負責任務拆解與難度。群審查一般一位，群內有 `high` 任務時由 `planReviewQuorum` 位審查。兩者都可以讀交接事項 evidence 點名的檔案。計畫的未結交接事項由索引審查負責結案：索引核准卻仍有未結 action 算矛盾；群審查不做這項檢查，群都核准後若仍有未結事項，退回計畫修訂。
+
+重審規則：`plan.md` 的整體做法變了，所有群都重審；任務的標題、描述、難度、驗收條文或難度證據變了，重審它所在的群；任務的驗收 id 或相依變了，連它的直接上游與下游一起重審；上次要求修改的任務一定重審。已核准又沒變動的群這輪不呼叫 agent。某一次審查呼叫失敗（agent 當掉、JSON 不合法或交接不合格）時，重跑同一輪，但這一輪已成功的呼叫直接沿用、不再呼叫 agent；計畫內容在這之間變了就整輪重來。審查狀態存在 `.agentflowctl/runs/<id>/plan-review-state.json`，放在 worktree 外，agent 改不到；仲裁要求修訂時也會刪掉。
+
 **僵持時仲裁。** 兩種情況會觸發：這輪審查意見和上一輪一樣，或已達重試上限。仲裁者只判斷一件事：照這份計畫實作，能不能滿足需求。
 
 | 有幾家 | 誰來仲裁 | 結果 |
@@ -476,7 +492,7 @@ agentflowctl model stage taskReview high
 |---|---|---|---|
 | spec | 隨機一位 | 檔案存在、zod 驗證、id 不重複 | 重試 |
 | plan | 與 spec 同一位 | zod、相依存在、無循環、每條驗收條件都有任務、每個任務最多兩條驗收條件 | 重試 |
-| plan_review | 計畫作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 進入 plan_fix |
+| plan_review | 計畫作者以外隨機挑（可多位，不重複） | 整份審查時所有審查者都 `approve`；分層時索引與每個有跑到的群的每位審查者都 `approve`，且沒有未結的計畫交接事項 | 進入 plan_fix |
 | plan_fix | 依 `fixStrategy` | 修改後仍通過 plan 的格式與 DAG 檢查 | 還原並重試 |
 | 仲裁 | 見上一節 | 一致核准；分歧依 `tieBreak` | 兩家都不核准時進入 plan_fix 再審查；第三方不核准或 `tieBreak: stop` 時失敗 |
 | 人工確認 | 你（只有 `--manual-plan`） | `agentflowctl approve` | — |
@@ -498,7 +514,7 @@ agentflowctl model stage taskReview high
 
 ## Prompt 結構
 
-每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、任務審查者、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
+每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫索引審查者、計畫群審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、任務審查者、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
 
 Agent 的最後回覆要附上 XML 中繼資料：
 

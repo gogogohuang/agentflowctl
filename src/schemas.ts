@@ -172,6 +172,16 @@ export const RepoConfig = z.object({
   planReviewQuorum: z.number().int().min(1).default(1),
   /** 計畫審查僵持不下（達到重試上限或意見不再變化）時，交給第三方 agent 仲裁，而不是停下來等人 */
   planArbiter: z.boolean().default(true),
+  /** 任務夠多、能依檔案分群時，計畫審查改成每輪一次索引加上只審有變動的任務群 */
+  planReviewLayers: z.strictObject({
+    enabled: z.boolean().default(true),
+    /** 任務數達到這個值才考慮分層 */
+    minTasks: z.number().int().min(2).default(7),
+    /** 每輪最多幾群 */
+    maxGroups: z.number().int().min(2).default(5),
+    /** 群數也不超過任務數除以這個值，避免拆出很多只有一兩個任務的呼叫 */
+    tasksPerGroup: z.number().int().min(1).default(3),
+  }).default({ enabled: true, minTasks: 7, maxGroups: 5, tasksPerGroup: 3 }),
   /**
    * 仲裁意見分歧時怎麼辦（只有兩家時由雙方各自仲裁，才可能分歧）：
    * proceed＝繼續實作，爭議記錄在計畫裡，後面還有測試、驗證與程式碼審查把關；stop＝停下來等人

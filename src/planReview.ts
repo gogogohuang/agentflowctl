@@ -1,14 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { AcceptanceItem, TaskItem } from "./schemas.js";
+import type { AcceptanceItem, RepoConfig, TaskItem } from "./schemas.js";
 
 /** 對應 flow.config.json 的 planReviewLayers */
-export interface PlanReviewLayerOptions {
-  enabled: boolean;
-  minTasks: number;
-  maxGroups: number;
-  tasksPerGroup: number;
-}
+export type PlanReviewLayerOptions = RepoConfig["planReviewLayers"];
 
 // 前面不能緊接路徑字元，中文標點與中文字後面的路徑才抓得到，URL 片段則不會被當成路徑
 const FILE_TOKEN = /(?<![A-Za-z0-9_.@/-])((?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+\.[A-Za-z0-9]+)/g;

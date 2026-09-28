@@ -5,6 +5,7 @@
   "reviewQuorum": 1,
   "planReviewQuorum": 1,
   "planArbiter": true,
+  "planReviewLayers": { "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 },
   "tieBreak": "proceed",
   "maxAgentRuns": 60,
   "defaultModels": { "claude": "Claude 模型名稱", "codex": "Codex 模型名稱" },

@@ -505,6 +505,8 @@ async function doctor(): Promise<void> {
   console.log(`\n單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
   console.log(`修正策略：${cfg.fixStrategy}　測試與實作分開：${cfg.tddSplit ? "是" : "否"}`);
   console.log(`程式碼審查人數：${cfg.reviewQuorum}　計畫審查人數：${cfg.planReviewQuorum}　計畫仲裁：${cfg.planArbiter ? "開啟" : "關閉"}`);
+  const layers = cfg.planReviewLayers;
+  console.log(`計畫分層審查：${layers.enabled ? `任務達 ${layers.minTasks} 個時開啟，最多 ${layers.maxGroups} 群，每群平均至少 ${layers.tasksPerGroup} 個任務` : "關閉"}`);
 }
 
 program.command("doctor").description("檢查可用的 agent CLI 與目前參與的 agent").action(doctor);

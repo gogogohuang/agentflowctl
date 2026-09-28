@@ -7,13 +7,14 @@ import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
-import { flowDir, logDir, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { flowDir, logDir, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile } from "./logs.js";
 import { exec } from "./proc.js";
 import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
 import {
   AcceptanceList,
+  type AcceptanceItem,
   ArbiterResult,
   ConsistentReviewResult,
   RepoConfig,
@@ -24,6 +25,26 @@ import {
 } from "./schemas.js";
 import { addRetry, addSubstitution, addUsage, agentRuns, saveRun, type RetryCategory } from "./store.js";
 import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
+import {
+  applyReviewVerdicts,
+  dirtyGroups,
+  dirtyTaskIds,
+  extractPlanEvidence,
+  groupReviewerCount,
+  layeredReview,
+  neighborTasks,
+  planContentKey,
+  planOverview,
+  planReviewIndex,
+  readPlanReviewState,
+  repliesForTasks,
+  reviewFingerprint,
+  roundProgress,
+  type PlanReviewCall,
+  type PlanReviewGroup,
+  type PlanReviewRound,
+  type PlanReviewState,
+} from "./planReview.js";
 import { orderTasks, taskAcceptance, validateTaskComplexity } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 
@@ -152,9 +173,14 @@ function reportMeta(run: FlowRun, agent: string, r: AgentResult): void {
   if (r.meta.concerns) info(run, `   💭 ${agent} 的疑慮：${r.meta.concerns}`);
 }
 
-function readFeedback(run: FlowRun): string {
-  const p = flowFile(run, "feedback.md");
+/** 讀 .flow/ 下的文字檔，沒有檔就當空字串 */
+function flowText(run: FlowRun, name: string): string {
+  const p = flowFile(run, name);
   return existsSync(p) ? readFileSync(p, "utf8") : "";
+}
+
+function readFeedback(run: FlowRun): string {
+  return flowText(run, "feedback.md");
 }
 
 /** 關卡未通過：寫入 feedback.md 給下一次嘗試參考，並把原因分類記進 retries.jsonl；超過上限就讓整個 run 失敗 */
@@ -221,6 +247,8 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
 const PLAN_FILES = ["spec.md", "acceptance.json", "plan.md", "tasks.json"] as const;
 /** 計畫定案後（實作、修正、程式碼審查）另外依賴排好的任務順序，同樣不能被改 */
 const LOCKED_FILES = [...PLAN_FILES, "tasks.ordered.json"] as const;
+/** 審查、修訂與仲裁的快照另外包含審查回應；不要併進 PLAN_FILES，定案後的階段不依賴它 */
+const PLAN_REPLY_FILES = [...PLAN_FILES, "plan-replies.md"] as const;
 
 function snapshotPlan(run: FlowRun, files: readonly string[] = PLAN_FILES): Record<string, string | undefined> {
   return Object.fromEntries(
@@ -304,47 +332,73 @@ async function planStage(run: FlowRun): Promise<FlowRun> {
 
 async function planReviewStage(run: FlowRun): Promise<FlowRun> {
   const cfg = loadRepoConfig();
-  const author = run.planWriter ?? planAgent(run.cycle, run.id);
-  const round = (run.attempts["plan-review"] ?? 0) + 1;
-  const panel = reviewers(run.cycle, author, cfg.planReviewQuorum, `${run.id}:plan-review:${round}`);
+  const layered = loadLayeredPlan(run, cfg);
+  return layered ? planReviewLayered(run, layered, cfg) : planReviewFull(run, cfg);
+}
 
-  const issues: string[] = [];
-  const issueLines: string[] = []; // 只含意見內容、不含審查者名稱，用來偵測僵持
-  let firstObjector: string | undefined;
-  for (const reviewer of panel) {
-    info(run, `🧐 計畫審查第 ${round} 輪（${reviewer}，作者 ${author}）`);
-    const snap = snapshotPlan(run);
-    rmSync(flowFile(run, "plan-review.json"), { force: true });
-    const outcome = await agentStep(
-      run, reviewer, "plan-review",
-      renderPrompt("plan-review", { reviewer, author, requirement: run.requirement }),
-      { kind: "review", slot: panel.indexOf(reviewer), reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); } },
-    );
-    const { r } = outcome;
-    await discardChanges(worktreeDir(run.id));
-    const tampered = restorePlan(run, snap);
-    if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
-    if (!r.ok) return retry(recordModelReviewFailure(run, "plan-review", reviewer), "plan-review-run", `Agent 執行失敗：${r.summary}`, "plan_review", "agent_error");
-    const review = readJsonFile(flowFile(run, "plan-review.json"), ConsistentReviewResult);
-    if (!review.ok) return retry(recordModelReviewFailure(run, "plan-review", reviewer), "plan-review-run", review.error, "plan_review", "format_invalid");
-    const handoffError = finishHandoff(run, outcome, "reviewer", { target: "plan", verdict: review.data.verdict });
-    if (handoffError) return retry(recordModelReviewFailure(run, "plan-review", reviewer), "plan-review-run", handoffError, "plan_review", "handoff_invalid");
-    run = clearModelReviewFailure(run, "plan-review", reviewer);
-    // 審查紀錄移到 worktree 外面：之後的仲裁者看不到是哪一家提的意見
-    mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
-    renameSync(flowFile(run, "plan-review.json"), join(runDir(run.id), "reviews", `plan-review-${round}-${reviewer}.json`));
-    if (review.data.verdict === "approve") {
-      info(run, `   ✓ ${reviewer} 核准計畫`);
-      continue;
-    }
-    info(run, `   ✗ ${reviewer} 要求修改計畫`);
-    firstObjector ??= reviewer;
-    const lines = review.data.items
-      .filter((i) => i.status !== "met")
-      .map((i) => reviewIssue(i.criterion, i.status, i.note));
-    issueLines.push(...lines);
-    issues.push(opinion(reviewer, lines));
+/** 一次審查呼叫的結果；issueLines 只含意見內容、不含審查者名稱，用來偵測僵持 */
+type Collected = Pick<PlanReviewCall, "reviewer" | "verdict" | "issueLines">;
+
+interface PlanReviewCallSpec {
+  reviewer: string;
+  step: "plan-review" | "plan-review-group";
+  prompt: string;
+  slot: number;
+  /** agent 寫在 .flow/ 的裁決檔名 */
+  output: string;
+  /** 移到 run 目錄 reviews/ 後的檔名 */
+  archive: string;
+  /** 核准卻仍有未結的計畫交接事項時判為矛盾 */
+  gated: boolean;
+  /** 終端機顯示「核准<subject>」 */
+  subject: string;
+}
+
+/**
+ * 整份審查與分層審查共用的單次呼叫：還原審查者改過的計畫檔、驗證裁決與交接。
+ * 失敗時回傳已呼叫 retry 的 run、沒有 collected，呼叫端應直接回傳這個 run。
+ */
+async function collectPlanReview(run: FlowRun, spec: PlanReviewCallSpec): Promise<{ run: FlowRun; collected?: Collected }> {
+  const { reviewer, step } = spec;
+  const snap = snapshotPlan(run, PLAN_REPLY_FILES);
+  rmSync(flowFile(run, spec.output), { force: true });
+  const outcome = await agentStep(run, reviewer, step, spec.prompt, {
+    kind: "review", slot: spec.slot,
+    reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); },
+  });
+  await discardChanges(worktreeDir(run.id));
+  const tampered = restorePlan(run, snap);
+  if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
+  const stop = (category: RetryCategory, reason: string) => ({
+    run: retry(recordModelReviewFailure(run, step, reviewer), "plan-review-run", reason, "plan_review", category),
+  });
+  if (!outcome.r.ok) return stop("agent_error", `Agent 執行失敗：${outcome.r.summary}`);
+  const review = readJsonFile(flowFile(run, spec.output), ConsistentReviewResult);
+  if (!review.ok) return stop("format_invalid", review.error);
+  // 群審查不帶關卡：索引要求修改並新增事項後，群的核准不算矛盾；最後由 planSettled 檢查未結事項
+  const handoffError = finishHandoff(run, outcome, "reviewer", spec.gated ? { target: "plan", verdict: review.data.verdict } : undefined);
+  if (handoffError) return stop("handoff_invalid", handoffError);
+  run = clearModelReviewFailure(run, step, reviewer);
+  // 審查紀錄移到 worktree 外面：之後的仲裁者看不到是哪一家提的意見
+  mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
+  renameSync(flowFile(run, spec.output), join(runDir(run.id), "reviews", spec.archive));
+  if (review.data.verdict === "approve") {
+    info(run, `   ✓ ${reviewer} 核准${spec.subject}`);
+    return { run, collected: { reviewer, verdict: "approve", issueLines: [] } };
   }
+  info(run, `   ✗ ${reviewer} 要求修改${spec.subject}`);
+  const issueLines = review.data.items
+    .filter((i) => i.status !== "met")
+    .map((i) => reviewIssue(i.criterion, i.status, i.note));
+  return { run, collected: { reviewer, verdict: "changes_requested", issueLines } };
+}
+
+/** 一輪審查都產出合法裁決後：全部核准就定案，否則退回修訂，僵持或達輪數上限時交付仲裁 */
+async function concludePlanReview(run: FlowRun, cfg: RepoConfig, round: number, calls: Collected[]): Promise<FlowRun> {
+  const objections = calls.filter((call) => call.verdict !== "approve");
+  const issueLines = objections.flatMap((call) => call.issueLines);
+  const issues = objections.map((call) => opinion(call.reviewer, call.issueLines));
+  const firstObjector = objections[0]?.reviewer;
   run = clearModelReviewStage(run, "plan-review");
   const attempts = { ...run.attempts };
   delete attempts["plan-review-run"];
@@ -354,7 +408,7 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
   const report = `計畫審查要求修改：\n\n${issues.join("\n\n")}`;
   // 僵持偵測：意見和上一輪完全相同，代表修改沒有進展
   const lastPath = flowFile(run, "plan-review-last.txt");
-  const fingerprint = [...issueLines].sort().join("\n");
+  const fingerprint = reviewFingerprint(issueLines);
   const stalled = existsSync(lastPath) && readFileSync(lastPath, "utf8") === fingerprint;
   writeFileSync(lastPath, fingerprint);
   const exhausted = round >= config.maxAttempts;
@@ -369,6 +423,145 @@ async function planReviewStage(run: FlowRun): Promise<FlowRun> {
     return arbitratePlan({ ...run, planReviewer: firstObjector });
   }
   return { ...retry(run, "plan-review", report, "plan_fix", "review_changes"), planReviewer: firstObjector };
+}
+
+/** 整份審查：每位審查者讀完整份規格與計畫 */
+async function planReviewFull(run: FlowRun, cfg: RepoConfig): Promise<FlowRun> {
+  // 整份審查不維護分層狀態；之後若又切回分層，不能沿用這之前的 approve
+  rmSync(planReviewStatePath(run.id), { force: true });
+  const author = run.planWriter ?? planAgent(run.cycle, run.id);
+  const round = (run.attempts["plan-review"] ?? 0) + 1;
+  const panel = reviewers(run.cycle, author, cfg.planReviewQuorum, `${run.id}:plan-review:${round}`);
+
+  const calls: Collected[] = [];
+  for (const [slot, reviewer] of panel.entries()) {
+    info(run, `🧐 計畫審查第 ${round} 輪（${reviewer}，作者 ${author}）`);
+    const passed = await collectPlanReview(run, {
+      reviewer, step: "plan-review", slot, gated: true, subject: "計畫",
+      prompt: renderPrompt("plan-review", { reviewer, author, requirement: run.requirement }),
+      output: "plan-review.json", archive: `plan-review-${round}-${reviewer}.json`,
+    });
+    run = passed.run;
+    if (!passed.collected) return run;
+    calls.push(passed.collected);
+  }
+  return concludePlanReview(run, cfg, round, calls);
+}
+
+/** 本輪進度的雜湊涵蓋的檔案：任一份變了，就不能沿用先前的審查結果 */
+const PLAN_KEY_FILES = ["tasks.json", "acceptance.json", "plan.md", "plan-replies.md"] as const;
+
+interface LayeredPlan {
+  tasks: TaskItem[];
+  acceptance: AcceptanceItem[];
+  planMd: string;
+  dirty: PlanReviewGroup[];
+  state: PlanReviewState | undefined;
+}
+
+/** 符合分層條件時讀出分層審查需要的資料；不符合時回傳 undefined，已達門檻的會印出原因 */
+function loadLayeredPlan(run: FlowRun, cfg: RepoConfig): LayeredPlan | undefined {
+  const tasks = readJsonFile(flowFile(run, "tasks.json"), TaskList);
+  const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  if (!tasks.ok || !acceptance.ok) return undefined;
+  const planMd = flowText(run, "plan.md");
+  const decision = layeredReview(tasks.data, planMd, cfg.planReviewLayers);
+  if (!decision.layered) {
+    if (decision.reason) info(run, `📋 這次計畫審查讀整份計畫：${decision.reason}`);
+    return undefined;
+  }
+  const statePath = planReviewStatePath(run.id);
+  const state = existsSync(statePath) ? readPlanReviewState(readFileSync(statePath, "utf8")) : undefined;
+  return {
+    tasks: tasks.data, acceptance: acceptance.data, planMd, state,
+    dirty: dirtyGroups(decision.groups, dirtyTaskIds(state?.reviewed, tasks.data, acceptance.data, planMd)),
+  };
+}
+
+/** 分層審查：每輪一次索引審查，再只審有變動的任務群 */
+async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoConfig): Promise<FlowRun> {
+  const author = run.planWriter ?? planAgent(run.cycle, run.id);
+  const round = (run.attempts["plan-review"] ?? 0) + 1;
+  const panel = reviewers(run.cycle, author, cfg.planReviewQuorum, `${run.id}:plan-review:${round}`);
+  const replies = flowText(run, "plan-replies.md");
+  const statePath = planReviewStatePath(run.id);
+  const reviewed = layered.state?.reviewed;
+  const planKey = planContentKey(PLAN_KEY_FILES.map((name) => flowText(run, name)));
+  // 同一輪因某一呼叫失敗而重跑時，沿用已成功的呼叫：不重複付費，已套用的交接也不會被重新提出
+  const progress: PlanReviewRound = roundProgress(layered.state, round, planKey) ?? { round, planKey, calls: [] };
+  const saveState = (state: PlanReviewState) => {
+    mkdirSync(runDir(run.id), { recursive: true });
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+  };
+  const done = new Map(progress.calls.map((call) => [call.key, call]));
+  const calls: PlanReviewCall[] = [];
+  // 沿用的呼叫也佔一格，重跑時每個呼叫的 slot 才不會變
+  let nextSlot = 0;
+  /** 執行或沿用一次呼叫；失敗時回傳 false，run 已是 retry 後的狀態 */
+  const runCall = async (
+    key: string, taskIds: string[] | undefined, label: string,
+    spec: Omit<PlanReviewCallSpec, "slot">,
+  ): Promise<boolean> => {
+    const slot = nextSlot++;
+    const reused = done.get(key);
+    if (reused) {
+      info(run, `   ↪ 沿用本輪已完成的${label}（${reused.reviewer}）`);
+      calls.push(reused);
+      return true;
+    }
+    info(run, `🧐 ${label}第 ${round} 輪（${spec.reviewer}，作者 ${author}）`);
+    // run 是外層參數，刻意在閉包裡更新：後續呼叫與最後的彙總都要看到 retry、clearModelReviewFailure 之後的 run
+    const passed = await collectPlanReview(run, { ...spec, slot });
+    run = passed.run;
+    if (!passed.collected) return false;
+    const call: PlanReviewCall = { key, ...passed.collected, ...(taskIds ? { taskIds } : {}) };
+    progress.calls.push(call);
+    calls.push(call);
+    saveState({ version: 1, ...(reviewed ? { reviewed } : {}), round: progress });
+    return true;
+  };
+
+  for (const reviewer of panel) {
+    const ok = await runCall(`index:${reviewer}`, undefined, "計畫索引審查", {
+      reviewer, step: "plan-review", gated: true, subject: "計畫索引",
+      prompt: renderPrompt("plan-review-index", {
+        reviewer, author, requirement: run.requirement,
+        index: planReviewIndex(layered.tasks),
+        acceptance: JSON.stringify(layered.acceptance, null, 2),
+        overview: planOverview(layered.planMd),
+        replies,
+      }),
+      output: "plan-review.json", archive: `plan-review-${round}-${reviewer}.json`,
+    });
+    if (!ok) return run;
+  }
+  for (const group of layered.dirty) {
+    const groupTasks = layered.tasks.filter((task) => group.taskIds.includes(task.id));
+    const acceptanceIds = new Set(groupTasks.flatMap((task) => task.acceptance));
+    const neighbors = neighborTasks(layered.tasks, group.taskIds).map(({ id, title, description, dependsOn }) => ({ id, title, description, dependsOn }));
+    const groupPanel = reviewers(run.cycle, author, groupReviewerCount(groupTasks, cfg.planReviewQuorum), `${run.id}:plan-group:${group.id}:${round}`);
+    for (const reviewer of groupPanel) {
+      const ok = await runCall(`group:${group.id}:${group.taskIds.join(",")}:${reviewer}`, group.taskIds, `計畫群 ${group.id} 審查`, {
+        reviewer, step: "plan-review-group", gated: false, subject: `任務群 ${group.id}`,
+        prompt: renderPrompt("plan-review-group", {
+          reviewer, author, groupId: group.id,
+          files: group.files.join("、") || "（這群沒有點名既有檔案）",
+          tasks: JSON.stringify(groupTasks, null, 2),
+          neighbors: neighbors.length ? JSON.stringify(neighbors, null, 2) : "（沒有跨群的直接相依）",
+          acceptance: JSON.stringify(layered.acceptance.filter((item) => acceptanceIds.has(item.id)), null, 2),
+          evidence: extractPlanEvidence(layered.planMd, group.taskIds),
+          replies: repliesForTasks(replies, group.taskIds),
+        }),
+        output: "plan-review-group.json", archive: `plan-review-${round}-${group.id}-${reviewer}.json`,
+      });
+      if (!ok) return run;
+    }
+  }
+
+  // 只放這一輪真的審過的群（含沿用的），沒審到的任務才留得住前次 verdict
+  const groupVerdicts = calls.flatMap((call) => call.taskIds ? [{ taskIds: call.taskIds, verdict: call.verdict }] : []);
+  saveState({ version: 1, reviewed: applyReviewVerdicts(reviewed, layered.tasks, layered.acceptance, layered.planMd, groupVerdicts) });
+  return concludePlanReview(run, cfg, round, calls);
 }
 
 async function planFixStage(run: FlowRun): Promise<FlowRun> {
@@ -466,6 +659,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     const attempts: Record<string, number> = { ...run.attempts, "plan-arbitration": arbitrationRound };
     delete attempts["plan-review"];
     rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
+    rmSync(planReviewStatePath(run.id), { force: true });
     addRetry(run.id, { key: "plan-arbitration", backTo: "plan_fix", category: "arbitration_revise", attempt: arbitrationRound, final: false }, run.updatedAt);
     writeFileSync(flowFile(run, "feedback.md"), `# 仲裁要求修訂（第 ${arbitrationRound} 次）\n\n${summary}\n\n${feedbackRecord}\n`);
     info(run, `   → ${summary}`);
