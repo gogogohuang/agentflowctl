@@ -120,7 +120,7 @@ describe("log 解析", () => {
       footerLine({ code: 0, ok: true, endedAt }),
     ].join("\n");
     const c = renderLog(codex);
-    expect(c).toContain("🔧 shell 指令 ×2（--full 查看）\n💬 看完了");
+    expect(c).toContain("🔧 shell 指令 ×1（--full 查看）\n🏁 完成\n🔧 shell 指令 ×1（--full 查看）\n💬 看完了");
     expect(c).not.toContain("cat .flow/plan.md");
   });
 

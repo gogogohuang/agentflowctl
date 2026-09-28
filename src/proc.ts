@@ -19,13 +19,21 @@ export interface ExecOptions {
 
 export function exec(cmd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
+    const processGroup = Boolean(opts.timeoutMs) && process.platform !== "win32";
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env },
       shell: opts.shell ?? false,
+      detached: processGroup,
     });
     let timedOut = false;
-    const timer = opts.timeoutMs ? setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, opts.timeoutMs) : undefined;
+    const timer = opts.timeoutMs ? setTimeout(() => {
+      timedOut = true;
+      // npm 安裝的 CLI 常再啟動原生執行檔；只殺啟動器會留下持續呼叫模型的程序。
+      if (processGroup && child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+      } else child.kill("SIGKILL");
+    }, opts.timeoutMs) : undefined;
     let stdout = "";
     let stderr = "";
     let pending = "";

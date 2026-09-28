@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { num, str, toolDetail, tryJson, type Adapter, type AgentEvent } from "./types.js";
 
@@ -12,9 +12,13 @@ export const gemini: Adapter = {
   probe: () => ({ cmd: "gemini", args: ["--version"] }),
   invokeModelProbe: (model, cwd) => {
     const policy = join(cwd, "deny-tools.toml");
-    writeFileSync(policy, '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 10000\n');
+    mkdirSync(join(cwd, ".gemini"), { recursive: true });
+    writeFileSync(join(cwd, ".gemini", "settings.json"), JSON.stringify({ hooksConfig: { enabled: false } }));
+    // priority 是 tier 內的 0–999；不能用 10000 嘗試跨 tier。
+    writeFileSync(policy, '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n');
     return { cmd: "gemini", args: ["-p", "只回答 OK", "--model", model, "--output-format", "stream-json",
-      "--approval-mode", "default", "--extensions", "none", "--policy", policy],
+      "--approval-mode", "default", "--extensions", "none", "--allowed-mcp-server-names", "",
+      "--admin-policy", policy, "--policy", policy],
       env: { GEMINI_CLI_TRUST_WORKSPACE: "true" } };
   },
   invoke: (o) => ({
@@ -37,7 +41,8 @@ export const gemini: Adapter = {
       const inputTokens = num(stats.input_tokens) ?? num(stats.inputTokens);
       const outputTokens = num(stats.output_tokens) ?? num(stats.outputTokens);
       if (inputTokens !== undefined || outputTokens !== undefined) out.push({ kind: "usage", inputTokens, outputTokens });
-      out.push({ kind: "done", ok: ev.status !== "error", summary: str(ev.response) });
+      const error = (ev.error ?? {}) as Record<string, unknown>;
+      out.push({ kind: "done", ok: ev.status !== "error", summary: str(error.message) ?? str(ev.response) });
     } else if (ev.type === "error") {
       out.push({ kind: "done", ok: false, summary: str(ev.message) ?? "Gemini 執行失敗" });
     }

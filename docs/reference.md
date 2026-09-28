@@ -380,7 +380,17 @@ agentflowctl model stage taskReview high
 
 終端機每次呼叫都顯示送給 CLI 的模型名稱；Claude Code 與 Gemini CLI 在初始化事件回報實際模型，與送出名稱不同時完成後顯示 `↳ CLI 回報實際模型：…`。Codex CLI 的事件不含模型，別名若沒有 CLI 的實際模型回報，不推測解析結果。`status` 按階段、任務、模型與步驟、強度顯示呼叫和 token：階段用量以上表的階段鍵加總所有任務的同一步，認不得的舊步驟歸為「其他」；任務用量加總該任務的寫測試、實作、任務審查與任務修正，規格、計畫、整體驗證修正與整體審查歸為「非任務步驟」。只有明確回報的 token 納入合計與占比。沒有 usage 事件顯示「未回報」，舊紀錄因無法分辨真實 0 與補值而顯示「回報狀態不明」，各 agent 用量另列其原始數字供查閱，不算進合計與占比。
 
-探測使用專用無工具呼叫與暫存目錄，不沿用正常工作時的工具權限或 `extraArgs`。目前 Codex CLI 沒有可確認的無工具模式，因此 `model add` 對 Codex 回報無法安全驗證；仍可用 `balanced` 模式。自訂 `command` adapter 若要參與 `adaptive`，執行指令須含 `{model}`，還需以可重複的 `agent set NAME --model-probe-arg=ARG` 設定 `modelProbe` 命令陣列。第一個值是執行檔，命令必須含 `{model}`，並輸出單一 JSON 物件：`{"requestedModel":"輸入名稱","resolvedModel":"實際模型 ID"}`。agentflowctl 會核對格式與名稱；底層服務是否真的被呼叫，仍由這支自訂探測命令負責。
+`model add/check` 對 Claude Code、Codex 與 Gemini CLI 明確指定模型，在獨立暫存目錄送出短請求，不沿用正常工作的 `extraArgs`，30 秒逾時；macOS／Linux 逾時會停止整個程序群組，包含 CLI 啟動的子程序。成功必須同時有文字、成功完成事件與零工具事件；任何錯誤事件都會使探測失敗，即使後來又回報成功也一樣。CLI 不支援探測參數或 Gemini 未載入工具限制時直接失敗，不會用更寬鬆權限重試；失敗不新增模型，`model check` 不修改設定。
+
+| CLI | 探測限制 |
+|---|---|
+| Claude Code | `--tools ""`、`--strict-mcp-config`、停用 slash commands |
+| Codex | `read-only` 沙箱、`approval_policy="never"`；忽略使用者設定與 rules、停用 shell、hooks、apps、plugins、瀏覽器、電腦控制、圖像、子 agent 等功能。仍可能有模型內建檔案工具，寫入由唯讀沙箱阻擋，工具事件使驗證失敗。未回報實際模型 ID 時不推測別名解析結果 |
+| Gemini CLI | admin/user deny policy（`toolName="*"`、`priority=999`，合法範圍 0–999）、default approval、停用 extensions、MCP 與 hooks；政策載入警告或錯誤使驗證失敗 |
+
+探測參數以 Codex CLI 0.157.1 與 Gemini CLI 0.61.0 查核；較舊版本若不支援參數，請更新 CLI。登入資訊仍由各 CLI 使用目前帳號讀取，探測可能耗用少量 token，且不屬於 run 用量。
+
+自訂 `command` adapter 若要參與 `adaptive`，執行指令須含 `{model}`，還需以可重複的 `agent set NAME --model-probe-arg=ARG` 設定 `modelProbe` 命令陣列。第一個值是執行檔，命令必須含 `{model}`，並輸出單一 JSON 物件：`{"requestedModel":"輸入名稱","resolvedModel":"實際模型 ID"}`。agentflowctl 會核對格式與名稱；底層服務是否真的被呼叫，仍由這支自訂探測命令負責。
 
 ## 計畫怎麼在沒有人的情況下通過
 
