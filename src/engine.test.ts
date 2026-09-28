@@ -127,6 +127,53 @@ describe("審查交接關卡", () => {
     expect(retries.at(-1)).toMatchObject({ final: true });
   });
 
+  it("後一位仲裁者要求修改並留下計畫事項時，定案重試為 open_handoff", async () => {
+    const id = "f-plan-settle-open";
+    const script = join(root, "plan-settle-open.mjs");
+    // 兩家才會雙盲仲裁。先核准的人看不到之後才新增的事項，reviewHandoffGate 不會擋下這次定案。
+    writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
+const agent = process.argv[2];
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("plan-arbiter.json")) {
+  const approve = agent === "a";
+  writeFileSync(".flow/plan-arbiter.json", JSON.stringify({
+    verdict: approve ? "approve" : "changes_requested",
+    items: [{ criterion: "範圍", status: approve ? "met" : "not_met", note: approve ? "可以執行" : "仍有缺口" }],
+  }));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify(approve
+    ? { newIssues: [], dispositions: [] }
+    : { newIssues: [{ kind: "action", summary: "計畫仍缺邊界", evidence: "plan.md:1", targetStage: "plan" }], dispositions: [] }));
+} else {
+  writeFileSync(".flow/plan-review.json", JSON.stringify({
+    verdict: "changes_requested",
+    items: [{ criterion: "範圍", status: "not_met", note: "仍有缺口" }],
+  }));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+}
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script, name] }])),
+      cycle: ["a", "b"], planArbiter: true, tieBreak: "proceed",
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n");
+    // 意見與上一輪相同，這一輪審查後直接交付仲裁，不依賴重試上限
+    writeFileSync(join(flowDir(id), "plan-review-last.txt"), `<issue criterion="範圍" status="not_met">仍有缺口</issue>`);
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
+      autopilot: true, maxAgentRuns: 3, cycle: ["a", "b"], planWriter: "a", attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(readHandoff(id).issues).toEqual([
+      expect.objectContaining({ kind: "action", targetStage: "plan", status: "open" }),
+    ]);
+    expect(listRetries(id).map((r) => [r.key, r.category])).toEqual([["plan-handoff", "open_handoff"]]);
+    expect(run.failedStage).toBe("plan_fix");
+  });
+
   it("後面輪次的重試次數與先前輪次相同時，審查者的結案仍會套用", async () => {
     const id = "f-plan-rekey";
     writeFileSync(join(root, "flow.config.json"), JSON.stringify({

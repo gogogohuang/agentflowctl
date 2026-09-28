@@ -223,8 +223,8 @@ stderr：
 | category | 顯示 | 呼叫點 |
 |---|---|---|
 | `agent_error` | Agent 執行失敗 | `!r.ok` |
-| `missing_artifact` | 缺少必要檔案 | 缺少 `spec.md` / `plan.md` |
-| `format_invalid` | 輸出格式錯誤 | zod／驗收 id 重複／`validatePlan` 字串 |
+| `missing_artifact` | 缺少必要檔案 | 缺少 `.flow/spec.md`（spec 階段直接檢查） |
+| `format_invalid` | 輸出格式錯誤 | zod／驗收 id 重複／`validatePlan` 字串（缺少 `plan.md`，以及格式與 DAG 錯誤） |
 | `handoff_invalid` | 交接回覆不合格 | `finishHandoff` 回傳錯誤 |
 | `open_handoff` | 未結交接事項 | `planSettled` 的未結 action |
 | `review_changes` | 審查要求修改 | 計畫／任務／整體審查 `changes_requested` |
