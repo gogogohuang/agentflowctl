@@ -2,6 +2,8 @@
 
 讓 Claude Code、Codex、Gemini CLI 等 agent 在同一個專案裡分工：整理需求、規劃、寫測試與程式、交叉審查，最後建立 PR。agentflowctl 負責推進流程，並用檔案、測試和檢查結果決定能否進到下一步。
 
+目前內建支援三種 LLM CLI：**Claude Code、Codex、Gemini CLI**。未來可擴充自定義 LLM adapter，讓其他模型供應商加入流程。目前若要串接其他 CLI，可使用 `command` adapter，自行提供執行命令；需要模型驗證時，也須提供探測命令。
+
 每次執行都會建立獨立的 git worktree 與 `flow/<id>` 分支，不會直接修改你目前的工作目錄。兩個 agent 就能運作；若只有一個，也能執行，但無法做到跨 agent 審查。
 
 ## 開始使用
