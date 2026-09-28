@@ -587,7 +587,7 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
         reviewer, step: "plan-review-group", gated: false, subject: `任務群 ${group.id}`, scope: group.id,
         prompt: renderPrompt("plan-review-group", {
           reviewer, author, groupId: group.id,
-          files: group.files.join("、") || "（這群沒有點名既有檔案）",
+          files: group.files.join("、") || "（這群的描述沒有點名檔案）",
           tasks: JSON.stringify(groupTasks, null, 2),
           neighbors: neighbors.length ? JSON.stringify(neighbors, null, 2) : "（沒有跨群的直接相依）",
           acceptance: JSON.stringify(layered.acceptance.filter((item) => acceptanceIds.has(item.id)), null, 2),

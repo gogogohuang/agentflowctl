@@ -69,6 +69,7 @@ function taskNum(id: string): number {
   return Number(id.slice(2));
 }
 
+/** 從任務描述抽出含目錄的檔案路徑（略過 .flow/），排序後去重 */
 export function extractFiles(description: string): string[] {
   const found = new Set<string>();
   for (const match of description.matchAll(FILE_TOKEN)) {
@@ -87,6 +88,7 @@ function toGroup(members: TaskItem[], index: number): PlanReviewGroup {
   };
 }
 
+/** 依共用路徑把任務併成自然群，抽不到路徑的依附相依目標或併成一群 */
 export function taskClusters(tasks: TaskItem[]): PlanReviewGroup[] {
   const parent = new Map(tasks.map((task) => [task.id, task.id]));
   const find = (id: string): string => {
@@ -135,6 +137,7 @@ export function taskClusters(tasks: TaskItem[]): PlanReviewGroup[] {
     .map((cluster, index) => toGroup(cluster.members, index));
 }
 
+/** 自然群超過上限時把相鄰的群合併，得到本輪要審的任務群 */
 export function planReviewGroups(tasks: TaskItem[], opts: PlanReviewLayerOptions): PlanReviewGroup[] {
   const clusters = taskClusters(tasks);
   // 群數不超過上限，也不讓每群平均少於 tasksPerGroup 個任務，避免拆出很多只有一兩個任務的呼叫
@@ -148,6 +151,7 @@ export function planReviewGroups(tasks: TaskItem[], opts: PlanReviewLayerOptions
   return packed.map((ids, index) => toGroup(tasks.filter((task) => ids.includes(task.id)), index));
 }
 
+/** plan.md 缺少「## T-<數字>」標題的任務 id */
 export function missingTaskHeadings(planMd: string, taskIds: string[]): string[] {
   const found = new Set(planMd.split("\n").flatMap((line) => {
     const match = TASK_HEADING.exec(line);
@@ -156,6 +160,7 @@ export function missingTaskHeadings(planMd: string, taskIds: string[]): string[]
   return taskIds.filter((id) => !found.has(id));
 }
 
+/** 判斷是否走分層審查；不走時附上第一個不成立的原因 */
 export function layeredReview(tasks: TaskItem[], planMd: string, opts: PlanReviewLayerOptions): LayeredDecision {
   if (!opts.enabled || tasks.length < opts.minTasks) return { layered: false };
   const clusters = taskClusters(tasks);
@@ -173,6 +178,7 @@ export function layeredReview(tasks: TaskItem[], planMd: string, opts: PlanRevie
   return { layered: true, groups };
 }
 
+/** 索引審查用的任務清單：每個任務一行摘要加一行描述 */
 export function planReviewIndex(tasks: TaskItem[]): string {
   return tasks.map((task) => {
     const deps = task.dependsOn.length ? task.dependsOn.join(", ") : "（無）";
@@ -181,6 +187,7 @@ export function planReviewIndex(tasks: TaskItem[]): string {
   }).join("\n");
 }
 
+/** 不在群內、但與群內任務直接相依的任務，依 tasks.json 順序 */
 export function neighborTasks(tasks: TaskItem[], taskIds: string[]): TaskItem[] {
   const inGroup = new Set(taskIds);
   const linked = new Set<string>();
@@ -191,10 +198,12 @@ export function neighborTasks(tasks: TaskItem[], taskIds: string[]): TaskItem[] 
   return tasks.filter((task) => linked.has(task.id) && !inGroup.has(task.id));
 }
 
+/** 群內有 high 任務時由 quorum 位審查，否則一位 */
 export function groupReviewerCount(groupTasks: TaskItem[], quorum: number): number {
   return groupTasks.some((task) => task.complexity === "high") ? quorum : 1;
 }
 
+/** 任務指紋：任務內容、對應驗收條文與難度證據，任一變了就要重審 */
 export function taskFingerprint(task: TaskItem, acceptance: AcceptanceItem[], planMd: string): string {
   const byId = new Map(acceptance.map((item) => [item.id, item.description]));
   return JSON.stringify({
@@ -208,10 +217,12 @@ export function taskFingerprint(task: TaskItem, acceptance: AcceptanceItem[], pl
   });
 }
 
+/** 整體做法的指紋 */
 export function overviewKey(planMd: string): string {
   return planContentKey([planOverview(planMd)]);
 }
 
+/** 解析審查狀態；壞掉或格式不符時回傳 undefined，當成沒有前次結果 */
 export function readPlanReviewState(raw: string): PlanReviewState | undefined {
   try {
     const parsed = PlanReviewState.safeParse(JSON.parse(raw));
@@ -231,6 +242,7 @@ export function readPendingArbitration(raw: string): PendingArbitration | undefi
   }
 }
 
+/** 整輪完成後的新審查結果：審到的任務寫上群的 verdict，沒審到的沿用前次 */
 export function applyReviewVerdicts(
   prev: PlanReviewed | undefined,
   tasks: TaskItem[],
@@ -263,6 +275,7 @@ function sameList(a: string[], b: string[]): boolean {
   return a.join("\0") === b.join("\0");
 }
 
+/** 這輪要重審的任務 id，依 tasks.json 順序 */
 export function dirtyTaskIds(prev: PlanReviewed | undefined, tasks: TaskItem[], acceptance: AcceptanceItem[], planMd: string): string[] {
   // 整體做法是每一群核准的前提，一變就全部重審
   if (!prev || prev.overview !== overviewKey(planMd)) return tasks.map((task) => task.id);
@@ -284,17 +297,21 @@ export function dirtyTaskIds(prev: PlanReviewed | undefined, tasks: TaskItem[], 
   return tasks.map((task) => task.id).filter((id) => dirty.has(id));
 }
 
+/** 含任一髒任務的群 */
 export function dirtyGroups(groups: PlanReviewGroup[], dirtyIds: string[]): PlanReviewGroup[] {
   const dirty = new Set(dirtyIds);
   return groups.filter((group) => group.taskIds.some((id) => dirty.has(id)));
 }
 
+/** plan.md 第一個任務標題之前的整體做法，最多 OVERVIEW_MAX_LINES 行 */
 export function planOverview(planMd: string): string {
   const lines = planMd.split("\n");
   const end = lines.findIndex((line) => TASK_HEADING.test(line));
+  // trim：任務標題前的空行只是排版，不 trim 的話多一行、少一行空白都會改變整體做法指紋，讓所有群重審
   return (end === -1 ? lines : lines.slice(0, end)).slice(0, OVERVIEW_MAX_LINES).join("\n").trim();
 }
 
+/** 各任務標題下的難度摘錄，依傳入的 id 順序接起來 */
 export function extractPlanEvidence(planMd: string, taskIds: string[]): string {
   const wanted = new Set(taskIds);
   const byId = new Map<string, string[]>();
@@ -312,6 +329,7 @@ export function extractPlanEvidence(planMd: string, taskIds: string[]): string {
     .join("\n\n");
 }
 
+/** 審查回應中標題剛好是這些任務 id 的節 */
 export function repliesForTasks(replies: string, taskIds: string[]): string {
   if (!replies.trim()) return "";
   const chunks = replies.split(/(?=^## )/m);
@@ -321,14 +339,17 @@ export function repliesForTasks(replies: string, taskIds: string[]): string {
   }).join("").trim();
 }
 
+/** 未通過意見排序後的文字，用來偵測僵持 */
 export function reviewFingerprint(issueLines: string[]): string {
   return [...issueLines].sort().join("\n");
 }
 
+/** 多段文字以 \0 串接後的 sha256 */
 export function planContentKey(texts: string[]): string {
   return createHash("sha256").update(texts.join("\0")).digest("hex");
 }
 
+/** 輪次與計畫雜湊都對得上時才沿用本輪進度 */
 export function roundProgress(state: PlanReviewState | undefined, round: number, planKey: string): PlanReviewRound | undefined {
   const progress = state?.round;
   if (!progress || progress.round !== round || progress.planKey !== planKey) return undefined;

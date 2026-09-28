@@ -61,6 +61,9 @@ describe("prompts", () => {
     expect(group).toContain("<neighbors>");
     expect(group).toContain(".flow/plan-review-group.json");
     expect(group).not.toContain(".flow/spec.md");
+    // 描述點名的路徑可能是這個計畫才要新建的檔案，不能說成「既有檔案」
+    expect(group).not.toContain("既有檔案");
+    expect(group).toContain("可能尚未存在，不存在就不用讀");
     expect(group).not.toContain("{{");
     const plan = renderPrompt("plan", vars);
     expect(plan).toContain("## T-1");
