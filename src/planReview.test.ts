@@ -14,6 +14,7 @@ import {
   planOverview,
   planReviewGroups,
   planReviewIndex,
+  readPendingArbitration,
   readPlanReviewState,
   repliesForTasks,
   reviewFingerprint,
@@ -193,6 +194,12 @@ describe("髒任務", () => {
     expect(readPlanReviewState("{")).toBeUndefined();
     expect(readPlanReviewState("null")).toBeUndefined();
     expect(readPlanReviewState(JSON.stringify({ version: 1 }))).toEqual({ version: 1 });
+  });
+
+  it("仲裁待完成紀錄壞掉或缺欄位時讀不到", () => {
+    expect(readPendingArbitration("{")).toBeUndefined();
+    expect(readPendingArbitration(JSON.stringify({ planReviewer: "b" }))).toBeUndefined();
+    expect(readPendingArbitration(JSON.stringify({ planReviewer: "b", planKey: "k" }))).toEqual({ planReviewer: "b", planKey: "k" });
   });
 
   it("只改描述時不牽動相依的另一群", () => {

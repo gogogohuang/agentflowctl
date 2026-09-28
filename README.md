@@ -70,7 +70,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 | 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
 | `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>` |
 | `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審 |
-| `paused`：仲裁沒有產生有效裁決 | 依 `status` 的原因查看 log；若有 `.flow/plan-arbiter.json`，也檢查其內容，處理後執行 `agentflowctl resume <id>` |
+| `paused`：仲裁沒有產生有效裁決 | 依 `status` 的原因查看 log；若有 `.flow/plan-arbiter.json`，也檢查其內容，處理後執行 `agentflowctl resume <id>`。resume 會直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，才會重新審查 |
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
 | `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
 
@@ -211,7 +211,7 @@ Codex 另有幾點差異：
 | `AGENTFLOWCTL_VERBOSE` | 未開啟 | 設為 `1` 顯示詳細輸出，效果同 `-v` |
 | `AGENTFLOWCTL_MAX_TURNS` | `80` | 目前程式會讀取此值，但尚未用它限制 agent 執行 |
 
-環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。
+環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。
 
 ## 更多文件
 

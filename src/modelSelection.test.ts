@@ -77,6 +77,17 @@ describe("依階段與任務難度選模", () => {
     const low = RepoConfig.parse({ agents: cfg().agents, modelSelection: { stageStrength: { planReview: "low" } } });
     expect(selectModel(run(), low, "a", "plan-review-group", undefined, "a").name).toBe("small");
   });
+
+  it("任務群審查的失敗計數帶群 id，一群失敗不會讓其他群升級", () => {
+    const failed = recordModelReviewFailure(run(), "plan-review-group", "a", "G-1");
+    expect(failed.modelRetryAttempts).toEqual({ "plan-review-group:G-1:a": 1 });
+    const low = RepoConfig.parse({ agents: cfg().agents, modelSelection: { stageStrength: { planReview: "low" } } });
+    expect(selectModel(failed, low, "a", "plan-review-group", undefined, "a", "G-1").name).toBe("middle");
+    expect(selectModel(failed, low, "a", "plan-review-group", undefined, "a", "G-2").name).toBe("small");
+    expect(clearModelReviewFailure(failed, "plan-review-group", "a", "G-2").modelRetryAttempts).toEqual({ "plan-review-group:G-1:a": 1 });
+    expect(clearModelReviewFailure(failed, "plan-review-group", "a", "G-1").modelRetryAttempts).toEqual({});
+    expect(clearModelReviewStage(recordModelReviewFailure(failed, "plan-review", "b"), "plan-review").modelRetryAttempts).toEqual({});
+  });
 });
 
 describe("adaptive 設定檢查", () => {

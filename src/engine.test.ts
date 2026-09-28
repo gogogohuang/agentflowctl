@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-engine-"));
 execFileSync("git", ["init", "-q", "-b", "main", root]);
@@ -29,10 +29,13 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({
 }));
 
 const { addWorktree, commitAll } = await import("./git.js");
-const { advance } = await import("./engine.js");
+const { advance, resetQuotaState } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, logDir, planReviewStatePath, worktreeDir } = await import("./paths.js");
 const { agentRuns, listRetries, listSubstitutions, listUsage } = await import("./store.js");
+
+// 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
+beforeEach(() => resetQuotaState());
 
 async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
@@ -560,6 +563,16 @@ describe("adaptive 選模與流程串接", () => {
     expect(listSubstitutions(run.id)).toEqual([]);
   });
 
+  it("前一個測試讓 b 額度用完後，下一個測試的 b 仍可審查", async () => {
+    // 緊接在上一個測試之後：沒有 resetQuotaState 時，b 仍被記成額度用完而暫停
+    const run = await quotaRun("f-model-review-after-quota", "review", "none", {
+      a: [{ name: "a-large", strength: "high" }],
+      b: [{ name: "b-large", strength: "high" }],
+    });
+    expect(run.stage).not.toBe("paused");
+    expect(listUsage(run.id).map((e) => e.agent)).toContain("b");
+  });
+
   it("舊 run 的任務沒有難度時，選模視為 medium", async () => {
     const id = "f-model-legacy-task";
     writeFileSync(join(root, "flow.config.json"), JSON.stringify({
@@ -613,7 +626,6 @@ async function layeredRun(
   id: string, body: string,
   opts: { agents?: string[]; quorum?: number; planArbiter?: boolean; layers?: Record<string, unknown> } = {},
 ) {
-  // 前面的額度測試已把 a、b 標成額度用完（同一個程序內不會清掉），這裡改用別的名字
   const agents = opts.agents ?? ["p1", "p2", "p3"];
   const script = join(root, `${id}.mjs`);
   writeFileSync(script, `import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -838,5 +850,143 @@ ${APPROVE}
     const state = reviewState(id);
     expect(state.reviewed.tasks["T-8"].verdict).toBe("approve");
     expect(state.round).toBeUndefined();
+  });
+
+  it("同一輪內三個不同呼叫各失敗一次，只要每次重跑都有進展就能完成這一輪", async () => {
+    const id = "f-plan-layers-progress";
+    // 索引、G-1、G-2 各在第一次格式錯誤；每次重跑都有一個呼叫真的成功，不該累計到重試上限
+    await layeredRun(id, `const mark = kind === "index" ? "index" : prompt.includes("任務群 G-1") ? "g1" : "g2";
+if (kind !== "other" && !existsSync(".flow/failed-" + mark)) {
+  writeFileSync(".flow/failed-" + mark, "");
+  writeFileSync(file, "{");
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+${APPROVE}
+}`);
+    const run = await planReviewRun(id, 6);
+    expect(listRetries(id).map((item) => [item.key, item.final])).toEqual([
+      ["plan-review-run", false], ["plan-review-run", false], ["plan-review-run", false],
+    ]);
+    expect(run.failedStage).toBe("implement");
+    expect(run.failureCategory).toBe("agent_budget");
+    expect(reviewState(id).reviewed.tasks["T-8"].verdict).toBe("approve");
+  });
+
+  it("整份審查時同一呼叫連續失敗仍計入重試上限", async () => {
+    const id = "f-plan-full-run-limit";
+    await layeredRun(id, `writeFileSync(file, "{");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));`, { layers: { enabled: false } });
+    const run = await planReviewRun(id, 10);
+    expect(run.failureCategory).toBe("retry_limit");
+    expect(listRetries(id).map((item) => item.key)).toEqual(["plan-review-run", "plan-review-run", "plan-review-run"]);
+  });
+
+  it("plan-fix 沒寫 plan-replies.md 時，下一輪不會讀到上一輪的回應", async () => {
+    const id = "f-plan-replies-stale";
+    await layeredRun(id, `if (kind === "index") writeFileSync(".flow/index-prompt.txt", prompt);
+if (prompt.includes("計畫修訂者")) {
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+${APPROVE}
+}`);
+    writeFileSync(join(flowDir(id), "plan-replies.md"), "## 整體\n上一輪的舊回應\n");
+    const now = new Date().toISOString();
+    await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_fix",
+      autopilot: true, maxAgentRuns: 2, cycle: ["p1", "p2", "p3"], planWriter: "p1", planReviewer: "p2", attempts: { "plan-review": 1 },
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(existsSync(join(flowDir(id), "plan-replies.md"))).toBe(false);
+    expect(readFileSync(join(flowDir(id), "index-prompt.txt"), "utf8")).not.toContain("上一輪的舊回應");
+  });
+
+  it("plan-fix 失敗時還原 plan-replies.md", async () => {
+    const id = "f-plan-replies-restore";
+    await layeredRun(id, `writeFileSync(".flow/tasks.json", "{");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));`);
+    writeFileSync(join(flowDir(id), "plan-replies.md"), "## 整體\n上一輪的舊回應\n");
+    const now = new Date().toISOString();
+    await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_fix",
+      autopilot: true, maxAgentRuns: 1, cycle: ["p1", "p2", "p3"], planWriter: "p1", planReviewer: "p2", attempts: { "plan-review": 1 },
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(readFileSync(join(flowDir(id), "plan-replies.md"), "utf8")).toBe("## 整體\n上一輪的舊回應\n");
+  });
+
+  it("仲裁未產生有效裁決而暫停時，resume 直接回到仲裁，不重跑索引與群", async () => {
+    const id = "f-plan-layers-arbiter-pause";
+    await layeredRun(id, `if (kind === "arbiter" && !existsSync(".flow/arbiter-failed")) {
+  writeFileSync(".flow/arbiter-failed", "");
+  writeFileSync(".flow/plan-arbiter.json", "{");
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+${OBJECT}
+}`, { agents: ["p1", "p2"] });
+    writeFileSync(join(flowDir(id), "plan-review-last.txt"), [
+      '<issue criterion="任務群" status="not_met">太大</issue>',
+      '<issue criterion="任務群" status="not_met">太大</issue>',
+      '<issue criterion="需求覆蓋" status="not_met">缺逾時</issue>',
+    ].join("\n"));
+    const paused = await planReviewRun(id, 10, ["p1", "p2"]);
+    expect(paused.stage).toBe("paused");
+    expect(paused.pausedStage).toBe("plan_review");
+    expect(seen(id)).toBe("index\ngroup\ngroup\narbiter\n");
+    resetSeen(id);
+    const run = await advance({ ...paused, stage: paused.pausedStage!, pausedStage: undefined, pauseReason: undefined, maxAgentRuns: 6 });
+    expect(seen(id)).toBe("arbiter\narbiter\n");
+    expect(listRetries(id).some((item) => item.category === "arbitration_revise")).toBe(true);
+    expect(run.failedStage).toBe("plan_fix");
+  });
+
+  it("仲裁者額度用完而暫停時，resume 直接回到仲裁，不重跑整份審查", async () => {
+    const id = "f-plan-full-arbiter-quota";
+    await layeredRun(id, `if (kind === "arbiter" && !existsSync(".flow/arbiter-quota")) {
+  writeFileSync(".flow/arbiter-quota", "");
+  console.error("usage limit reached");
+  process.exit(1);
+}
+${OBJECT}`, { agents: ["p1", "p2"], layers: { enabled: false } });
+    writeFileSync(join(flowDir(id), "plan-review-last.txt"), '<issue criterion="任務群" status="not_met">太大</issue>');
+    const paused = await planReviewRun(id, 10, ["p1", "p2"]);
+    expect(paused.stage).toBe("paused");
+    expect(paused.pausedStage).toBe("plan_review");
+    expect(seen(id)).toBe("other\narbiter\n");
+    resetSeen(id);
+    resetQuotaState(); // resume 是新的程序，額度紀錄不會留著
+    const run = await advance({ ...paused, stage: paused.pausedStage!, pausedStage: undefined, pauseReason: undefined, maxAgentRuns: 4 });
+    expect(seen(id)).toBe("arbiter\narbiter\n");
+    expect(run.failedStage).toBe("plan_fix");
+  });
+
+  it("任務群審查失敗的升級計數以群 id 區分", async () => {
+    const id = "f-plan-layers-group-key";
+    await layeredRun(id, `if (kind === "group" && prompt.includes("任務群 G-2")) {
+  writeFileSync(file, "{");
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+${APPROVE}
+}`);
+    const run = await planReviewRun(id, 3);
+    const keys = Object.keys(run.modelRetryAttempts ?? {});
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toMatch(/^plan-review-group:G-2:p\d$/);
+  });
+
+  it("同一輪重跑時，沿用的索引呼叫不會再次套用它的交接事項", async () => {
+    const id = "f-plan-layers-reuse-handoff";
+    await layeredRun(id, `if (kind === "index") {
+  writeFileSync(file, JSON.stringify({ verdict: "changes_requested", items: [{ criterion: "需求覆蓋", status: "not_met", note: "缺逾時" }] }));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [{ kind: "action", summary: "補逾時", evidence: "需求第 1 句", targetStage: "plan" }], dispositions: [] }));
+} else if (kind === "group" && prompt.includes("任務群 G-1") && !existsSync(".flow/g1-failed")) {
+  writeFileSync(".flow/g1-failed", "");
+  writeFileSync(file, "{");
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+${APPROVE}
+}`);
+    await planReviewRun(id, 4);
+    expect(seen(id)).toBe("index\ngroup\ngroup\ngroup\n");
+    expect(readHandoff(id).issues.filter((issue) => issue.summary === "補逾時")).toHaveLength(1);
   });
 });

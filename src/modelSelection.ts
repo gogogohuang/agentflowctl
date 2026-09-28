@@ -25,15 +25,23 @@ export interface SelectedModel {
   mode: "balanced" | "adaptive";
 }
 
+/**
+ * 審查失敗計數的鍵。scope 是任務群 id：一群失敗只讓同一群的下一次審查升級，不牽動同一輪的其他群。
+ * 鍵一律以步驟名稱開頭，clearModelReviewStage 才能用前綴一次清掉。
+ */
+function reviewFailureKey(step: ReviewStep, reviewer: string, scope?: string): string {
+  return scope ? `${step}:${scope}:${reviewer}` : `${step}:${reviewer}`;
+}
+
 /** 小組審查失敗只影響該審查者的下一次選模。 */
-export function recordModelReviewFailure(run: FlowRun, step: ReviewStep, reviewer: string): FlowRun {
-  const key = `${step}:${reviewer}`;
+export function recordModelReviewFailure(run: FlowRun, step: ReviewStep, reviewer: string, scope?: string): FlowRun {
+  const key = reviewFailureKey(step, reviewer, scope);
   return { ...run, modelRetryAttempts: { ...run.modelRetryAttempts, [key]: (run.modelRetryAttempts?.[key] ?? 0) + 1 } };
 }
 
-export function clearModelReviewFailure(run: FlowRun, step: ReviewStep, reviewer: string): FlowRun {
+export function clearModelReviewFailure(run: FlowRun, step: ReviewStep, reviewer: string, scope?: string): FlowRun {
   const attempts = { ...run.modelRetryAttempts };
-  delete attempts[`${step}:${reviewer}`];
+  delete attempts[reviewFailureKey(step, reviewer, scope)];
   return { ...run, modelRetryAttempts: attempts };
 }
 
@@ -62,9 +70,9 @@ function stepStage(step: string): ModelStage {
   return found;
 }
 
-function escalation(run: FlowRun, stage: ModelStage, step: string, reviewer?: string): number {
+function escalation(run: FlowRun, stage: ModelStage, step: string, reviewer?: string, scope?: string): number {
   const a = run.attempts;
-  if (stage === "planReview" || stage === "review") return run.modelRetryAttempts?.[`${step}:${reviewer ?? ""}`] ?? 0;
+  if (stage === "planReview" || stage === "review") return run.modelRetryAttempts?.[reviewFailureKey(step as ReviewStep, reviewer ?? "", scope)] ?? 0;
   if (stage === "planArbiter") return 0;
   if (stage === "planFix") return (a["plan-fix"] ?? 0) + Math.max((a["plan-review"] ?? 0) + (a["plan-handoff"] ?? 0) - 1, 0);
   if (stage === "taskFix") {
@@ -83,7 +91,7 @@ function escalation(run: FlowRun, stage: ModelStage, step: string, reviewer?: st
 /** 每次呼叫前依目前設定與 run 狀態選擇模型；不修改任何狀態。 */
 export function selectModel(
   run: FlowRun, cfg: RepoConfig, agent: string, step: string,
-  complexity?: ModelStrength, reviewer?: string,
+  complexity?: ModelStrength, reviewer?: string, scope?: string,
 ): SelectedModel {
   const def = cfg.agents[agent];
   if (!def) throw new Error(`未定義的 agent：${agent}`);
@@ -96,7 +104,7 @@ export function selectModel(
   const stage = stepStage(step);
   const floor = effectiveStageStrengths(cfg)[stage].strength;
   const baseline = stage.startsWith("task") ? Math.max(LEVEL[floor], LEVEL[complexity ?? "medium"]) : LEVEL[floor];
-  const targetStrength = STRENGTHS[Math.min(2, baseline + escalation(run, stage, step, reviewer))]!;
+  const targetStrength = STRENGTHS[Math.min(2, baseline + escalation(run, stage, step, reviewer, scope))]!;
   const candidates = def.models.filter((m) => LEVEL[m.strength] >= LEVEL[targetStrength]);
   const min = Math.min(...candidates.map((m) => LEVEL[m.strength]));
   const chosen = candidates.find((m) => LEVEL[m.strength] === min)

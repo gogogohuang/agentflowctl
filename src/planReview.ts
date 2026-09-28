@@ -58,6 +58,13 @@ export const PlanReviewState = z.object({
 });
 export type PlanReviewState = z.infer<typeof PlanReviewState>;
 
+/** 已交付仲裁、尚未得出裁決的紀錄；planKey 對不上表示計畫在暫停期間改過 */
+export const PendingArbitration = z.object({
+  planReviewer: z.string(),
+  planKey: z.string(),
+});
+export type PendingArbitration = z.infer<typeof PendingArbitration>;
+
 function taskNum(id: string): number {
   return Number(id.slice(2));
 }
@@ -208,6 +215,16 @@ export function overviewKey(planMd: string): string {
 export function readPlanReviewState(raw: string): PlanReviewState | undefined {
   try {
     const parsed = PlanReviewState.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 解析仲裁待完成紀錄；壞掉或格式不符時回傳 undefined */
+export function readPendingArbitration(raw: string): PendingArbitration | undefined {
+  try {
+    const parsed = PendingArbitration.safeParse(JSON.parse(raw));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
