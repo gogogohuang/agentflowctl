@@ -312,7 +312,7 @@ run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會
 | `tddSplit` | `true` | 測試與實作是否分開 |
 | `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve`（任務審查與最後的程式碼審查都適用） |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
-| `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
+| `planArbiter` | `true` | 計畫審查僵持或達輪數上限時交付仲裁。關掉之後，僵持時照常退回修訂，要求修改的審查輪數達到 `AGENTFLOWCTL_MAX_ATTEMPTS` 時 run 失敗（重試達上限） |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 計畫分層審查（見「計畫」一節）。`enabled`：`false` 時一律整份審查；`minTasks`：任務數達到這個值才考慮分層，整數至少 2；`maxGroups`：每輪最多幾群，整數至少 2；`tasksPerGroup`：群數也不超過任務數除以這個值（無條件捨去），整數至少 1。子欄位都可省略；寫了未知子欄位會驗證失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
