@@ -484,7 +484,7 @@ agentflowctl model stage taskReview high
 
 計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。兩家都要求修改時不因仲裁輪數而直接失敗；整個 run 仍受 `maxAgentRuns` 限制。
 
-仲裁 JSON 的 `verdict` 應為 `approve` 或 `changes_requested`；若模型寫成 `reject`，程式會當成 `changes_requested` 並保留理由。缺少檔案、JSON 格式錯誤或其他不合法輸出不算反對票，run 會暫停並顯示驗證錯誤；檢查 `agentflowctl logs <id>` 與 `.flow/plan-arbiter.json` 後可用 `resume` 重新執行。仲裁因裁決無效或額度用完而暫停時，`resume` 直接回到仲裁，不重跑計畫審查（整份或分層都一樣），不會再花審查的費用。交付仲裁時程式在 `.agentflowctl/runs/<id>/plan-arbitration.json` 記下最後一位反對者與計畫內容雜湊，得出裁決後刪掉；resume 時計畫檔已被改過、或 `.flow/dispute.md` 不見了，就刪掉這份紀錄並重新審查。
+仲裁 JSON 的 `verdict` 應為 `approve` 或 `changes_requested`；若模型寫成 `reject`，程式會當成 `changes_requested` 並保留理由。缺少檔案、JSON 格式錯誤或其他不合法輸出不算反對票，run 會暫停並顯示驗證錯誤；檢查 `agentflowctl logs <id>` 與 `.flow/plan-arbiter.json` 後可用 `resume` 重新執行。仲裁因裁決無效或額度用完而暫停時，`resume` 直接回到仲裁，不重跑計畫審查（整份或分層都一樣），不會再花審查的費用。交付仲裁時程式在 `.agentflowctl/runs/<id>/plan-arbitration.json` 記下最後一位反對者與計畫內容雜湊，得出裁決後刪掉；resume 時計畫檔已被改過、`.flow/dispute.md` 不見了，或 `planArbiter` 已經關掉，就刪掉這份紀錄（關掉仲裁時連同爭議清單）並重新審查。
 
 ## 階段與通過條件
 

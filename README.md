@@ -70,7 +70,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 | 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
 | `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>` |
 | `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審 |
-| `paused`：仲裁沒有產生有效裁決 | 依 `status` 的原因查看 log；若有 `.flow/plan-arbiter.json`，也檢查其內容，處理後執行 `agentflowctl resume <id>`。resume 會直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，才會重新審查 |
+| `paused`：仲裁沒有產生有效裁決 | 依 `status` 的原因查看 log；若有 `.flow/plan-arbiter.json`，也檢查其內容，處理後執行 `agentflowctl resume <id>`。resume 會直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，或在 `flow.config.json` 把 `planArbiter` 關掉，就改成重新審查 |
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
 | `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
 
