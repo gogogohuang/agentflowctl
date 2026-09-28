@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeUsageInsights } from "./usageInsights.js";
+import { computeUsageInsights, FINDING_LABEL, usageFindings } from "./usageInsights.js";
+import { totalUsage } from "./store.js";
 import type { RetryEntry } from "./store.js";
 import type { UsageEntry } from "./store.js";
 
@@ -57,5 +58,176 @@ describe("computeUsageInsights", () => {
       { id: "f-a", tokens: 143, calls: 2 },
       { id: "f-b", tokens: 44, calls: 2 },
     ]);
+  });
+});
+
+describe("FINDING_LABEL", () => {
+  it("每個建議代碼都有繁中標題", () => {
+    expect(FINDING_LABEL.high_strength_share).toBe("高強度模型占比偏高");
+    expect(FINDING_LABEL.retry_waste).toBe("重試可能比單次 prompt 更耗 token");
+    expect(FINDING_LABEL.hot_model_step).toBe("單一模型與步驟佔用量過高");
+    expect(FINDING_LABEL.hot_failing_step).toBe("單一執行步驟失敗次數過多");
+  });
+});
+
+describe("usageFindings", () => {
+  const empty = totalUsage([]);
+  const summary = (partial: Partial<typeof empty> & Pick<typeof empty, "tokens" | "runs" | "reportedRuns">) => ({ ...empty, ...partial });
+
+  it("覆蓋不足時固定排第一，其餘依 impact 排序且最多 5 則", () => {
+    const findings = usageFindings({
+      total: summary({
+        tokens: 20000, inputTokens: 19000, outputTokens: 1000, runs: 10, reportedRuns: 6, unreportedRuns: 4,
+        cacheWriteTokens: 2000, cacheReadTokens: 100,
+      }),
+      byStrength: { high: summary({ tokens: 12000, runs: 4, reportedRuns: 4 }) },
+      byStage: {
+        taskCode: summary({ tokens: 9000, runs: 3, reportedRuns: 3 }),
+        review: summary({ tokens: 8000, runs: 2, reportedRuns: 2 }),
+        spec: summary({ tokens: 3000, runs: 1, reportedRuns: 1 }),
+      },
+      byTask: {
+        "T-1": summary({ tokens: 7000, runs: 2, reportedRuns: 2 }),
+        "T-2": summary({ tokens: 2000, runs: 1, reportedRuns: 1 }),
+        "非任務步驟": summary({ tokens: 11000, runs: 3, reportedRuns: 3 }),
+      },
+      retries: [retry({ category: "format_invalid" }), retry({ category: "format_invalid", attempt: 2 }), retry({ category: "tests_not_red", key: "T-1:tests" })],
+      substitutions: 2,
+    });
+    expect(findings.map((f) => f.code)).toEqual([
+      "coverage_low", "input_heavy", "high_strength_share", "retry_waste", "hot_stage",
+    ]);
+    const retryFinding = findings.find((f) => f.code === "retry_waste");
+    expect(retryFinding?.detail).toContain("輸出格式錯誤");
+    expect(retryFinding?.detail).toContain("3 次");
+  });
+
+  it("未達門檻時不產生建議", () => {
+    expect(usageFindings({
+      total: summary({ tokens: 100, inputTokens: 80, outputTokens: 20, runs: 2, reportedRuns: 2 }),
+      byStrength: { low: summary({ tokens: 100, runs: 2, reportedRuns: 2 }) },
+      byStage: { spec: summary({ tokens: 100, runs: 2, reportedRuns: 2 }) },
+      byTask: { "非任務步驟": summary({ tokens: 100, runs: 2, reportedRuns: 2 }) },
+      retries: [retry({ category: "format_invalid" })],
+      substitutions: 1,
+    })).toEqual([]);
+  });
+
+  it("高強度占比、輸入偏重、熱階段與熱任務各自觸發", () => {
+    const codes = (input: Parameters<typeof usageFindings>[0]) => usageFindings(input).map((f) => f.code);
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
+      byStrength: { high: summary({ tokens: 39, runs: 1, reportedRuns: 1 }), low: summary({ tokens: 61, runs: 1, reportedRuns: 1 }) },
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+    })).not.toContain("high_strength_share");
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
+      byStrength: { high: summary({ tokens: 40, runs: 1, reportedRuns: 1 }), low: summary({ tokens: 60, runs: 1, reportedRuns: 1 }) },
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+    })).toContain("high_strength_share");
+    expect(codes({
+      total: summary({ tokens: 5000, inputTokens: 4250, outputTokens: 750, runs: 1, reportedRuns: 1 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+    })).toContain("input_heavy");
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
+      byStrength: {},
+      byStage: {
+        taskCode: summary({ tokens: 35, runs: 1, reportedRuns: 1 }),
+        plan: summary({ tokens: 65, runs: 2, reportedRuns: 2 }),
+      },
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+    })).toContain("hot_stage");
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {
+        "T-1": summary({ tokens: 40, runs: 1, reportedRuns: 1 }),
+        "T-2": summary({ tokens: 50, runs: 1, reportedRuns: 1 }),
+        "非任務步驟": summary({ tokens: 10, runs: 1, reportedRuns: 1 }),
+      },
+      retries: [],
+      substitutions: 0,
+    })).toContain("hot_task");
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+      byModelStage: {
+        "large / review": summary({ tokens: 34, runs: 1, reportedRuns: 1 }),
+        "small / spec": summary({ tokens: 33, runs: 1, reportedRuns: 1 }),
+      },
+    })).not.toContain("hot_model_step");
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+      byModelStage: {
+        "large / review": summary({ tokens: 35, runs: 1, reportedRuns: 1 }),
+        "small / spec": summary({ tokens: 33, runs: 1, reportedRuns: 1 }),
+      },
+    })).toContain("hot_model_step");
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+      steps: [{ step: "T-1-code", kind: "agent", runs: 4, failed: 2, unfinished: 0, totalMs: 0, maxMs: 0 }],
+    })).not.toContain("hot_failing_step");
+    expect(codes({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+      steps: [{ step: "T-1-code", kind: "agent", runs: 5, failed: 3, unfinished: 0, totalMs: 0, maxMs: 0 }],
+    })).toContain("hot_failing_step");
+    const cmdOnly = usageFindings({
+      total: summary({ tokens: 90, inputTokens: 45, outputTokens: 45, runs: 3, reportedRuns: 3 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+      steps: [{ step: "lint", kind: "cmd", runs: 5, failed: 3, unfinished: 0, totalMs: 0, maxMs: 0 }],
+    }).find((f) => f.code === "hot_failing_step");
+    expect(cmdOnly?.impactTokens).toBe(0);
+    expect(cmdOnly?.detail).toContain("專案指令");
+    const preferAgent = usageFindings({
+      total: summary({ tokens: 90, inputTokens: 45, outputTokens: 45, runs: 3, reportedRuns: 3 }),
+      byStrength: {},
+      byStage: {},
+      byTask: {},
+      retries: [],
+      substitutions: 0,
+      steps: [
+        { step: "lint", kind: "cmd", runs: 10, failed: 8, unfinished: 0, totalMs: 0, maxMs: 0 },
+        { step: "T-1-code", kind: "agent", runs: 5, failed: 3, unfinished: 0, totalMs: 0, maxMs: 0 },
+      ],
+    }).find((f) => f.code === "hot_failing_step");
+    expect(preferAgent?.detail).toContain("T-1-code");
+    expect(preferAgent?.impactTokens).toBe(90);
   });
 });
