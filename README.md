@@ -49,12 +49,15 @@ agentflowctl status f-xxxx         # 看進度、結果與下一步
 agentflowctl logs f-xxxx           # 列出各步驟的 log
 agentflowctl logs f-xxxx --latest  # 看最新一份 log
 agentflowctl stats f-xxxx          # 各步驟耗時、執行與失敗次數
+agentflowctl insights              # 這個專案所有 run 的結果、失敗原因、用量、步驟失敗、重試原因與改善建議
 agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 ```
 
 `status` 會列出目前階段、未結的交接事項與下一步指令；失敗或暫停時也會顯示原因。要看某一步的詳細輸出，可用 `logs <id> <編號>`；加 `--full` 看完整工具內容，或加 `--raw` 看原始輸出。
 
 `stats` 依 log 的開始與結束時間統計每個步驟的執行次數、失敗次數、總耗時與最長一次，並分開列出 agent 與專案指令（install、測試、checks）各占多少時間，最耗時的步驟排在最前面。沒有結束紀錄的 log 列為未完成，不計入耗時；總經過時間包含暫停與等待核准。
+
+`insights` 把所有 run 分成獨立區塊彙總：最終狀態、失敗原因（重試達上限、仲裁停止、agent 次數用完等）、用量（輸入／輸出／cache、強度占比、階段／agent，各 run 用量最高的任務）、各模型與步驟、步驟執行與失敗（與 `stats` 相同取 log 的檔頭檔尾，跨 run 不計總經過時間）、關卡重試原因。任務關卡與任務步驟不分 task id 合併計算。最後列出最多五則建議，規則由程式套門檻，不是再請 agent 分析。合計 token 不是主指標。覆蓋不足時會先警告占比可能失真。各分組是同一批呼叫的不同切片，不要跨組相加。舊 run 沒有重試或失敗原因紀錄，不會回填。單一 run 的全量明細仍用 `status <id>` 與 `stats <id>`。
 
 執行紀錄在 `.agentflowctl/runs/<id>/`，工作分支在 `.agentflowctl/worktrees/<id>/`。不再需要某次 run 時，可用 `agentflowctl clean <id>` 清除 worktree 與紀錄；`flow/<id>` 分支會保留。
 
@@ -67,7 +70,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 | 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
 | `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>` |
 | `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審 |
-| `paused`：仲裁沒有產生有效裁決 | 依 `status` 的原因查看 log；若有 `.flow/plan-arbiter.json`，也檢查其內容，處理後執行 `agentflowctl resume <id>` |
+| `paused`：仲裁沒有產生有效裁決 | 依 `status` 的原因查看 log；若有 `.flow/plan-arbiter.json`，也檢查其內容，處理後執行 `agentflowctl resume <id>`。resume 會直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，或在 `flow.config.json` 把 `planArbiter` 關掉，就改成重新審查 |
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
 | `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
 
@@ -187,11 +190,16 @@ Codex 另有幾點差異：
 | `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准 |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者核准 |
 | `planArbiter` | `true` | 計畫審查僵持時是否啟用仲裁 |
+| `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |
 | `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
 | `maxAgentRuns` | `60` | 一次 run 最多執行幾次 agent；可用指令選項覆蓋 |
 | `install`、`test` | 依專案偵測 | 寫成指令字串，例如 `"install": "pnpm install"` |
 | `checks` | 依專案偵測 | 檢查清單，例如 `[{ "name": "test", "cmd": "pnpm test" }]`；提供時會取代整份預設清單 |
 | `testPattern` | 常見的 `.test.`、`.spec.` 檔名 | 辨識測試檔的正規表示式字串；非標準檔名時調整 |
+
+計畫審查會依任務規模選做法。同時符合下列條件時，每輪先做一次索引審查，再只審查有變動的任務群：任務達到 `planReviewLayers.minTasks` 個；依 description 寫的檔案路徑能分成至少兩群，而且最大一群不超過三分之二；`plan.md` 每個任務都有 `## T-<數字>` 標題。索引審查讀規格、全部任務描述、驗收條件與整體做法，人數是 `planReviewQuorum`。群數最多 `maxGroups`，也不超過任務數除以 `tasksPerGroup`；每群一位審查者，含 `high` 任務的群改由 `planReviewQuorum` 位審查。改了 `plan.md` 的整體做法時所有群都重審；某一次審查失敗時只重跑還沒完成的部分。已達門檻卻不符其他條件時，終端機會印出原因並改由審查者讀完整份規格與計畫。`"planReviewLayers": { "enabled": false }` 可以關閉，`doctor` 會顯示目前的設定。
+
+審查意見的處理寫在 `.flow/plan-replies.md`，每輪覆寫，不寫進 `plan.md` 文末。下一輪索引會看到整份回應；任務群只看到自己的 `## T-<數字>` 節。
 
 `install`、`test`、`checks` 未設定時，會依 `packageManager`、lockfile 和 `package.json` scripts 偵測。完整範例見 [examples/flow.config.json](examples/flow.config.json)。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
 
@@ -203,7 +211,7 @@ Codex 另有幾點差異：
 | `AGENTFLOWCTL_VERBOSE` | 未開啟 | 設為 `1` 顯示詳細輸出，效果同 `-v` |
 | `AGENTFLOWCTL_MAX_TURNS` | `80` | 目前程式會讀取此值，但尚未用它限制 agent 執行 |
 
-環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。
+環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。
 
 ## 更多文件
 

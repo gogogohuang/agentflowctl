@@ -75,9 +75,20 @@ export interface UsageSummary {
 
 const emptySummary = (): UsageSummary => ({ tokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, runs: 0, reportedRuns: 0, unreportedRuns: 0, legacyRuns: 0, legacyTokens: 0 });
 
+/** 逐行讀取 jsonl；寫到一半被中斷的殘行直接略過，不讓 status、insights 整個讀不出來 */
+function readJsonl<T>(p: string): T[] {
+  if (!existsSync(p)) return [];
+  return readFileSync(p, "utf8").split("\n").filter(Boolean).flatMap((l) => {
+    try {
+      return [JSON.parse(l) as T];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export function listUsage(id: string): UsageEntry[] {
-  const p = usagePath(id);
-  return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as UsageEntry) : [];
+  return readJsonl(usagePath(id));
 }
 
 function addSummary(acc: UsageSummary, e: UsageEntry): void {
@@ -97,24 +108,40 @@ function addSummary(acc: UsageSummary, e: UsageEntry): void {
 }
 
 /** 只加總明確回報的 token，舊資料的 0 不視為已回報。 */
-function groupUsage(id: string, keyOf: (e: UsageEntry) => string): Record<string, UsageSummary> {
+export function totalUsage(entries: UsageEntry[]): UsageSummary {
+  const acc = emptySummary();
+  for (const e of entries) addSummary(acc, e);
+  return acc;
+}
+
+export function summarizeUsage(entries: UsageEntry[], keyOf: (e: UsageEntry) => string): Record<string, UsageSummary> {
   const out: Record<string, UsageSummary> = {};
-  for (const e of listUsage(id)) addSummary(out[keyOf(e)] ??= emptySummary(), e);
+  for (const e of entries) addSummary(out[keyOf(e)] ??= emptySummary(), e);
   return out;
 }
 
-export const usageByAgent = (id: string) => groupUsage(id, (e) => e.agent);
-export const usageByModelStage = (id: string) => groupUsage(id, (e) => `${e.model ?? "CLI 預設（名稱未知）"} / ${e.stage}`);
-export const usageByStrength = (id: string) => groupUsage(id, (e) => e.strength ?? "未知");
-/** 依階段鍵加總（所有任務的同一步合在一起）；認不得的步驟歸為「其他」。 */
-export const usageByStage = (id: string) => groupUsage(id, (e) => stageOfStep(e.stage) ?? "其他");
-/** 依任務加總寫測試、實作、任務審查與任務修正；規格、計畫與整體階段歸為「非任務步驟」。 */
-export const usageByTask = (id: string) => groupUsage(id, (e) => /^(T-\d+)-/.exec(e.stage)?.[1] ?? "非任務步驟");
+export const usageKeyAgent = (e: UsageEntry) => e.agent;
+export const usageKeyStrength = (e: UsageEntry) => e.strength ?? "未知";
+export const usageKeyStage = (e: UsageEntry) => stageOfStep(e.stage) ?? "其他";
+export const usageKeyTask = (e: UsageEntry) => /^(T-\d+)-/.exec(e.stage)?.[1] ?? "非任務步驟";
+const modelName = (e: UsageEntry) => e.model ?? "CLI 預設（名稱未知）";
+export const usageKeyModelStage = (e: UsageEntry) => `${modelName(e)} / ${e.stage}`;
+/** 跨 run 用：任務步驟換成步驟種類（T-1-code → taskCode），不同 run 的 task id 不互相合併 */
+export const usageKeyModelStageKind = (e: UsageEntry) => `${modelName(e)} / ${stageOfStep(e.stage) ?? e.stage}`;
+
+function groupUsage(id: string, keyOf: (e: UsageEntry) => string): Record<string, UsageSummary> {
+  return summarizeUsage(listUsage(id), keyOf);
+}
+
+export const usageByAgent = (id: string) => groupUsage(id, usageKeyAgent);
+export const usageByModelStage = (id: string) => groupUsage(id, usageKeyModelStage);
+export const usageByStrength = (id: string) => groupUsage(id, usageKeyStrength);
+export const usageByStage = (id: string) => groupUsage(id, usageKeyStage);
+export const usageByTask = (id: string) => groupUsage(id, usageKeyTask);
 
 /** 這個 run 已執行 agent 的次數（每次執行都會記一筆用量） */
 export function agentRuns(id: string): number {
-  const p = usagePath(id);
-  return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).length : 0;
+  return listUsage(id).length;
 }
 
 export interface Substitution {
@@ -132,7 +159,40 @@ export function addSubstitution(id: string, s: Substitution): void {
 }
 
 export function listSubstitutions(id: string): (Substitution & { at: string })[] {
-  const p = subPath(id);
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Substitution & { at: string });
+  return readJsonl(subPath(id));
+}
+
+export const RetryCategories = [
+  "agent_error", "missing_artifact", "format_invalid", "handoff_invalid", "open_handoff",
+  "review_changes", "arbitration_revise", "plan_tampered", "tests_not_written", "tests_not_red", "tests_modified",
+  "tests_not_green", "tests_deleted", "checks_failed",
+] as const;
+export type RetryCategory = (typeof RetryCategories)[number];
+
+export interface RetryEntry {
+  key: string;
+  /** 重試時退回的階段 */
+  backTo: string;
+  category: RetryCategory;
+  attempt: number;
+  final: boolean;
+}
+
+const retryPath = (id: string) => join(runDir(id), "retries.jsonl");
+
+/**
+ * savedAt 是目前 state.json 的 updatedAt。上一筆同 key、同 attempt 的紀錄若晚於它，
+ * 代表上次寫入重試後還沒存到 state 就中斷了，resume 重跑同一步時不再重複記一筆。
+ */
+export function addRetry(id: string, entry: RetryEntry, savedAt?: string): void {
+  if (savedAt) {
+    const last = listRetries(id).filter((r) => r.key === entry.key).at(-1);
+    if (last && last.attempt === entry.attempt && last.at > savedAt) return;
+  }
+  mkdirSync(runDir(id), { recursive: true });
+  appendFileSync(retryPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+}
+
+export function listRetries(id: string): (RetryEntry & { at: string })[] {
+  return readJsonl(retryPath(id));
 }

@@ -102,7 +102,8 @@ agentflowctl run --req-file ./req.md --cycle codex,claude --max-agent-runs 40
 agentflowctl run --req "..." --manual-plan   # 計畫通過 AI 審查後，仍停下來等你確認
 
 agentflowctl approve f-xxxx        # 搭配 --manual-plan
-agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄
+agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄、重試紀錄
+agentflowctl insights              # 所有 run 的結果、失敗原因、用量、模型×步驟、步驟失敗、重試原因與建議
 agentflowctl list
 agentflowctl logs f-xxxx           # 列出每一份 log 的編號、結果、階段、步驟、agent
 agentflowctl logs f-xxxx 7         # 解析第 7 份 log，最後附上錯誤整理（--latest 看最新一份）
@@ -215,6 +216,44 @@ stderr：
 
 執行成功時，stderr 會放在「其他輸出」段落，不算錯誤。
 
+### 重試紀錄
+
+關卡沒通過而重試時，原因代碼 append 到 `.agentflowctl/runs/<id>/retries.jsonl`，與 log、用量放在同一份執行紀錄裡。每筆紀錄包含關卡 `key`、退回的階段 `backTo`、分類 `category`、第幾次 `attempt`，以及是否達上限 `final`。`insights` 彙總所有 run 的最終狀態與這些原因；`status <id>` 列出該 run 的明細。舊 run 沒有這份檔案，不會回填。分類由程式在重試當下寫入，不從 `feedback.md` 的文字回推。
+
+- 任務關卡的 key 帶有 task id（例如 `T1:tests`）。`insights` 的「最常重試的關卡」會去掉 task id，合併成 `任務:tests` 這類關卡；`status <id>` 仍顯示原本的 key。
+- 寫入重試紀錄之後、存回 `state.json` 之前若被中斷，resume 重跑同一步時不會重複記錄。
+- 寫到一半的殘行會被略過，不影響 `status` 與 `insights`。
+
+| category | 顯示 | 呼叫點 |
+|---|---|---|
+| `agent_error` | Agent 執行失敗 | `!r.ok` |
+| `missing_artifact` | 缺少必要檔案 | 缺少 `.flow/spec.md`（spec 階段直接檢查） |
+| `format_invalid` | 輸出格式錯誤 | zod／驗收 id 重複／`validatePlan` 字串（缺少 `plan.md`，以及格式與 DAG 錯誤） |
+| `handoff_invalid` | 交接回覆不合格 | `finishHandoff` 回傳錯誤 |
+| `open_handoff` | 未結交接事項 | `planSettled` 的未結 action |
+| `review_changes` | 審查要求修改 | 計畫／任務／整體審查 `changes_requested` |
+| `arbitration_revise` | 仲裁要求修訂 | 兩家雙盲仲裁都不核准，退回 plan_fix（不計入重試上限） |
+| `plan_tampered` | 改動已鎖定的計畫檔 | `planTamperedMessage` |
+| `tests_not_written` | 未寫測試 | 無 commit、或沒改測試檔 |
+| `tests_not_red` | 紅燈測試未失敗 | 實作前測試就全過 |
+| `tests_modified` | 實作改了測試 | 綠燈階段動到測試檔 |
+| `tests_not_green` | 測試仍未通過 | 實作後測試失敗 |
+| `tests_deleted` | 刪除測試檔 | fix 刪測試 |
+| `checks_failed` | 專案檢查失敗 | `runChecks` 有失敗 |
+
+run 失敗時，`state.json` 另外記錄 `failureCategory`，`insights` 依此列出「失敗原因」。關卡重試達上限只是其中一種，其他失敗不會出現在 `retries.jsonl`：
+
+| failureCategory | 顯示 | 情況 |
+|---|---|---|
+| `retry_limit` | 關卡重試達上限 | `retries.jsonl` 最後一筆 `final: true` |
+| `arbitration_stop` | 仲裁停止 | 第三方仲裁不核准，或雙盲仲裁意見分歧且 `tieBreak=stop` |
+| `open_handoff` | PR 前仍有未結事項 | pr 階段仍有未結交接事項 |
+| `agent_budget` | agent 次數用完 | 達到 `--max-agent-runs` |
+| `error` | 執行時發生錯誤 | 階段丟出例外 |
+| `cancelled` | 使用者取消 | `agentflowctl cancel` |
+
+舊 run 沒有這個欄位，在 `insights` 列為「未分類（舊 run）」。
+
 ### 停下來時的結果與下一步
 
 run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會直接印出三段；`agentflowctl status <id>` 也會印同樣的內容：
@@ -273,7 +312,8 @@ run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會
 | `tddSplit` | `true` | 測試與實作是否分開 |
 | `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve`（任務審查與最後的程式碼審查都適用） |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
-| `planArbiter` | `true` | 計畫審查僵持時交付仲裁。關掉之後，僵持會直接讓 run 失敗 |
+| `planArbiter` | `true` | 計畫審查僵持或達輪數上限時交付仲裁。關掉之後，僵持時照常退回修訂，要求修改的審查輪數達到 `AGENTFLOWCTL_MAX_ATTEMPTS` 時 run 失敗（重試達上限） |
+| `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 計畫分層審查（見「計畫」一節）。`enabled`：`false` 時一律整份審查；`minTasks`：任務數達到這個值才考慮分層，整數至少 2；`maxGroups`：每輪最多幾群，整數至少 2；`tasksPerGroup`：群數也不超過任務數除以這個值（無條件捨去），整數至少 1。子欄位都可省略；寫了未知子欄位會驗證失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
 | `install` / `test` / `checks` | 依專案偵測 | 安裝、測試與 verify 階段實際執行的指令 |
@@ -376,9 +416,24 @@ agentflowctl model stage taskReview high
 
 計畫 agent 會在 `tasks.json` 為每個 task 寫 `complexity: low|medium|high`，並在 `plan.md` 逐項記錄影響範圍、技術不確定性與失敗後果的判定依據，取三者最高等級；計畫審查 agent 會對照程式碼獨立核對。`low` 是沿用既有做法且影響侷限、容易局部驗證；`medium` 涉及多模組或介面協調、非典型邊界、相容性或狀態遷移風險；`high` 涉及跨系統契約、架構或資料模型變更、未知的關鍵技術路徑，或資料遺失、權限、難以回復的風險。檔案數、行數與驗收條件數不能單獨決定難度。這項語意判斷由 agent 審查；程式關卡檢查 `complexity` 欄位是否合法及是否存在。`adaptive` 計畫缺少此欄位時重試，舊 run 缺少時選模視為 medium。任務相關步驟的基準強度取階段強度與任務難度較高者；其他步驟取階段強度。從已分配角色的 agent 清單選足夠且最低強度的模型，同強度按清單順序；沒有足夠強度時用它最強的模型並提示。模型選擇不更改測試、實作、審查與作者修正的分工。
 
-同一步執行失敗會逐級升強度，最多到 high。審查要求修改本身不讓審查升級；修正後仍未通過才讓修正升級。計畫與整體審查小組只升級失敗的審查者，成功者下次仍從基準強度開始。額度用完沿用原政策：審查暫停，寫入工作可由另一位有額度的 agent 代打，並從代打者自己的清單重新選模。
+同一步執行失敗會逐級升強度，最多到 high。審查要求修改本身不讓審查升級；修正後仍未通過才讓修正升級。計畫與整體審查小組只升級失敗的審查者，成功者下次仍從基準強度開始；分層計畫審查的任務群依群分開計算，一群失敗不會讓同一位審查者在其他群也升級。額度用完沿用原政策：審查暫停，寫入工作可由另一位有額度的 agent 代打，並從代打者自己的清單重新選模。
 
 終端機每次呼叫都顯示送給 CLI 的模型名稱；Claude Code 與 Gemini CLI 在初始化事件回報實際模型，與送出名稱不同時完成後顯示 `↳ CLI 回報實際模型：…`。Codex CLI 只在模型被改派時回報實際模型（`model rerouted: A -> B`），其餘情況別名沒有 CLI 的實際模型回報，不推測解析結果。`status` 按階段、任務、模型與步驟、強度顯示呼叫和 token：階段用量以上表的階段鍵加總所有任務的同一步，認不得的舊步驟歸為「其他」；任務用量加總該任務的寫測試、實作、任務審查與任務修正，規格、計畫、整體驗證修正與整體審查歸為「非任務步驟」。只有明確回報的 token 納入合計與占比。沒有 usage 事件顯示「未回報」，舊紀錄因無法分辨真實 0 與補值而顯示「回報狀態不明」，各 agent 用量另列其原始數字供查閱，不算進合計與占比。
+
+`insights` 跨 run 讀 `costs.jsonl`、各 run 的 log（讀整份檔案再取檔頭檔尾，run 多時會比較慢）、`retries.jsonl` 與 `failureCategory`，分區塊列印，並依固定門檻列出最多五則建議。各 agent、階段、模型×步驟、模型強度是同一批呼叫的不同切片，不要跨組相加。模型×步驟只印 tokens 最高的 10 列。task id 只在同一個 run 內有意義：模型×步驟用步驟種類（`small / taskCode`），步驟執行與失敗把 `T-1-green` 合併成 `任務:green` 並依失敗次數排序；用量最高的任務只在各 run 那一列列出。不把 `model add/check` 探測算進去。不印跨 run 總經過時間。殘行略過也涵蓋 `costs.jsonl`。
+
+| code | 顯示 | 觸發條件 |
+|---|---|---|
+| `coverage_low` | 用量回報不完整 | `runs >= 5` 且 `(unreportedRuns + legacyRuns) / runs >= 0.3` |
+| `high_strength_share` | 高強度模型占比偏高 | `total.tokens > 0` 且 `high.tokens / total.tokens >= 0.4` |
+| `retry_waste` | 重試可能比單次 prompt 更耗 token | 跨 run 重試筆數 `>= 2`，不含 `review_changes` 與 `arbitration_revise` |
+| `input_heavy` | 輸入遠大於輸出 | `total.tokens >= 5000` 且 `inputTokens / tokens >= 0.85` |
+| `hot_stage` | 單一階段佔用量過高 | 至少兩個階段 `tokens > 0`，最高階段 `>= 35%` |
+| `hot_task` | 單一任務佔用量過高 | 逐 run 判斷：排除「非任務步驟」後至少兩個任務 `tokens > 0`，最高任務佔該 run 任務合計 `>= 40%`；多個 run 符合時取 tokens 最高的 |
+| `substitution_waste` | 額度代打造成重做 | 跨 run 代打次數 `>= 2` |
+| `cache_unread` | cache 寫入多、讀取少 | `cacheWriteTokens >= 1000` 且 `cacheReadTokens < cacheWriteTokens * 0.5` |
+| `hot_model_step` | 單一模型與步驟佔用量過高 | 至少兩個「模型 / 步驟種類」`tokens > 0`，最高列佔合計 `>= 35%` |
+| `hot_failing_step` | 單一執行步驟失敗次數過多 | 合併後有步驟 `failed >= 3`：先取失敗最多的 agent 步驟，沒有才取 cmd |
 
 `model add/check` 對 Claude Code、Codex 與 Gemini CLI 明確指定模型，在獨立暫存目錄送出短請求，不沿用正常工作的 `extraArgs`，30 秒逾時；macOS／Linux 逾時或 Ctrl-C 中斷時會停止整個程序群組，包含 CLI 啟動的子程序。成功必須同時有文字、成功完成事件與零工具事件；任何失敗事件都會使探測失敗，即使後來又回報成功也一樣。Codex 的 `error` item 依 Codex CLI 定義是非致命通知（設定警告、棄用提示、找不到模型 metadata、模型改派），只顯示為警告，不影響探測與 run 結果；真正的失敗是 `turn.failed` 與頂層 `error` 事件。CLI 不支援探測參數或 Gemini 未載入工具限制時直接失敗，不會用更寬鬆權限重試；失敗不新增模型，`model check` 不修改設定。
 
@@ -398,9 +453,24 @@ agentflowctl model stage taskReview high
 
 **格式與覆蓋率。** 每次撰寫或修改計畫之後，都要重新通過 zod、任務相依、無循環、每條驗收條件都有任務負責，而且每個任務最多對應兩條驗收條件（一次只做一件事，最多兩件）。沒過就還原。
 
-**跨模型審查。** 審查看需求覆蓋、驗收條件能不能測且一條只寫一個行為、任務是否只做一件事（最多兩件）與技術方向。審查者只能寫意見。若改了規格或計畫，檔案會被還原。修改者要在 `plan.md` 的「審查回應」逐條回覆；不同意要寫理由。
+**跨模型審查。** 審查看需求覆蓋、驗收條件能不能測且一條只寫一個行為、任務是否只做一件事（最多兩件）與技術方向。審查者只能寫意見。若改了規格、計畫或審查回應，檔案會被還原。修改者要在 `.flow/plan-replies.md` 逐條回覆審查意見，不同意要寫理由；這份檔每輪覆寫，不寫進 `plan.md` 文末。下一輪索引會看到整份回應；任務群只看到自己的 `## T-<數字>` 節。
 
 計畫審查先核對需求與四份計畫交接檔，再查閱任務說明中要修改的既有檔案，有疑慮時才擴大範圍；審查紀錄只列會影響實作的問題，不逐條列已通過項目。計畫修訂先依 `feedback.md` 定位需要改的段落，修改驗收條件或任務時再檢查受影響的對應關係。檔案格式、任務對驗收條件的覆蓋與任務相依仍由程式驗證；原始需求的語意覆蓋由審查者判斷，以減少反覆讀取文件的 token 用量。
+
+**分層審查。** 任務多時，計畫審查改成每輪一次索引審查加上只審有變動的任務群。依序檢查下列條件，全部成立才分層：
+
+1. `planReviewLayers.enabled` 為 `true`，且 `tasks.json` 與 `acceptance.json` 格式正確。
+2. 任務數達到 `minTasks`。
+3. 依 description 裡含目錄的檔案路徑（例如 `src/a.ts`）分群，至少分成兩群。共用檔案的任務同一群；沒寫路徑的任務併入它第一個有路徑的直接相依任務，其餘沒寫路徑的任務併成一群。
+4. 最大的一群不超過任務總數的三分之二。
+5. 依 `maxGroups` 與「任務數 ÷ `tasksPerGroup`」合併相鄰的群之後，仍至少兩群。
+6. `plan.md` 對每個任務都有 `## T-<數字>` 這種標題（`##` 到 `######` 皆可）。
+
+前兩項不成立時直接整份審查，不印訊息；第 3 到 6 項不成立時印出 `📋 這次計畫審查讀整份計畫：<原因>`，原因是「任務要改的檔案互相重疊，只能分成一群」、「最大的一群有 k 個任務，超過總數 n 的三分之二」、「任務數 n 不足以讓每群平均至少 m 個」或「plan.md 缺少 T-1, T-2 的「## T-<數字>」標題」。整份審查會刪掉分層審查的狀態，之後切回分層時全部重審。
+
+索引審查者讀需求、`.flow/spec.md`、全部任務的標題與描述、驗收條文全文，以及 `plan.md` 第一個任務標題之前的整體做法；負責需求覆蓋、驗收條件、順序、技術方向與跨任務一致性（重複負責、介面假設矛盾、漏寫相依），人數是 `planReviewQuorum`，每輪都跑。群審查者讀該群任務、跨群的直接相依任務、對應的驗收條文、`plan.md` 裡該群任務標題下的難度摘錄，以及 description 點名的檔案，負責任務拆解與難度。群審查一般一位，群內有 `high` 任務時由 `planReviewQuorum` 位審查。兩者都可以讀交接事項 evidence 點名的檔案。計畫的未結交接事項由索引審查負責結案：索引核准卻仍有未結 action 算矛盾；群審查不做這項檢查，群都核准後若仍有未結事項，退回計畫修訂。
+
+重審規則：`plan.md` 的整體做法變了，所有群都重審；任務的標題、描述、難度、驗收條文或難度證據變了，重審它所在的群；任務的驗收 id 或相依變了，連它的直接上游與下游一起重審；上次要求修改的任務一定重審。已核准又沒變動的群這輪不呼叫 agent。某一次審查呼叫失敗（agent 當掉、JSON 不合法或交接不合格）時，重跑同一輪，但這一輪已成功的呼叫直接沿用、不再呼叫 agent；計畫內容在這之間變了就整輪重來。重跑時只要有一次呼叫真的執行成功（不算沿用的），`plan-review-run` 的失敗次數就歸零，所以索引與各群輪流各失敗一次時不會累計到重試上限；同一個呼叫連續失敗仍會達到上限。整份審查每次重跑整輪，不做這項歸零。審查狀態存在 `.agentflowctl/runs/<id>/plan-review-state.json`，放在 worktree 外，agent 改不到；仲裁要求修訂時也會刪掉。
 
 **僵持時仲裁。** 兩種情況會觸發：這輪審查意見和上一輪一樣，或已達重試上限。仲裁者只判斷一件事：照這份計畫實作，能不能滿足需求。
 
@@ -410,11 +480,11 @@ agentflowctl model stage taskReview high
 | 兩家 | 兩家各自在全新 context 裡判斷 | 都核准就繼續；都不核准就依裁決意見修訂並重新審查；分歧依 `tieBreak` |
 | 一家 | 同一家 | 由它自己仲裁 |
 
-兩家時的仲裁是雙盲的。仲裁者只看計畫，以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、任務審查、verify 與程式碼審查。
+兩家時的仲裁是雙盲的。仲裁者只看計畫、`.flow/plan-replies.md`（審查意見的處理結果；沒有這份檔表示尚未回應），以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、任務審查、verify 與程式碼審查。
 
 計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。兩家都要求修改時不因仲裁輪數而直接失敗；整個 run 仍受 `maxAgentRuns` 限制。
 
-仲裁 JSON 的 `verdict` 應為 `approve` 或 `changes_requested`；若模型寫成 `reject`，程式會當成 `changes_requested` 並保留理由。缺少檔案、JSON 格式錯誤或其他不合法輸出不算反對票，run 會暫停並顯示驗證錯誤；檢查 `agentflowctl logs <id>` 與 `.flow/plan-arbiter.json` 後可用 `resume` 重新執行。
+仲裁 JSON 的 `verdict` 應為 `approve` 或 `changes_requested`；若模型寫成 `reject`，程式會當成 `changes_requested` 並保留理由。缺少檔案、JSON 格式錯誤或其他不合法輸出不算反對票，run 會暫停並顯示驗證錯誤；檢查 `agentflowctl logs <id>` 與 `.flow/plan-arbiter.json` 後可用 `resume` 重新執行。仲裁因裁決無效或額度用完而暫停時，`resume` 直接回到仲裁，不重跑計畫審查（整份或分層都一樣），不會再花審查的費用。交付仲裁時程式在 `.agentflowctl/runs/<id>/plan-arbitration.json` 記下最後一位反對者與計畫內容雜湊，得出裁決後刪掉；resume 時計畫檔已被改過、`.flow/dispute.md` 不見了，或 `planArbiter` 已經關掉，就刪掉這份紀錄（關掉仲裁時連同爭議清單）並重新審查。
 
 ## 階段與通過條件
 
@@ -422,7 +492,7 @@ agentflowctl model stage taskReview high
 |---|---|---|---|
 | spec | 隨機一位 | 檔案存在、zod 驗證、id 不重複 | 重試 |
 | plan | 與 spec 同一位 | zod、相依存在、無循環、每條驗收條件都有任務、每個任務最多兩條驗收條件 | 重試 |
-| plan_review | 計畫作者以外隨機挑（可多位，不重複） | 所有審查者都 `approve` | 進入 plan_fix |
+| plan_review | 計畫作者以外隨機挑（可多位，不重複） | 整份審查時所有審查者都 `approve`；分層時索引與每個有跑到的群的每位審查者都 `approve`，且沒有未結的計畫交接事項 | 進入 plan_fix |
 | plan_fix | 依 `fixStrategy` | 修改後仍通過 plan 的格式與 DAG 檢查 | 還原並重試 |
 | 仲裁 | 見上一節 | 一致核准；分歧依 `tieBreak` | 兩家都不核准時進入 plan_fix 再審查；第三方不核准或 `tieBreak: stop` 時失敗 |
 | 人工確認 | 你（只有 `--manual-plan`） | `agentflowctl approve` | — |
@@ -444,7 +514,7 @@ agentflowctl model stage taskReview high
 
 ## Prompt 結構
 
-每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、任務審查者、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
+每個階段的 prompt 都有專屬角色：需求分析師、軟體架構師、計畫審查者、計畫索引審查者、計畫群審查者、計畫修訂者、中立仲裁者、測試工程師、實作工程師、任務審查者、除錯工程師、程式碼審查者。內容用 XML 標籤分段：`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`。
 
 Agent 的最後回覆要附上 XML 中繼資料：
 
@@ -519,12 +589,15 @@ src/
   roles.ts          角色分配規則（含計畫修正者與仲裁者）
   runner.ts         執行 agent、正規化結果、執行專案指令
   logs.ts           log 檔名、檔頭檔尾、列表與解析
+  stats.ts          步驟耗時與失敗（含跨 run 合併）
+  insights.ts       結果、失敗原因與重試
+  usageInsights.ts  用量與規則式建議
   stopReport.ts     run 停下時的結果、未結交接事項與下一步指令
   agents/           claude、codex、gemini、command
   setup.ts          agent setup 互動精靈
   git.ts            worktree 與 git 操作
   cleanup.ts        clean：移除 worktree 與 run 紀錄
-  store.ts          狀態、用量、代打紀錄
+  store.ts          狀態、用量、重試、代打紀錄
   tasks.ts          任務 DAG
   schemas.ts        zod schema
 prompts/            各階段 prompt

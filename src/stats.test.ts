@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LogEntry } from "./logs.js";
-import { computeStats, formatDuration } from "./stats.js";
+import { computeStats, formatDuration, mergeStats } from "./stats.js";
 
 let seq = 0;
 const entry = (step: string, agent: string, start: string, end?: string, ok = true): LogEntry => ({
@@ -32,6 +32,32 @@ describe("computeStats", () => {
     ]);
     expect(stats).toMatchObject({ agentMs: 60_000, cmdMs: 30_000, wallMs: 90_000, unfinished: 1 });
     expect(stats.steps.find((s) => s.step === "plan")).toMatchObject({ runs: 1, unfinished: 1, totalMs: 0 });
+  });
+});
+
+describe("mergeStats", () => {
+  it("跨 run 合併次數與失敗，不計算總經過時間", () => {
+    const a = computeStats([
+      entry("T-1-tests", "claude", "00:00", "02:00", false),
+      entry("lint", "cmd", "02:00", "02:10"),
+    ]);
+    const b = computeStats([
+      entry("T-3-tests", "codex", "00:00", "01:00", false),
+      entry("T-3-tests", "codex", "01:00", "01:30"),
+    ]);
+    const merged = mergeStats([a, b]);
+    expect("wallMs" in merged).toBe(false);
+    // task id 只在同一個 run 內有意義，跨 run 依步驟種類合併
+    expect(merged.steps.find((s) => s.step === "任務:tests")).toMatchObject({
+      kind: "agent", runs: 3, failed: 2, unfinished: 0,
+    });
+    expect(merged.steps.some((s) => s.step.startsWith("T-"))).toBe(false);
+    expect(merged.steps[0]?.step).toBe("任務:tests");
+    expect(merged.unfinished).toBe(0);
+  });
+
+  it("沒有 run 時全部為 0", () => {
+    expect(mergeStats([])).toEqual({ steps: [], agentMs: 0, cmdMs: 0, unfinished: 0 });
   });
 });
 

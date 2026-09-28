@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clearModelReviewFailure, effectiveStageStrengths, recordModelReviewFailure, selectModel, validateAdaptiveConfig } from "./modelSelection.js";
+import { clearModelReviewFailure, clearModelReviewStage, effectiveStageStrengths, recordModelReviewFailure, selectModel, stageOfStep, validateAdaptiveConfig } from "./modelSelection.js";
 import { FlowRun, RepoConfig } from "./schemas.js";
 
 const run = (overrides: Record<string, unknown> = {}) => FlowRun.parse({
@@ -63,6 +63,30 @@ describe("依階段與任務難度選模", () => {
     const config = RepoConfig.parse({ agents: { a: { adapter: "codex" } }, defaultModels: { codex: "default" } });
     expect(selectModel(run({ modelMode: "balanced" }), config, "a", "plan").name).toBe("default");
     expect(selectModel(run({ modelMode: "balanced" }), RepoConfig.parse({ agents: { a: { adapter: "codex", model: "custom" } } }), "a", "plan").name).toBe("custom");
+  });
+
+  it("任務群審查沿用計畫審查強度，整輪結束時清掉群與索引的失敗次數", () => {
+    expect(stageOfStep("plan-review-group")).toBe("planReview");
+    const failed = recordModelReviewFailure(
+      recordModelReviewFailure(run(), "plan-review", "b"),
+      "plan-review-group",
+      "c",
+    );
+    expect(failed.modelRetryAttempts).toEqual({ "plan-review:b": 1, "plan-review-group:c": 1 });
+    expect(clearModelReviewStage(failed, "plan-review").modelRetryAttempts).toEqual({});
+    const low = RepoConfig.parse({ agents: cfg().agents, modelSelection: { stageStrength: { planReview: "low" } } });
+    expect(selectModel(run(), low, "a", "plan-review-group", undefined, "a").name).toBe("small");
+  });
+
+  it("任務群審查的失敗計數帶群 id，一群失敗不會讓其他群升級", () => {
+    const failed = recordModelReviewFailure(run(), "plan-review-group", "a", "G-1");
+    expect(failed.modelRetryAttempts).toEqual({ "plan-review-group:G-1:a": 1 });
+    const low = RepoConfig.parse({ agents: cfg().agents, modelSelection: { stageStrength: { planReview: "low" } } });
+    expect(selectModel(failed, low, "a", "plan-review-group", undefined, "a", "G-1").name).toBe("middle");
+    expect(selectModel(failed, low, "a", "plan-review-group", undefined, "a", "G-2").name).toBe("small");
+    expect(clearModelReviewFailure(failed, "plan-review-group", "a", "G-2").modelRetryAttempts).toEqual({ "plan-review-group:G-1:a": 1 });
+    expect(clearModelReviewFailure(failed, "plan-review-group", "a", "G-1").modelRetryAttempts).toEqual({});
+    expect(clearModelReviewStage(recordModelReviewFailure(failed, "plan-review", "b"), "plan-review").modelRetryAttempts).toEqual({});
   });
 });
 

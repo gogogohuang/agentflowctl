@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
-const { addSubstitution, addUsage, agentRuns, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStage, usageByStrength, usageByTask } = await import("./store.js");
+const { runDir } = await import("./paths.js");
+const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage, usageKeyModelStageKind } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -59,5 +60,57 @@ describe("檔案儲存", () => {
     addUsage("f-cache", { stage: "spec", agent: "c", usageReported: true, inputTokens: 43012, outputTokens: 500, cacheReadTokens: 40000, cacheWriteTokens: 3000 });
     addUsage("f-cache", { stage: "plan", agent: "c", usageReported: true, inputTokens: 100, outputTokens: 10 });
     expect(usageByAgent("f-cache").c).toMatchObject({ tokens: 43622, cacheReadTokens: 40000, cacheWriteTokens: 3000 });
+  });
+
+  it("依序記錄重試原因，沒有紀錄時回傳空陣列", () => {
+    expect(listRetries("f-retry")).toEqual([]);
+    addRetry("f-retry", { key: "T-1:tests", backTo: "implement", category: "tests_not_red", attempt: 1, final: false });
+    addRetry("f-retry", { key: "T-1:tests", backTo: "implement", category: "agent_error", attempt: 2, final: true });
+    expect(listRetries("f-retry").map((r) => [r.category, r.attempt, r.final])).toEqual([["tests_not_red", 1, false], ["agent_error", 2, true]]);
+    expect(listRetries("f-retry")[0]?.at).toMatch(/^\d{4}-/);
+  });
+
+  it("jsonl 有寫到一半的殘行時略過該行", () => {
+    addRetry("f-torn", { key: "spec", backTo: "spec", category: "agent_error", attempt: 1, final: false });
+    appendFileSync(join(runDir("f-torn"), "retries.jsonl"), `{"key":"spec","ba`);
+    addSubstitution("f-torn", { step: "spec", planned: "a", actual: "b" });
+    appendFileSync(join(runDir("f-torn"), "substitutions.jsonl"), "{");
+    expect(listRetries("f-torn").map((r) => r.key)).toEqual(["spec"]);
+    expect(listSubstitutions("f-torn")).toHaveLength(1);
+  });
+
+  it("重試寫入後尚未存回 state 就中斷，resume 重跑同一步不重複記錄", () => {
+    const saved = new Date(Date.now() - 60_000).toISOString();
+    const entry = { key: "plan", backTo: "plan", category: "format_invalid" as const, attempt: 1, final: false };
+    addRetry("f-dup", entry, saved);
+    addRetry("f-dup", entry, saved); // state 仍是寫入前的版本
+    expect(listRetries("f-dup")).toHaveLength(1);
+    // state 已存過（updatedAt 晚於紀錄），resume 後重新計數的 attempt 1 要照常記錄
+    addRetry("f-dup", entry, new Date(Date.now() + 60_000).toISOString());
+    expect(listRetries("f-dup")).toHaveLength(2);
+  });
+
+  it("對記憶體中的用量分組，不讀檔", () => {
+    const entries = [
+      { stage: "spec", agent: "a", usageReported: true as const, inputTokens: 10, outputTokens: 1, cacheReadTokens: 4 },
+      { stage: "plan", agent: "b", usageReported: true as const, inputTokens: 20, outputTokens: 2 },
+      { stage: "review", agent: "a", usageReported: false as const },
+    ];
+    expect(totalUsage(entries)).toMatchObject({
+      tokens: 33, inputTokens: 30, outputTokens: 3, cacheReadTokens: 4, runs: 3, reportedRuns: 2, unreportedRuns: 1,
+    });
+    expect(summarizeUsage(entries, usageKeyAgent).a).toMatchObject({ tokens: 11, runs: 2, reportedRuns: 1, unreportedRuns: 1 });
+    expect(summarizeUsage([], usageKeyAgent)).toEqual({});
+    expect(usageKeyModelStage({ stage: "plan", agent: "a" })).toBe("CLI 預設（名稱未知） / plan");
+    expect(usageKeyModelStage({ stage: "T-1-code", agent: "a", model: "small" })).toBe("small / T-1-code");
+    expect(usageKeyModelStageKind({ stage: "T-1-code", agent: "a", model: "small" })).toBe("small / taskCode");
+    expect(usageKeyModelStageKind({ stage: "odd-step", agent: "a" })).toBe("CLI 預設（名稱未知） / odd-step");
+  });
+
+  it("用量 jsonl 殘行略過，不讓整份讀失敗", () => {
+    addUsage("f-torn-u", { stage: "spec", agent: "a", usageReported: true, inputTokens: 1, outputTokens: 1 });
+    appendFileSync(join(runDir("f-torn-u"), "costs.jsonl"), "{");
+    expect(listUsage("f-torn-u")).toHaveLength(1);
+    expect(agentRuns("f-torn-u")).toBe(1);
   });
 });

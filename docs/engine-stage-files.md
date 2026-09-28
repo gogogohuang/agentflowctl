@@ -60,8 +60,9 @@
 | 需求（prompt） | 對照規格有沒有漏掉或加進出原本沒要求的範圍 | 建立 run 的人 | 計畫審查 agent |
 | `spec.md` | 審查的規格正文 | 規格或計畫修訂 agent | 計畫審查 agent |
 | `acceptance.json` | 檢查每條完成條件是否具體、能否用測試驗證 | 規格或計畫修訂 agent | 計畫審查 agent |
-| `plan.md` | 檢查做法與模組切分。若上一輪修訂過，文末應有審查回應 | 計畫或計畫修訂 agent | 計畫審查 agent |
+| `plan.md` | 檢查做法與模組切分 | 計畫或計畫修訂 agent | 計畫審查 agent |
 | `tasks.json` | 檢查任務是否只做一件事（最多對應兩條驗收條件）、相依是否合理、驗收條件有沒有人接 | 計畫或計畫修訂 agent | 計畫審查 agent |
+| `plan-replies.md` | 上一輪審查意見的處理結果，每輪覆寫，不寫進 `plan.md` 文末。不存在表示尚未回應。整份審查與索引讀整份；群審查只讀自己任務的 `## T-<數字>` 節 | 上一輪 plan_fix 寫回 | 計畫審查 agent |
 | 既有程式 | 確認計畫符合專案實際架構 | 專案原本就有 | 計畫審查 agent |
 | `plan-review-last.txt` | 上一輪未達成意見的指紋。這一輪拿來比對有沒有進展。第一輪或不存在時不構成僵持 | 上一輪 plan_review 的程式 | 程式。agent 不讀 |
 | `feedback.md` | 計畫修訂成功後可能仍留在 `.flow`，內容是上一輪意見。審查 prompt 沒有把它列為必讀 | 上一輪 plan_fix 寫回 | 審查者若自己打開才看得到 |
@@ -73,9 +74,13 @@
 | `plan-review.json` | 這一位審查者的正式裁決。`verdict` 決定算不算反對，未達成的 `items` 才會變成修訂意見。程式只認這份 JSON，驗證後立刻移走 | 計畫審查 agent | 程式 |
 | `reviews/plan-review-<輪次>-<審查者>.json` | 第幾輪、哪一位、核准或要求修改的原檔。放在 worktree 外，修訂者與仲裁者看不到是誰寫的 | 程式自 `.flow` 移出 | 人 |
 | `plan-review-last.txt` | 這一輪未達成意見排好後的指紋，供下一輪判斷爭議有沒有前進 | 程式 | 下一輪 plan_review 的程式 |
-| `feedback.md` | 有人要求修改、且尚未送仲裁時覆寫。每位審查者的意見以 `<opinion author="…">` 包住，交給修訂者。agent 執行失敗或 JSON 不合法則用計數鍵 `plan-review-run`，整輪重跑。全員核准時刪除 | 程式，`retry("plan-review")` | 計畫修訂 agent |
+| `feedback.md` | 有人要求修改、且尚未送仲裁時覆寫。每位審查者的意見以 `<opinion author="…">` 包住，交給修訂者。agent 執行失敗或 JSON 不合法則用計數鍵 `plan-review-run`，重跑這一輪；分層審查時這一輪已成功的呼叫直接沿用，而且每有一次呼叫真的執行成功，`plan-review-run` 就歸零（整份審查不歸零）。全員核准時刪除 | 程式，`retry("plan-review")` | 計畫修訂 agent |
 | `dispute.md` | 意見與上一輪相同，或輪數已達上限，且開啟仲裁時才寫。只留 `<issue>` 意見，不含審查者名稱 | 程式 | 仲裁 agent |
 | `reviews/dispute-full.md` | 同一份爭議，以 `<opinion author="…">` 保留審查者名字，供人事後對照 | 程式 | 人 |
+| `.agentflowctl/runs/<id>/plan-arbitration.json` | 交付仲裁時記下最後一位反對者與計畫內容雜湊。仲裁暫停後 resume 仍停在 plan_review，程式看到這份檔就直接回到仲裁，不重跑審查；得出裁決後刪除，計畫檔改過或 `dispute.md` 不見了也刪除並重新審查 | 程式 | resume 後的 plan_review 程式。在 worktree 外，agent 改不到 |
+| `.agentflowctl/runs/<id>/plan-review-state.json` | `reviewed`：每個任務上次的指紋與 verdict，以及整體做法的指紋；`round`：本輪已成功的審查呼叫，重跑同一輪時沿用，整輪結束即拿掉。壞掉則全部重審；整份審查或仲裁要求修訂時刪除 | 程式，每個呼叫成功後與整輪結束時 | 下一輪與同一輪重跑時的程式。在 worktree 外，agent 讀不到也改不到 |
+| `plan-review-group.json` | 單一任務群的裁決，驗證後移走 | 群審查 agent | 程式 |
+| `reviews/plan-review-<輪次>-<群>-<審查者>.json` | 群審查原檔 | 程式移出 | 人 |
 
 ## 仲裁
 
@@ -86,7 +91,8 @@
 | 檔案 | 用途 | 誰準備的 | 這個階段誰讀 |
 | --- | --- | --- | --- |
 | 需求（prompt） | 裁決的對照基準 | 建立 run 的人 | 仲裁 agent |
-| `spec.md`、`acceptance.json`、`plan.md`、`tasks.json` | 目前的規格與計畫。`plan.md` 文末是作者對審查意見的回應 | 計畫或計畫修訂 agent | 仲裁 agent |
+| `spec.md`、`acceptance.json`、`plan.md`、`tasks.json` | 目前的規格與計畫 | 計畫或計畫修訂 agent | 仲裁 agent |
+| `plan-replies.md` | 審查意見的處理結果，讀整份；沒有這份檔表示尚未回應 | 上一輪 plan_fix 寫回 | 仲裁 agent |
 | `dispute.md` | 尚未被接受的意見，已拿掉模型名稱 | 剛結束的 plan_review | 仲裁 agent |
 | `feedback.md` | 進入仲裁前程式會刪掉，避免仲裁者讀到帶審查者名字的報告 | 程式刪除 | 仲裁 agent 讀不到 |
 
@@ -94,7 +100,7 @@
 
 | 檔案 | 用途 | 誰寫 | 交給誰 |
 | --- | --- | --- | --- |
-| `plan-arbiter.json` | 這一票：可以開工，或必須再修。程式用全體 `verdict` 決定放行、交回修訂，或停下等人。JSON 不合法時 run 暫停，檔案留在 `.flow` | 仲裁 agent | 程式。有效則移走；無效則留給 `resume` 前查看 |
+| `plan-arbiter.json` | 這一票：可以開工，或必須再修。程式用全體 `verdict` 決定放行、交回修訂，或停下等人。JSON 不合法時 run 暫停，檔案留在 `.flow`；resume 直接重跑仲裁，不重跑計畫審查 | 仲裁 agent | 程式。有效則移走；無效則留給 `resume` 前查看 |
 | `reviews/plan-arbiter-<輪次>-<仲裁者>.json` | 每位仲裁者的原始裁決。雙盲分歧時，人靠它看 `tieBreak` 為什麼那樣走 | 程式自 `.flow` 移出 | 人 |
 | `dispute.md` | 裁決結束後刪除，避免之後的實作者把它當成另一份規格 | 程式刪除 | 無 |
 | `feedback.md` | 只有「交回修訂」時寫入，標題是「仲裁要求修訂」，每位仲裁者的理由以 `<opinion>` 包住 | 程式 | 計畫修訂 agent |
@@ -113,7 +119,7 @@
 | `feedback.md` | 這一步的工作清單：帶名字的審查意見，或「仲裁要求修訂」全文。prompt 要求一定要讀，並逐條處理 | plan_review 或仲裁 | 計畫修訂 agent |
 | `spec.md` | 要被改的規格現稿 | 上一輪規格或修訂 | 計畫修訂 agent；失敗時程式用快照還原 |
 | `acceptance.json` | 要被改的驗收清單 | 上一輪規格或修訂 | 同上 |
-| `plan.md` | 要被改的做法。回應會寫在這份文末 | 上一輪計畫或修訂 | 同上 |
+| `plan.md` | 要被改的做法 | 上一輪計畫或修訂 | 同上 |
 | `tasks.json` | 要被改的任務原文 | 上一輪計畫或修訂 | 同上 |
 | 既有程式 | 確認改動落在實際架構上 | 專案原本就有 | 計畫修訂 agent |
 
@@ -123,9 +129,10 @@
 | --- | --- | --- | --- |
 | `spec.md` | 改正後的規格。審查若認為需求被誤解、範圍不對或漏了行為，改的是這份正文 | 計畫修訂 agent | 下一輪計畫審查與仲裁 |
 | `acceptance.json` | 補上測不到的邊界，或拿掉不屬於需求的條件。格式仍須通過 id 與覆蓋檢查，否則四個規格檔一起還原 | 計畫修訂 agent | 下一輪計畫審查與仲裁；程式重做格式檢查 |
-| `plan.md` | 調整後的做法。文末「審查回應」逐條說明改了什麼，或不同意的理由。仲裁只看這份回應 | 計畫修訂 agent | 下一輪計畫審查與仲裁 |
+| `plan.md` | 調整後的做法。只有意見涉及整體做法時才改第一個「## T-<數字>」標題之前的內容，每個任務的標題都要保留 | 計畫修訂 agent | 下一輪計畫審查與仲裁 |
 | `tasks.json` | 拆開過大的任務、補上沒人負責的驗收條件、修正相依 | 計畫修訂 agent | 下一輪審查；程式用它重排 |
-| `tasks.ordered.json` | 四個規格檔通過 DAG 檢查後才覆寫。沒過則不更新，並還原規格四檔 | 程式 | 之後若計畫定案，交給 implement |
+| `plan-replies.md` | 這一輪的審查回應，每輪整份覆寫（不累積舊輪），依任務分成「## T-1」這種節與「## 整體」節。呼叫 agent 前程式先刪掉上一輪的檔，agent 沒寫就是沒有回應；失敗時還原成進入時的內容 | 計畫修訂 agent | 下一輪計畫審查、索引、群審查與仲裁 |
+| `tasks.ordered.json` | 四個規格檔通過 DAG 檢查後才覆寫。沒過則不更新，並還原規格四檔與 `plan-replies.md` | 程式 | 之後若計畫定案，交給 implement |
 | `feedback.md` | 失敗時把進入時的原文再包一層，並附上執行失敗或格式錯誤。成功時把進入時讀到的原文原樣寫回，不刪除 | 程式 | 失敗時給下一輪修訂；成功時留在 `.flow`，下一輪審查 prompt 仍不要求必讀 |
 
 ## implement
@@ -275,7 +282,7 @@
 | spec／`spec` | agent 執行失敗摘要、缺少 `spec.md`、驗收 JSON 錯誤、驗收 id 重複 | 停在 spec。通過後刪除 |
 | plan／`plan` | agent 執行失敗摘要，或任務 DAG 檢查的整段錯誤 | 停在 plan。通過後刪除 |
 | plan_review／`plan-review` | `計畫審查要求修改：` 加上每位未核准審查者的 `<opinion>` 與未達成 `<issue>`；`author` 含審查者名字 | 進入 plan_fix |
-| plan_review／`plan-review-run` | agent 執行失敗摘要，或 `plan-review.json` 驗證錯誤 | 停在 plan_review，整輪審查重跑 |
+| plan_review／`plan-review-run` | agent 執行失敗摘要，或 `plan-review.json`（分層時也可能是 `plan-review-group.json`）驗證錯誤 | 停在 plan_review，重跑這一輪；分層審查時這一輪已成功的呼叫直接沿用 |
 | 送仲裁 | 不寫新內容，直接刪除 | 意見改放 `dispute.md`（無名字）與 `reviews/dispute-full.md`（有名字） |
 | 仲裁修訂 | 上面的「仲裁要求修訂」全文，含仲裁者名字與每人裁決 | 進入 plan_fix，並把 `plan-review` 次數歸零 |
 | plan_fix 失敗／`plan-fix` | 進入時讀到的全文，再附加 agent 執行失敗，或「格式檢查沒過、已還原」與錯誤說明 | 停在 plan_fix。因此失敗越多次，舊標題會包在新標題裡面 |
