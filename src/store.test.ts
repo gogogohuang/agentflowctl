@@ -8,7 +8,7 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
 const { runDir } = await import("./paths.js");
-const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, getRun, listRuns, saveRun, usageByAgent, usageByStage, usageByStrength, usageByTask } = await import("./store.js");
+const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -88,5 +88,26 @@ describe("檔案儲存", () => {
     // state 已存過（updatedAt 晚於紀錄），resume 後重新計數的 attempt 1 要照常記錄
     addRetry("f-dup", entry, new Date(Date.now() + 60_000).toISOString());
     expect(listRetries("f-dup")).toHaveLength(2);
+  });
+
+  it("對記憶體中的用量分組，不讀檔", () => {
+    const entries = [
+      { stage: "spec", agent: "a", usageReported: true as const, inputTokens: 10, outputTokens: 1, cacheReadTokens: 4 },
+      { stage: "plan", agent: "b", usageReported: true as const, inputTokens: 20, outputTokens: 2 },
+      { stage: "review", agent: "a", usageReported: false as const },
+    ];
+    expect(totalUsage(entries)).toMatchObject({
+      tokens: 33, inputTokens: 30, outputTokens: 3, cacheReadTokens: 4, runs: 3, reportedRuns: 2, unreportedRuns: 1,
+    });
+    expect(summarizeUsage(entries, usageKeyAgent).a).toMatchObject({ tokens: 11, runs: 2, reportedRuns: 1, unreportedRuns: 1 });
+    expect(summarizeUsage([], usageKeyAgent)).toEqual({});
+    expect(usageKeyModelStage({ stage: "plan", agent: "a" })).toBe("CLI 預設（名稱未知） / plan");
+    expect(usageKeyModelStage({ stage: "T-1-code", agent: "a", model: "small" })).toBe("small / T-1-code");
+  });
+
+  it("用量 jsonl 殘行略過，不讓整份讀失敗", () => {
+    addUsage("f-torn-u", { stage: "spec", agent: "a", usageReported: true, inputTokens: 1, outputTokens: 1 });
+    appendFileSync(join(runDir("f-torn-u"), "costs.jsonl"), "{");
+    expect(listUsage("f-torn-u")).toHaveLength(1);
   });
 });
