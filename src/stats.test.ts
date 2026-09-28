@@ -48,11 +48,11 @@ describe("mergeStats", () => {
     const merged = mergeStats([a, b]);
     expect("wallMs" in merged).toBe(false);
     // task id 只在同一個 run 內有意義，跨 run 依步驟種類合併
-    expect(merged.steps.find((s) => s.step === "任務-tests")).toMatchObject({
+    expect(merged.steps.find((s) => s.step === "任務:tests")).toMatchObject({
       kind: "agent", runs: 3, failed: 2, unfinished: 0,
     });
     expect(merged.steps.some((s) => s.step.startsWith("T-"))).toBe(false);
-    expect(merged.steps[0]?.step).toBe("任務-tests");
+    expect(merged.steps[0]?.step).toBe("任務:tests");
     expect(merged.unfinished).toBe(0);
   });
 
