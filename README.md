@@ -136,7 +136,21 @@ agentflowctl run --req-file ./requirement.md
 
 計畫 agent 會查閱相關程式碼，依影響範圍、技術不確定性與失敗後果為每個任務標註 `low`／`medium`／`high` 難度，取三者中最高等級，並在計畫中寫出依據；計畫審查會逐項核對。自動選模先遵守角色分配，再取階段強度與任務難度中較高者；失敗重試會提高強度。若分配到的 agent 沒有足夠強度的模型，會選它最強的模型並提示。這些強度是你對模型能力的設定，不由 CLI 自動評分。
 
-Claude Code、Codex 與 Gemini CLI 都可用 `model add/check` 驗證模型：明確指定模型，在獨立暫存目錄送出短請求，不沿用 `extraArgs`，30 秒逾時。Claude 使用空工具清單；Gemini 使用禁止所有工具的 policy，停用 extensions、MCP 與 hooks；Codex 使用唯讀沙箱、禁止權限升級，停用 shell、外部工具與 hooks，忽略使用者設定及 rules。Codex 並非完全移除所有工具，剩餘檔案工具由唯讀沙箱限制；三者只要出現工具事件、錯誤、缺少文字或完成事件，都不算驗證成功。CLI 不支援探測參數時直接失敗，請更新 CLI，不會改用一般執行權限重試。Codex 未回報實際模型 ID 時只確認指定名稱可呼叫，不推測別名對應；`logs` 也會顯示 Codex 的完成事件，跨回合的 shell 指令分開整理。自訂 `command` adapter 另需提供會實際呼叫模型的探測命令；設定方式與限制見[詳細參考](docs/reference.md#模型設定與自動選模)。
+#### 模型驗證
+
+Claude Code、Codex 與 Gemini CLI 都使用專用探測流程：以 `--model` 指定模型，在獨立暫存目錄要求「只回答 OK」，不沿用正常工作時的 `extraArgs`。
+
+| CLI | 探測時的工具限制 |
+|---|---|
+| Claude Code | `--tools ""` 停用內建工具，`--strict-mcp-config` 不載入外部 MCP，`--disable-slash-commands` 停用 slash commands |
+| Codex | 唯讀沙箱與 `approval_policy="never"` 禁止寫入及權限升級；停用 shell、外部工具與 hooks，忽略使用者設定及 rules。仍可能有模型內建檔案工具，由唯讀沙箱限制 |
+| Gemini CLI | admin/user policy 禁止所有工具（合法優先級 `999`），停用 extensions、MCP 與 hooks；政策載入問題使驗證失敗 |
+
+三家共用相同的通過條件：CLI 結束碼為 0、有非空文字與成功完成事件，且沒有工具嘗試或失敗事件。即使後來回覆成功，先前的失敗也不會被忽略；Codex 只在 stderr 回報的工具拒絕同樣算失敗。
+
+探測上限為 30 秒，結束後清除暫存目錄；macOS／Linux 逾時會停止整個程序群組，包含 CLI 啟動的子程序。`model add` 成功才新增模型，失敗保持設定原狀；`model check` 只重驗、不修改設定。CLI 不支援探測參數時會提示更新，不會改用更寬鬆的權限重試。
+
+Codex 未回報實際模型 ID 時，只確認指定名稱可呼叫，不推測別名對應；`logs` 會顯示 Codex 的完成事件，跨回合的 shell 指令分開整理。自訂 `command` adapter 另需提供會實際呼叫模型的探測命令；設定方式與各 CLI 已查核版本見[詳細參考](docs/reference.md#模型設定與自動選模)。
 
 ### 專案設定
 
