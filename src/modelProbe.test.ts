@@ -79,6 +79,8 @@ describe("模型即時探測", () => {
       if (adapter === "codex") {
         emit([text, { type: "item.started", item: { type: "command_execution", command: "echo test" } }, done]);
         expect((await probeModel(def, "model-x", 5000)).status).toBe("failed");
+        emit([{ type: "item.completed", item: { type: "error", message: "Model metadata for `model-x` not found. Defaulting to fallback metadata; this can degrade performance and cause issues." } }, text, done]);
+        expect((await probeModel(def, "model-x", 5000)).status).toBe("ok");
       }
     } finally {
       process.env.PATH = oldPath;

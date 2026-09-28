@@ -155,6 +155,8 @@ function renderEvent(ev: AgentEvent, full: boolean, lastText?: string): string |
     }
     case "usage":
       return `📊 用量 input ${ev.inputTokens ?? "?"} / output ${ev.outputTokens ?? "?"} tokens${ev.cacheReadTokens !== undefined || ev.cacheWriteTokens !== undefined ? `（input 含 cache 讀 ${ev.cacheReadTokens ?? 0}、寫 ${ev.cacheWriteTokens ?? 0}）` : ""}`;
+    case "warning":
+      return `⚠️  ${indent(ev.message.trim())}`;
     case "done": {
       const summary = ev.summary?.trim();
       // 最後一則回覆通常就是 summary，精簡模式不再重印一次

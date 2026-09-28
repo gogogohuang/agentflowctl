@@ -21,6 +21,9 @@ export const gemini: Adapter = {
       "--admin-policy", policy, "--policy", policy],
       env: { GEMINI_CLI_TRUST_WORKSPACE: "true" } };
   },
+  modelProbeFailure: (stderr) =>
+    /ignoring --admin-policy|policy file (error|warning)|error loading policy|invalid policy|failed to load.*polic/i.test(stderr)
+      ? `CLI 未完整載入模型探測的工具限制：${stderr.trim()}` : undefined,
   invoke: (o) => ({
     cmd: "gemini",
     args: ["-p", o.prompt, "--output-format", "stream-json", "--approval-mode", "yolo", ...(o.model ? ["-m", o.model] : []), ...o.extraArgs],

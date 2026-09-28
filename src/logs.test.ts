@@ -85,6 +85,19 @@ describe("log 解析", () => {
     expect(out).toContain("── 錯誤 ──\n結束碼 2");
   });
 
+  it("codex 的非致命 error item 顯示為警告，不列為 agent 失敗", () => {
+    const text = [
+      headerLine({ stage: "spec", step: "spec", agent: "codex", adapter: "codex", startedAt }),
+      j({ type: "item.completed", item: { type: "error", message: "Model metadata for `model-x` not found. Defaulting to fallback metadata; this can degrade performance and cause issues." } }),
+      j({ type: "item.completed", item: { type: "agent_message", text: "寫好了" } }),
+      j({ type: "turn.completed", usage: {} }),
+      footerLine({ code: 0, ok: true, endedAt }),
+    ].join("\n");
+    const out = renderLog(text);
+    expect(out).toContain("⚠️  Model metadata for `model-x` not found.");
+    expect(out).not.toContain("── 錯誤 ──");
+  });
+
   it("成功時沒有錯誤段落，stderr 歸在其他輸出；沒有檔尾時標示未結束", () => {
     const ok = [headerLine({ stage: "spec", step: "spec", agent: "codex", adapter: "codex", startedAt }), "[stderr]", "warning: x", footerLine({ code: 0, ok: true, endedAt })].join("\n");
     expect(renderLog(ok)).not.toContain("── 錯誤 ──");
