@@ -49,7 +49,7 @@ agentflowctl status f-xxxx         # 看進度、結果與下一步
 agentflowctl logs f-xxxx           # 列出各步驟的 log
 agentflowctl logs f-xxxx --latest  # 看最新一份 log
 agentflowctl stats f-xxxx          # 各步驟耗時、執行與失敗次數
-agentflowctl insights              # 這個專案所有 run 的結果與重試原因
+agentflowctl insights              # 這個專案所有 run 的結果、失敗原因、用量、步驟失敗、重試原因與改善建議
 agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 ```
 
@@ -57,7 +57,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 
 `stats` 依 log 的開始與結束時間統計每個步驟的執行次數、失敗次數、總耗時與最長一次，並分開列出 agent 與專案指令（install、測試、checks）各占多少時間，最耗時的步驟排在最前面。沒有結束紀錄的 log 列為未完成，不計入耗時；總經過時間包含暫停與等待核准。
 
-`insights` 彙總所有 run 的最終狀態、失敗 run 的失敗原因（重試達上限、仲裁停止、agent 次數用完等），以及每次關卡重試的原因代碼（例如輸出格式錯誤、紅燈測試未失敗）。任務關卡不分 task id 合併計算。舊 run 沒有這些紀錄，不會回填。單一 run 的重試明細在 `status <id>`。
+`insights` 把所有 run 分成獨立區塊彙總：最終狀態、失敗原因（重試達上限、仲裁停止、agent 次數用完等）、用量（輸入／輸出／cache、強度占比、階段／任務／agent）、各模型與步驟、步驟執行與失敗（與 `stats` 相同只讀 log 檔頭檔尾，跨 run 不計總經過時間）、關卡重試原因。任務關卡不分 task id 合併計算。最後列出最多五則建議，規則由程式套門檻，不是再請 agent 分析。合計 token 不是主指標。覆蓋不足時會先警告占比可能失真。各分組是同一批呼叫的不同切片，不要跨組相加。舊 run 沒有重試或失敗原因紀錄，不會回填。單一 run 的全量明細仍用 `status <id>` 與 `stats <id>`。
 
 執行紀錄在 `.agentflowctl/runs/<id>/`，工作分支在 `.agentflowctl/worktrees/<id>/`。不再需要某次 run 時，可用 `agentflowctl clean <id>` 清除 worktree 與紀錄；`flow/<id>` 分支會保留。
 

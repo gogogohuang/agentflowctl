@@ -14,8 +14,9 @@ import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from 
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, TaskList, type FlowRun } from "./schemas.js";
 import { computeInsights, failureLabel, retryLabel } from "./insights.js";
+import { computeUsageInsights } from "./usageInsights.js";
 import { computeStats, formatDuration } from "./stats.js";
-import { agentRuns, getRun, listRetries, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
+import { agentRuns, getRun, listRetries, listRuns, listSubstitutions, listUsage, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
 import { padDisplay, readJsonFile } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
@@ -569,11 +570,21 @@ program
 
 program
   .command("insights")
-  .description("彙總這個專案所有 run 的結果與重試原因，找出該先改的 prompt 或關卡")
+  .description("彙總這個專案所有 run 的結果、失敗原因、用量、步驟失敗與重試原因，並給出改善建議")
   .action(() => {
     const runs = listRuns();
     if (!runs.length) return console.log("還沒有 run");
-    const insights = computeInsights(runs.map((r) => ({ id: r.id, stage: r.stage, failureCategory: r.failureCategory, retries: listRetries(r.id) })));
+    const rows = runs.map((r) => ({
+      id: r.id,
+      stage: r.stage,
+      failureCategory: r.failureCategory,
+      retries: listRetries(r.id),
+      usage: listUsage(r.id),
+      substitutions: listSubstitutions(r.id).length,
+      stats: computeStats(listLogs(logDir(r.id))),
+    }));
+    const insights = computeInsights(rows);
+    const usage = computeUsageInsights(rows);
     const o = insights.byOutcome;
     console.log(`專案彙總（${insights.runCount} 個 run）`);
     console.log(`  完成 ${o.done}  失敗 ${o.failed}  暫停 ${o.paused}  等待核准 ${o.awaiting_approval}  進行中 ${o.active}`);
@@ -581,22 +592,81 @@ program
       console.log("\n失敗原因");
       for (const row of insights.byFailure) console.log(`  ${padDisplay(failureLabel(row.category), 20)}  ${String(row.count).padStart(4)} 個 run`);
     }
-    if (!insights.byCategory.length) return console.log("\n還沒有重試紀錄（舊 run 不會回填）");
-    console.log("\n重試原因");
-    for (const row of insights.byCategory) {
-      const finals = row.finals ? `，其中 ${row.finals} 次達上限` : "";
-      console.log(`  ${padDisplay(retryLabel(row.category), 20)}  ${String(row.count).padStart(4)} 次${finals}`);
+
+    const t = usage.total;
+    console.log("\n用量");
+    if (t.runs) {
+      const value = t.reportedRuns
+        ? `輸入 ${t.inputTokens}${cacheNote(t)}、輸出 ${t.outputTokens}、合計 ${t.tokens} tokens`
+        : "未回報或回報狀態不明";
+      console.log(`  ${value}；${t.runs} 次（未回報 ${t.unreportedRuns}、舊紀錄不明 ${t.legacyRuns}）`);
+    } else console.log("  還沒有用量紀錄");
+
+    const byStrength = usage.byStrength;
+    const reportedTotal = Object.values(byStrength).reduce((sum, entry) => sum + entry.tokens, 0);
+    if (Object.keys(byStrength).length) {
+      console.log("\n模型強度用量（占比只計入明確回報）");
+      for (const strength of ["low", "medium", "high", "未知"]) {
+        const entry = byStrength[strength];
+        if (!entry) continue;
+        const share = reportedTotal ? `${(entry.tokens / reportedTotal * 100).toFixed(1)}%` : "無法計算";
+        console.log(`  ${strength}: ${entry.tokens} tokens，占比 ${share}，呼叫 ${entry.runs} 次（未回報 ${entry.unreportedRuns}、舊紀錄不明 ${entry.legacyRuns}）`);
+      }
+      console.log(`  高強度呼叫：${byStrength.high?.runs ?? 0} 次`);
     }
-    console.log("\n最常重試的關卡（任務關卡不分 task id 合併計算）");
-    for (const row of insights.byGate.slice(0, 10)) {
-      console.log(`  ${padDisplay(row.gate, 19)}  ${String(row.count).padStart(4)} 次`);
+
+    const byTokens = (record: Record<string, typeof t>, n: number) =>
+      Object.entries(record).sort((a, b) => b[1].tokens - a[1].tokens).slice(0, n);
+    printUsage("用量最高的階段", byTokens(usage.byStage, 8));
+    printUsage("用量最高的任務", byTokens(usage.byTask, 8));
+    printUsage("各 agent 用量", byTokens(usage.byAgent, 8));
+    printUsage("各模型與步驟用量（只加總明確回報）", byTokens(usage.byModelStage, 10));
+
+    const ss = usage.stepStats;
+    if (ss.steps.length) {
+      const totalMs = ss.agentMs + ss.cmdMs;
+      const share = (ms: number) => (totalMs ? `${(ms / totalMs * 100).toFixed(0)}%` : "-");
+      console.log("\n步驟執行與失敗（跨 run，不含總經過時間）");
+      console.log(`  agent    ${formatDuration(ss.agentMs).padStart(7)}  ${share(ss.agentMs)}`);
+      console.log(`  專案指令 ${formatDuration(ss.cmdMs).padStart(7)}  ${share(ss.cmdMs)}`);
+      if (ss.unfinished) console.log(`  未完成 ${ss.unfinished} 份（沒有結束紀錄，不計入耗時）`);
+      console.log("\n  步驟                 類型   次數  失敗   總耗時     最長");
+      for (const s of ss.steps.slice(0, 10)) {
+        console.log(
+          `  ${s.step.padEnd(19)}  ${s.kind === "cmd" ? "指令 " : "agent"}  ${String(s.runs).padStart(4)}  ${String(s.failed).padStart(4)}  ${formatDuration(s.totalMs).padStart(7)}  ${formatDuration(s.maxMs).padStart(7)}${s.unfinished ? `  （未完成 ${s.unfinished}）` : ""}`,
+        );
+      }
     }
+
+    if (!insights.byCategory.length) console.log("\n還沒有重試紀錄（舊 run 不會回填）");
+    else {
+      console.log("\n重試原因");
+      for (const row of insights.byCategory) {
+        const finals = row.finals ? `，其中 ${row.finals} 次達上限` : "";
+        console.log(`  ${padDisplay(retryLabel(row.category), 20)}  ${String(row.count).padStart(4)} 次${finals}`);
+      }
+      console.log("\n最常重試的關卡（任務關卡不分 task id 合併計算）");
+      for (const row of insights.byGate.slice(0, 10)) {
+        console.log(`  ${padDisplay(row.gate, 19)}  ${String(row.count).padStart(4)} 次`);
+      }
+    }
+
+    console.log("\n建議");
+    if (!usage.findings.length) console.log("  還沒有足夠訊號");
+    else usage.findings.forEach((f, i) => {
+      console.log(`  ${i + 1}. ${f.title}`);
+      console.log(`     ${f.detail}`);
+    });
+
+    const usageById = new Map(usage.runs.map((r) => [r.id, r]));
     console.log("\n各 run");
     for (const r of insights.runs) {
       const cat = r.topCategory ? `  最多 ${retryLabel(r.topCategory)}` : "";
-      console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${cat}`);
+      const u = usageById.get(r.id);
+      const tokens = u ? `  ${String(u.tokens).padStart(9)} tokens` : "";
+      console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${tokens}${cat}`);
     }
-    console.log("\n次數多的原因對應 prompt 或關卡；單一 run 用 agentflowctl status <id> 與 stats <id>");
+    console.log("\n建議對應可改的 prompt、model stage 或關卡；單一 run 用 agentflowctl status <id>、stats <id> 與 logs <id>");
   });
 
 program.parseAsync().catch((err: unknown) => {
