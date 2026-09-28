@@ -8,6 +8,7 @@ import {
   extractPlanEvidence,
   groupReviewerCount,
   layeredReview,
+  missingTaskHeadings,
   neighborTasks,
   planContentKey,
   planOverview,
@@ -169,6 +170,13 @@ describe("是否分層", () => {
     expect(decision.layered).toBe(true);
     expect(decision.layered && decision.groups.map((group) => group.taskIds)).toEqual([["T-1", "T-2", "T-3"], ["T-4", "T-5", "T-6", "T-7"]]);
   });
+
+  it("任務標題接冒號或頓號也算數，T-10 不會被當成 T-1 的標題", () => {
+    const plan = ["## T-1：標題", "## T-2、說明", "## T-10 難度"].join("\n");
+    expect(missingTaskHeadings(plan, ["T-1", "T-2"])).toEqual([]);
+    expect(missingTaskHeadings(plan, ["T-1"])).toEqual([]);
+    expect(missingTaskHeadings("## T-10 難度", ["T-1"])).toEqual(["T-1"]);
+  });
 });
 
 describe("髒任務", () => {
@@ -267,10 +275,24 @@ describe("摘錄與審查回應", () => {
     expect(extractPlanEvidence(body, ["T-3"])).toBe("");
   });
 
+  it("任務標題接冒號或頓號時也能切出證據，不會被 T-10 誤配", () => {
+    const colon = ["## T-1：建立表單", "冒號標題的證據", "## T-10 難度", "別管"].join("\n");
+    expect(extractPlanEvidence(colon, ["T-1"])).toBe(["## T-1：建立表單", "冒號標題的證據"].join("\n"));
+    const dun = ["## T-1、說明", "頓號標題的證據", "## T-10 難度", "別管"].join("\n");
+    expect(extractPlanEvidence(dun, ["T-1"])).toBe(["## T-1、說明", "頓號標題的證據"].join("\n"));
+    expect(extractPlanEvidence(["## T-10 難度", "別管"].join("\n"), ["T-1"])).toBe("");
+  });
+
   it("審查回應只比對標題上的任務 id，T-1 不帶走 T-10", () => {
     const replies = ["## T-10", "別管", "## T-1", "要留", "## 整體", "沒有任務 id"].join("\n");
     expect(repliesForTasks(replies, ["T-1"])).toBe(["## T-1", "要留"].join("\n"));
     expect(repliesForTasks(["## T-2", "拆開"].join("\n"), ["T-2"])).toBe(["## T-2", "拆開"].join("\n"));
+  });
+
+  it("審查回應標題接冒號或頓號也能對應到任務，且不會被 T-10 誤配", () => {
+    expect(repliesForTasks(["## T-1：要留", "內容"].join("\n"), ["T-1"])).toBe(["## T-1：要留", "內容"].join("\n"));
+    expect(repliesForTasks(["## T-1、T-2 一起回覆", "內容"].join("\n"), ["T-1"])).toBe(["## T-1、T-2 一起回覆", "內容"].join("\n"));
+    expect(repliesForTasks(["## T-10：別管", "內容"].join("\n"), ["T-1"])).toBe("");
   });
 
   it("指紋含驗收條文與該任務的難度證據，不含其他任務", () => {

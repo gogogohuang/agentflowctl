@@ -7,7 +7,7 @@ export type PlanReviewLayerOptions = RepoConfig["planReviewLayers"];
 
 // 前面不能緊接路徑字元，中文標點與中文字後面的路徑才抓得到，URL 片段則不會被當成路徑
 const FILE_TOKEN = /(?<![A-Za-z0-9_.@/-])((?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+\.[A-Za-z0-9]+)/g;
-const TASK_HEADING = /^(#{2,6}) (T-\d+)(?:\s|$)/;
+const TASK_HEADING = /^(#{2,6}) (T-\d+)(?!\d)/;
 const OVERVIEW_MAX_LINES = 120;
 const EVIDENCE_MAX_LINES = 40;
 
@@ -300,7 +300,7 @@ export function repliesForTasks(replies: string, taskIds: string[]): string {
   const chunks = replies.split(/(?=^## )/m);
   return chunks.filter((chunk) => {
     const title = chunk.split("\n")[0] ?? "";
-    return taskIds.some((id) => new RegExp(`^## ${id}(?:\\s|$)`).test(title));
+    return taskIds.some((id) => new RegExp(`^## ${id}(?!\\d)`).test(title));
   }).join("").trim();
 }
 
