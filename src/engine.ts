@@ -340,12 +340,12 @@ async function planStage(run: FlowRun): Promise<FlowRun> {
 }
 
 async function planReviewStage(run: FlowRun): Promise<FlowRun> {
-  const pending = pendingArbitration(run);
+  const cfg = loadRepoConfig();
+  const pending = pendingArbitration(run, cfg);
   if (pending) {
     info(run, "⚖️  上次仲裁沒有完成，直接回到仲裁（不重跑計畫審查）");
     return arbitratePlan({ ...run, planReviewer: pending.planReviewer });
   }
-  const cfg = loadRepoConfig();
   const layered = loadLayeredPlan(run, cfg);
   return layered ? planReviewLayered(run, layered, cfg) : planReviewFull(run, cfg);
 }
@@ -476,14 +476,16 @@ function currentPlanKey(run: FlowRun): string {
 
 /**
  * 上次交付仲裁卻沒有得出裁決（暫停）時的紀錄。計畫在這之間被改過、或爭議清單不見了，
- * 就當成沒有待完成的仲裁並刪掉紀錄，重新審查。
+ * 就當成沒有待完成的仲裁並刪掉紀錄，重新審查。暫停期間關掉了 planArbiter 也一樣，
+ * 連同爭議清單一起刪掉。
  */
-function pendingArbitration(run: FlowRun): PendingArbitration | undefined {
+function pendingArbitration(run: FlowRun, cfg: RepoConfig): PendingArbitration | undefined {
   const path = planArbitrationPath(run.id);
   if (!existsSync(path)) return undefined;
   const pending = readPendingArbitration(readFileSync(path, "utf8"));
-  if (pending && pending.planKey === currentPlanKey(run) && existsSync(flowFile(run, "dispute.md"))) return pending;
+  if (cfg.planArbiter && pending && pending.planKey === currentPlanKey(run) && existsSync(flowFile(run, "dispute.md"))) return pending;
   rmSync(path, { force: true });
+  if (!cfg.planArbiter) rmSync(flowFile(run, "dispute.md"), { force: true });
   return undefined;
 }
 

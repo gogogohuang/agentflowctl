@@ -563,12 +563,13 @@ describe("adaptive 選模與流程串接", () => {
     expect(listSubstitutions(run.id)).toEqual([]);
   });
 
-  it("前一個測試讓 b 額度用完後，下一個測試的 b 仍可審查", async () => {
-    // 緊接在上一個測試之後：沒有 resetQuotaState 時，b 仍被記成額度用完而暫停
-    const run = await quotaRun("f-model-review-after-quota", "review", "none", {
-      a: [{ name: "a-large", strength: "high" }],
-      b: [{ name: "b-large", strength: "high" }],
-    });
+  it("resetQuotaState 之後，先前額度用完的 b 仍可審查", async () => {
+    // 同一個測試內先讓 b 額度用完，不依賴其他測試的執行順序
+    const models = { a: [{ name: "a-large", strength: "high" }], b: [{ name: "b-large", strength: "high" }] };
+    const paused = await quotaRun("f-model-review-before-reset", "review", "b", models);
+    expect(paused.stage).toBe("paused");
+    resetQuotaState();
+    const run = await quotaRun("f-model-review-after-reset", "review", "none", models);
     expect(run.stage).not.toBe("paused");
     expect(listUsage(run.id).map((e) => e.agent)).toContain("b");
   });
@@ -982,6 +983,26 @@ ${OBJECT}`, { agents: ["p1", "p2"], layers: { enabled: false } });
     const run = await advance({ ...paused, stage: paused.pausedStage!, pausedStage: undefined, pauseReason: undefined, maxAgentRuns: 4 });
     expect(seen(id)).toBe("arbiter\narbiter\n");
     expect(run.failedStage).toBe("plan_fix");
+  });
+
+  it("仲裁暫停期間關掉 planArbiter 時，resume 不再進仲裁，改回重新審查", async () => {
+    const id = "f-plan-arbiter-disabled-on-resume";
+    await layeredRun(id, `if (kind === "arbiter") {
+  console.error("usage limit reached");
+  process.exit(1);
+}
+${OBJECT}`, { agents: ["p1", "p2"], layers: { enabled: false } });
+    writeFileSync(join(flowDir(id), "plan-review-last.txt"), '<issue criterion="任務群" status="not_met">太大</issue>');
+    const paused = await planReviewRun(id, 10, ["p1", "p2"]);
+    expect(paused.stage).toBe("paused");
+    expect(seen(id)).toBe("other\narbiter\n");
+    const configPath = join(root, "flow.config.json");
+    writeFileSync(configPath, JSON.stringify({ ...JSON.parse(readFileSync(configPath, "utf8")), planArbiter: false }));
+    resetSeen(id);
+    resetQuotaState();
+    await advance({ ...paused, stage: paused.pausedStage!, pausedStage: undefined, pauseReason: undefined, maxAgentRuns: 3 });
+    expect(seen(id)).toBe("other\n");
+    expect(existsSync(join(flowDir(id), "dispute.md"))).toBe(false);
   });
 
   it("任務群審查失敗的升級計數以群 id 區分", async () => {
