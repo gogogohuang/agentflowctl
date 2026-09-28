@@ -914,6 +914,31 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
     expect(readFileSync(join(flowDir(id), "plan-replies.md"), "utf8")).toBe("## 整體\n上一輪的舊回應\n");
   });
 
+  it("plan-fix 因所有 agent 額度用完而暫停時，還原計畫檔與 plan-replies.md", async () => {
+    const id = "f-plan-fix-quota";
+    // 每一家都先改計畫與回應、再回報額度用完：代打者也用完後暫停，檔案要回到進入 plan_fix 時的樣子
+    await layeredRun(id, `if (prompt.includes("計畫修訂者")) {
+  writeFileSync(".flow/plan.md", "被改掉的計畫");
+  writeFileSync(".flow/plan-replies.md", "半成品回應");
+  console.error("usage limit reached");
+  process.exit(1);
+}
+${APPROVE}`, { agents: ["p1", "p2"] });
+    writeFileSync(join(flowDir(id), "plan-replies.md"), "## 整體\n上一輪的舊回應\n");
+    const planBefore = readFileSync(join(flowDir(id), "plan.md"), "utf8");
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_fix",
+      autopilot: true, maxAgentRuns: 10, cycle: ["p1", "p2"], planWriter: "p1", planReviewer: "p2", attempts: { "plan-review": 1 },
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("plan_fix");
+    expect(run.pauseReason).toContain("所有 agent 的額度都已用完");
+    expect(readFileSync(join(flowDir(id), "plan.md"), "utf8")).toBe(planBefore);
+    expect(readFileSync(join(flowDir(id), "plan-replies.md"), "utf8")).toBe("## 整體\n上一輪的舊回應\n");
+  });
+
   it("仲裁未產生有效裁決而暫停時，resume 直接回到仲裁，不重跑索引與群", async () => {
     const id = "f-plan-layers-arbiter-pause";
     await layeredRun(id, `if (kind === "arbiter" && !existsSync(".flow/arbiter-failed")) {
