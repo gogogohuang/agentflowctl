@@ -48,16 +48,32 @@ describe("computeUsageInsights", () => {
     expect(insights.byStrength.low).toMatchObject({ tokens: 77, runs: 2 });
     expect(insights.byStage.taskCode).toMatchObject({ tokens: 77, runs: 2 });
     expect(insights.byStage.plan).toMatchObject({ tokens: 110, runs: 1 });
-    expect(insights.byTask["T-1"]).toMatchObject({ tokens: 77, runs: 2 });
-    expect(insights.byTask["非任務步驟"]).toMatchObject({ tokens: 110, runs: 2, unreportedRuns: 1 });
     expect(insights.byAgent.a).toMatchObject({ tokens: 143, runs: 2 });
     expect(insights.byModelStage["CLI 預設（名稱未知） / plan"]).toMatchObject({ tokens: 110, runs: 1 });
-    expect(insights.byModelStage["small / T-1-code"]).toMatchObject({ tokens: 77, runs: 2 });
+    expect(insights.byModelStage["small / taskCode"]).toMatchObject({ tokens: 77, runs: 2 });
     expect(insights.substitutions).toBe(3);
     expect(insights.runs).toEqual([
-      { id: "f-a", tokens: 143, calls: 2 },
-      { id: "f-b", tokens: 44, calls: 2 },
+      { id: "f-a", tokens: 143, calls: 2, reportedCalls: 2, topTask: { task: "T-1", tokens: 33, share: 1, tasks: 1 } },
+      { id: "f-b", tokens: 44, calls: 2, reportedCalls: 1, topTask: { task: "T-1", tokens: 44, share: 1, tasks: 1 } },
     ]);
+  });
+
+  it("不同 run 的同名任務不合併；任務步驟依種類合併模型用量", () => {
+    const insights = computeUsageInsights([
+      { id: "f-a", substitutions: 0, retries: [], usage: [
+        usage({ stage: "T-1-code", model: "small", inputTokens: 60 }),
+        usage({ stage: "T-2-code", model: "small", inputTokens: 40 }),
+      ] },
+      { id: "f-b", substitutions: 0, retries: [], usage: [usage({ stage: "T-1-code", model: "small", inputTokens: 10 })] },
+    ]);
+    expect(insights.byModelStage).toEqual({ "small / taskCode": expect.objectContaining({ tokens: 110, runs: 3 }) });
+    expect(insights.runs.map((r) => [r.id, r.topTask?.task, r.topTask?.tokens, r.topTask?.tasks])).toEqual([
+      ["f-a", "T-1", 60, 2],
+      ["f-b", "T-1", 10, 1],
+    ]);
+    const hot = insights.findings.find((f) => f.code === "hot_task");
+    expect(hot?.detail).toContain("f-a 的 T-1");
+    expect(hot?.impactTokens).toBe(60);
   });
 });
 
@@ -86,11 +102,7 @@ describe("usageFindings", () => {
         review: summary({ tokens: 8000, runs: 2, reportedRuns: 2 }),
         spec: summary({ tokens: 3000, runs: 1, reportedRuns: 1 }),
       },
-      byTask: {
-        "T-1": summary({ tokens: 7000, runs: 2, reportedRuns: 2 }),
-        "T-2": summary({ tokens: 2000, runs: 1, reportedRuns: 1 }),
-        "非任務步驟": summary({ tokens: 11000, runs: 3, reportedRuns: 3 }),
-      },
+      topTasks: [{ id: "f-a", topTask: { task: "T-1", tokens: 7000, share: 7000 / 9000, tasks: 2 } }],
       retries: [retry({ category: "format_invalid" }), retry({ category: "format_invalid", attempt: 2 }), retry({ category: "tests_not_red", key: "T-1:tests" })],
       substitutions: 2,
     });
@@ -102,12 +114,24 @@ describe("usageFindings", () => {
     expect(retryFinding?.detail).toContain("3 次");
   });
 
+  it("審查要求修改與仲裁要求修訂不算進 retry_waste；只有一個任務的 run 不觸發 hot_task", () => {
+    const codes = usageFindings({
+      total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
+      byStrength: {},
+      byStage: {},
+      retries: [retry({ category: "review_changes" }), retry({ category: "arbitration_revise" }), retry({ category: "format_invalid" })],
+      topTasks: [{ id: "f-a", topTask: { task: "T-1", tokens: 100, share: 1, tasks: 1 } }],
+      substitutions: 0,
+    }).map((f) => f.code);
+    expect(codes).not.toContain("retry_waste");
+    expect(codes).not.toContain("hot_task");
+  });
+
   it("未達門檻時不產生建議", () => {
     expect(usageFindings({
       total: summary({ tokens: 100, inputTokens: 80, outputTokens: 20, runs: 2, reportedRuns: 2 }),
       byStrength: { low: summary({ tokens: 100, runs: 2, reportedRuns: 2 }) },
       byStage: { spec: summary({ tokens: 100, runs: 2, reportedRuns: 2 }) },
-      byTask: { "非任務步驟": summary({ tokens: 100, runs: 2, reportedRuns: 2 }) },
       retries: [retry({ category: "format_invalid" })],
       substitutions: 1,
     })).toEqual([]);
@@ -119,7 +143,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
       byStrength: { high: summary({ tokens: 39, runs: 1, reportedRuns: 1 }), low: summary({ tokens: 61, runs: 1, reportedRuns: 1 }) },
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
     })).not.toContain("high_strength_share");
@@ -127,7 +150,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
       byStrength: { high: summary({ tokens: 40, runs: 1, reportedRuns: 1 }), low: summary({ tokens: 60, runs: 1, reportedRuns: 1 }) },
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
     })).toContain("high_strength_share");
@@ -135,7 +157,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 5000, inputTokens: 4250, outputTokens: 750, runs: 1, reportedRuns: 1 }),
       byStrength: {},
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
     })).toContain("input_heavy");
@@ -146,7 +167,6 @@ describe("usageFindings", () => {
         taskCode: summary({ tokens: 35, runs: 1, reportedRuns: 1 }),
         plan: summary({ tokens: 65, runs: 2, reportedRuns: 2 }),
       },
-      byTask: {},
       retries: [],
       substitutions: 0,
     })).toContain("hot_stage");
@@ -154,11 +174,7 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
       byStrength: {},
       byStage: {},
-      byTask: {
-        "T-1": summary({ tokens: 40, runs: 1, reportedRuns: 1 }),
-        "T-2": summary({ tokens: 50, runs: 1, reportedRuns: 1 }),
-        "非任務步驟": summary({ tokens: 10, runs: 1, reportedRuns: 1 }),
-      },
+      topTasks: [{ id: "f-a", topTask: { task: "T-2", tokens: 50, share: 50 / 90, tasks: 2 } }],
       retries: [],
       substitutions: 0,
     })).toContain("hot_task");
@@ -166,7 +182,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
       byStrength: {},
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
       byModelStage: {
@@ -178,7 +193,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
       byStrength: {},
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
       byModelStage: {
@@ -190,7 +204,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
       byStrength: {},
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
       steps: [{ step: "T-1-code", kind: "agent", runs: 4, failed: 2, unfinished: 0, totalMs: 0, maxMs: 0 }],
@@ -199,7 +212,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
       byStrength: {},
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
       steps: [{ step: "T-1-code", kind: "agent", runs: 5, failed: 3, unfinished: 0, totalMs: 0, maxMs: 0 }],
@@ -208,7 +220,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 90, inputTokens: 45, outputTokens: 45, runs: 3, reportedRuns: 3 }),
       byStrength: {},
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
       steps: [{ step: "lint", kind: "cmd", runs: 5, failed: 3, unfinished: 0, totalMs: 0, maxMs: 0 }],
@@ -219,7 +230,6 @@ describe("usageFindings", () => {
       total: summary({ tokens: 90, inputTokens: 45, outputTokens: 45, runs: 3, reportedRuns: 3 }),
       byStrength: {},
       byStage: {},
-      byTask: {},
       retries: [],
       substitutions: 0,
       steps: [

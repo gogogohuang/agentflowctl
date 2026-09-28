@@ -618,15 +618,14 @@ program
     const byTokens = (record: Record<string, typeof t>, n: number) =>
       Object.entries(record).sort((a, b) => b[1].tokens - a[1].tokens).slice(0, n);
     printUsage("用量最高的階段", byTokens(usage.byStage, 8));
-    printUsage("用量最高的任務", byTokens(usage.byTask, 8));
     printUsage("各 agent 用量", byTokens(usage.byAgent, 8));
-    printUsage("各模型與步驟用量（只加總明確回報）", byTokens(usage.byModelStage, 10));
+    printUsage("各模型與步驟用量（任務步驟不分 task id，只加總明確回報）", byTokens(usage.byModelStage, 10));
 
     const ss = usage.stepStats;
     if (ss.steps.length) {
       const totalMs = ss.agentMs + ss.cmdMs;
       const share = (ms: number) => (totalMs ? `${(ms / totalMs * 100).toFixed(0)}%` : "-");
-      console.log("\n步驟執行與失敗（跨 run，不含總經過時間）");
+      console.log("\n步驟執行與失敗（跨 run，任務步驟不分 task id，依失敗次數排序，不含總經過時間）");
       console.log(`  agent    ${formatDuration(ss.agentMs).padStart(7)}  ${share(ss.agentMs)}`);
       console.log(`  專案指令 ${formatDuration(ss.cmdMs).padStart(7)}  ${share(ss.cmdMs)}`);
       if (ss.unfinished) console.log(`  未完成 ${ss.unfinished} 份（沒有結束紀錄，不計入耗時）`);
@@ -663,8 +662,9 @@ program
     for (const r of insights.runs) {
       const cat = r.topCategory ? `  最多 ${retryLabel(r.topCategory)}` : "";
       const u = usageById.get(r.id);
-      const tokens = u ? `  ${String(u.tokens).padStart(9)} tokens` : "";
-      console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${tokens}${cat}`);
+      const tokens = !u?.calls ? "" : u.reportedCalls ? `  ${String(u.tokens).padStart(9)} tokens` : `  ${" ".repeat(3)}未回報${" ".repeat(7)}`;
+      const task = u?.topTask && u.topTask.tasks >= 2 ? `  最耗任務 ${u.topTask.task}（${(u.topTask.share * 100).toFixed(0)}%）` : "";
+      console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${tokens}${task}${cat}`);
     }
     console.log("\n建議對應可改的 prompt、model stage 或關卡；各分組是同一批呼叫的不同切片，不要跨組相加。單一 run 用 agentflowctl status <id>、stats <id> 與 logs <id>");
   });

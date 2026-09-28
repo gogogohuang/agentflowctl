@@ -42,15 +42,17 @@ describe("mergeStats", () => {
       entry("lint", "cmd", "02:00", "02:10"),
     ]);
     const b = computeStats([
-      entry("T-1-tests", "codex", "00:00", "01:00", false),
-      entry("T-1-tests", "codex", "01:00", "01:30"),
+      entry("T-3-tests", "codex", "00:00", "01:00", false),
+      entry("T-3-tests", "codex", "01:00", "01:30"),
     ]);
     const merged = mergeStats([a, b]);
     expect("wallMs" in merged).toBe(false);
-    expect(merged.steps.find((s) => s.step === "T-1-tests")).toMatchObject({
+    // task id 只在同一個 run 內有意義，跨 run 依步驟種類合併
+    expect(merged.steps.find((s) => s.step === "任務-tests")).toMatchObject({
       kind: "agent", runs: 3, failed: 2, unfinished: 0,
     });
-    expect(merged.steps[0]?.step).toBe("T-1-tests");
+    expect(merged.steps.some((s) => s.step.startsWith("T-"))).toBe(false);
+    expect(merged.steps[0]?.step).toBe("任務-tests");
     expect(merged.unfinished).toBe(0);
   });
 

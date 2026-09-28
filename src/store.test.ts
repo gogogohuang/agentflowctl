@@ -8,7 +8,7 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
 const { runDir } = await import("./paths.js");
-const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage } = await import("./store.js");
+const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage, usageKeyModelStageKind } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -103,11 +103,14 @@ describe("檔案儲存", () => {
     expect(summarizeUsage([], usageKeyAgent)).toEqual({});
     expect(usageKeyModelStage({ stage: "plan", agent: "a" })).toBe("CLI 預設（名稱未知） / plan");
     expect(usageKeyModelStage({ stage: "T-1-code", agent: "a", model: "small" })).toBe("small / T-1-code");
+    expect(usageKeyModelStageKind({ stage: "T-1-code", agent: "a", model: "small" })).toBe("small / taskCode");
+    expect(usageKeyModelStageKind({ stage: "odd-step", agent: "a" })).toBe("CLI 預設（名稱未知） / odd-step");
   });
 
   it("用量 jsonl 殘行略過，不讓整份讀失敗", () => {
     addUsage("f-torn-u", { stage: "spec", agent: "a", usageReported: true, inputTokens: 1, outputTokens: 1 });
     appendFileSync(join(runDir("f-torn-u"), "costs.jsonl"), "{");
     expect(listUsage("f-torn-u")).toHaveLength(1);
+    expect(agentRuns("f-torn-u")).toBe(1);
   });
 });

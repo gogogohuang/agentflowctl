@@ -1,6 +1,6 @@
 import { retryLabel } from "./insights.js";
 import { RetryCategories, type RetryCategory, type RetryEntry, type UsageEntry, type UsageSummary } from "./store.js";
-import { summarizeUsage, totalUsage, usageKeyAgent, usageKeyModelStage, usageKeyStage, usageKeyStrength, usageKeyTask } from "./store.js";
+import { summarizeUsage, totalUsage, usageKeyAgent, usageKeyModelStageKind, usageKeyStage, usageKeyStrength, usageKeyTask } from "./store.js";
 import { mergeStats, type RunStats, type StepStat } from "./stats.js";
 
 export const FindingCodes = [
@@ -38,24 +38,44 @@ export interface Finding {
   detail: string;
 }
 
+/** 一個 run 內用量最高的任務；task id 只在同一個 run 內有意義，不跨 run 合併 */
+export interface TopTask {
+  task: string;
+  tokens: number;
+  /** 佔該 run 任務用量（排除非任務步驟）的比例 */
+  share: number;
+  /** 該 run 有 token 的任務數 */
+  tasks: number;
+}
+
 export interface UsageInsights {
   total: UsageSummary;
   byStrength: Record<string, UsageSummary>;
   byStage: Record<string, UsageSummary>;
-  byTask: Record<string, UsageSummary>;
   byAgent: Record<string, UsageSummary>;
+  /** 模型 × 步驟種類（任務步驟不分 task id，例如 small / taskCode） */
   byModelStage: Record<string, UsageSummary>;
   stepStats: ReturnType<typeof mergeStats>;
   substitutions: number;
   findings: Finding[];
-  runs: { id: string; tokens: number; calls: number }[];
+  runs: { id: string; tokens: number; calls: number; reportedCalls: number; topTask?: TopTask }[];
+}
+
+/** 會算進 retry_waste 的重試：排除審查要求修改與仲裁要求修訂這類正常往返 */
+const WASTEFUL_RETRY = (r: RetryEntry) => r.category !== "review_changes" && r.category !== "arbitration_revise";
+
+export function topTaskOf(usage: UsageEntry[]): TopTask | undefined {
+  const entries = Object.entries(summarizeUsage(usage, usageKeyTask)).filter(([key, v]) => key !== "非任務步驟" && v.tokens > 0);
+  const taskTotal = entries.reduce((n, [, v]) => n + v.tokens, 0);
+  const top = entries.sort((a, b) => b[1].tokens - a[1].tokens)[0];
+  return top ? { task: top[0], tokens: top[1].tokens, share: top[1].tokens / taskTotal, tasks: entries.length } : undefined;
 }
 
 const pct = (part: number, whole: number) => (whole ? `${(part / whole * 100).toFixed(1)}%` : "無法計算");
 
-function topByTokens(record: Record<string, UsageSummary>, exclude: string[] = []): [string, UsageSummary] | undefined {
+function topByTokens(record: Record<string, UsageSummary>): [string, UsageSummary] | undefined {
   return Object.entries(record)
-    .filter(([key, v]) => !exclude.includes(key) && v.tokens > 0)
+    .filter(([, v]) => v.tokens > 0)
     .sort((a, b) => b[1].tokens - a[1].tokens)[0];
 }
 
@@ -63,13 +83,15 @@ export function usageFindings(input: {
   total: UsageSummary;
   byStrength: Record<string, UsageSummary>;
   byStage: Record<string, UsageSummary>;
-  byTask: Record<string, UsageSummary>;
   retries: RetryEntry[];
   substitutions: number;
+  /** 各 run 用量最高的任務 */
+  topTasks?: { id: string; topTask?: TopTask }[];
   byModelStage?: Record<string, UsageSummary>;
   steps?: StepStat[];
 }): Finding[] {
-  const { total, byStrength, byStage, byTask, retries, substitutions, byModelStage = {}, steps = [] } = input;
+  const { total, byStrength, byStage, substitutions, topTasks = [], byModelStage = {}, steps = [] } = input;
+  const retries = input.retries.filter(WASTEFUL_RETRY);
   const out: Finding[] = [];
   const avg = total.reportedRuns ? Math.round(total.tokens / total.reportedRuns) : 0;
   const unknownCalls = total.unreportedRuns + total.legacyRuns;
@@ -96,7 +118,7 @@ export function usageFindings(input: {
     const waste = avg * retries.length;
     out.push({
       code: "retry_waste", impactTokens: waste, title: FINDING_LABEL.retry_waste,
-      detail: `重試 ${retries.length} 次，最多「${top ? retryLabel(top[0]) : "未知"}」（${top?.[1] ?? 0} 次）。以平均每次 ${avg} tokens 估算，重試約 ${waste} tokens。先改該關卡，再縮 prompt。`,
+      detail: `重試 ${retries.length} 次（不含審查要求修改與仲裁要求修訂），最多「${top ? retryLabel(top[0]) : "未知"}」（${top?.[1] ?? 0} 次）。以平均每次 ${avg} tokens 估算，重試約 ${waste} tokens。先改該關卡，再縮 prompt。`,
     });
   }
 
@@ -116,14 +138,14 @@ export function usageFindings(input: {
     });
   }
 
-  const taskEntries = Object.entries(byTask).filter(([key]) => key !== "非任務步驟");
-  const taskTotal = taskEntries.reduce((n, [, v]) => n + v.tokens, 0);
-  const tasksWithTokens = taskEntries.filter(([, v]) => v.tokens > 0).length;
-  const topTask = topByTokens(byTask, ["非任務步驟"]);
-  if (taskTotal > 0 && tasksWithTokens >= 2 && topTask && topTask[1].tokens / taskTotal >= 0.4) {
+  const hotTask = topTasks
+    .filter((r): r is { id: string; topTask: TopTask } => !!r.topTask && r.topTask.tasks >= 2 && r.topTask.share >= 0.4)
+    .sort((a, b) => b.topTask.tokens - a.topTask.tokens)[0];
+  if (hotTask) {
+    const t = hotTask.topTask;
     out.push({
-      code: "hot_task", impactTokens: topTask[1].tokens, title: FINDING_LABEL.hot_task,
-      detail: `${topTask[0]} 佔任務用量 ${pct(topTask[1].tokens, taskTotal)}（${topTask[1].tokens} tokens）。考慮切小任務或降低 complexity。`,
+      code: "hot_task", impactTokens: t.tokens, title: FINDING_LABEL.hot_task,
+      detail: `${hotTask.id} 的 ${t.task} 佔該 run 任務用量 ${(t.share * 100).toFixed(1)}%（${t.tokens} tokens）。考慮切小任務或降低 complexity。`,
     });
   }
 
@@ -180,22 +202,21 @@ export function computeUsageInsights(runs: UsageInsightsInputRun[]): UsageInsigh
   const total = totalUsage(usage);
   const byStrength = summarizeUsage(usage, usageKeyStrength);
   const byStage = summarizeUsage(usage, usageKeyStage);
-  const byTask = summarizeUsage(usage, usageKeyTask);
   const byAgent = summarizeUsage(usage, usageKeyAgent);
-  const byModelStage = summarizeUsage(usage, usageKeyModelStage);
+  const byModelStage = summarizeUsage(usage, usageKeyModelStageKind);
+  const perRun = runs.map((r) => {
+    const t = totalUsage(r.usage);
+    return { id: r.id, tokens: t.tokens, calls: t.runs, reportedCalls: t.reportedRuns, topTask: topTaskOf(r.usage) };
+  });
   return {
     total,
     byStrength,
     byStage,
-    byTask,
     byAgent,
     byModelStage,
     stepStats,
     substitutions,
-    findings: usageFindings({ total, byStrength, byStage, byTask, byModelStage, retries, substitutions, steps: stepStats.steps }),
-    runs: runs.map((r) => {
-      const t = totalUsage(r.usage);
-      return { id: r.id, tokens: t.tokens, calls: t.runs };
-    }),
+    findings: usageFindings({ total, byStrength, byStage, topTasks: perRun, byModelStage, retries, substitutions, steps: stepStats.steps }),
+    runs: perRun,
   };
 }

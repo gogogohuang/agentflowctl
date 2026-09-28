@@ -67,6 +67,9 @@ export interface MergedStats {
   unfinished: number;
 }
 
+/** task id 只在同一個 run 內有意義；跨 run 合併時 T-1-green、T-3-green 都算「任務-green」 */
+export const stepKind = (step: string) => step.replace(/^T-\d+-/, "任務-");
+
 export function mergeStats(runs: RunStats[]): MergedStats {
   const byKey = new Map<string, StepStat>();
   let agentMs = 0;
@@ -77,8 +80,9 @@ export function mergeStats(runs: RunStats[]): MergedStats {
     cmdMs += run.cmdMs;
     unfinished += run.unfinished;
     for (const s of run.steps) {
-      const key = `${s.kind}:${s.step}`;
-      const acc = byKey.get(key) ?? { step: s.step, kind: s.kind, runs: 0, failed: 0, unfinished: 0, totalMs: 0, maxMs: 0 };
+      const step = stepKind(s.step);
+      const key = `${s.kind}:${step}`;
+      const acc = byKey.get(key) ?? { step, kind: s.kind, runs: 0, failed: 0, unfinished: 0, totalMs: 0, maxMs: 0 };
       acc.runs += s.runs;
       acc.failed += s.failed;
       acc.unfinished += s.unfinished;

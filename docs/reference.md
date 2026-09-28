@@ -419,19 +419,19 @@ agentflowctl model stage taskReview high
 
 終端機每次呼叫都顯示送給 CLI 的模型名稱；Claude Code 與 Gemini CLI 在初始化事件回報實際模型，與送出名稱不同時完成後顯示 `↳ CLI 回報實際模型：…`。Codex CLI 只在模型被改派時回報實際模型（`model rerouted: A -> B`），其餘情況別名沒有 CLI 的實際模型回報，不推測解析結果。`status` 按階段、任務、模型與步驟、強度顯示呼叫和 token：階段用量以上表的階段鍵加總所有任務的同一步，認不得的舊步驟歸為「其他」；任務用量加總該任務的寫測試、實作、任務審查與任務修正，規格、計畫、整體驗證修正與整體審查歸為「非任務步驟」。只有明確回報的 token 納入合計與占比。沒有 usage 事件顯示「未回報」，舊紀錄因無法分辨真實 0 與補值而顯示「回報狀態不明」，各 agent 用量另列其原始數字供查閱，不算進合計與占比。
 
-`insights` 跨 run 讀 `costs.jsonl`、log 檔頭檔尾、`retries.jsonl` 與 `failureCategory`，分區塊列印，並依固定門檻列出最多五則建議。各 agent、階段、任務、模型×步驟、模型強度是同一批呼叫的不同切片，不要跨組相加。模型×步驟只印 tokens 最高的 10 列。不把 `model add/check` 探測算進去。不印跨 run 總經過時間。殘行略過也涵蓋 `costs.jsonl`。
+`insights` 跨 run 讀 `costs.jsonl`、各 run 的 log（讀整份檔案再取檔頭檔尾，run 多時會比較慢）、`retries.jsonl` 與 `failureCategory`，分區塊列印，並依固定門檻列出最多五則建議。各 agent、階段、模型×步驟、模型強度是同一批呼叫的不同切片，不要跨組相加。模型×步驟只印 tokens 最高的 10 列。task id 只在同一個 run 內有意義：模型×步驟用步驟種類（`small / taskCode`），步驟執行與失敗把 `T-1-green` 合併成 `任務-green` 並依失敗次數排序；用量最高的任務只在各 run 那一列列出。不把 `model add/check` 探測算進去。不印跨 run 總經過時間。殘行略過也涵蓋 `costs.jsonl`。
 
 | code | 顯示 | 觸發條件 |
 |---|---|---|
 | `coverage_low` | 用量回報不完整 | `runs >= 5` 且 `(unreportedRuns + legacyRuns) / runs >= 0.3` |
 | `high_strength_share` | 高強度模型占比偏高 | `total.tokens > 0` 且 `high.tokens / total.tokens >= 0.4` |
-| `retry_waste` | 重試可能比單次 prompt 更耗 token | 跨 run 重試筆數 `>= 2` |
+| `retry_waste` | 重試可能比單次 prompt 更耗 token | 跨 run 重試筆數 `>= 2`，不含 `review_changes` 與 `arbitration_revise` |
 | `input_heavy` | 輸入遠大於輸出 | `total.tokens >= 5000` 且 `inputTokens / tokens >= 0.85` |
 | `hot_stage` | 單一階段佔用量過高 | 至少兩個階段 `tokens > 0`，最高階段 `>= 35%` |
-| `hot_task` | 單一任務佔用量過高 | 排除「非任務步驟」後至少兩個任務 `tokens > 0`，最高任務佔任務合計 `>= 40%` |
+| `hot_task` | 單一任務佔用量過高 | 逐 run 判斷：排除「非任務步驟」後至少兩個任務 `tokens > 0`，最高任務佔該 run 任務合計 `>= 40%`；多個 run 符合時取 tokens 最高的 |
 | `substitution_waste` | 額度代打造成重做 | 跨 run 代打次數 `>= 2` |
 | `cache_unread` | cache 寫入多、讀取少 | `cacheWriteTokens >= 1000` 且 `cacheReadTokens < cacheWriteTokens * 0.5` |
-| `hot_model_step` | 單一模型與步驟佔用量過高 | 至少兩個「模型 / 步驟」`tokens > 0`，最高列佔合計 `>= 35%` |
+| `hot_model_step` | 單一模型與步驟佔用量過高 | 至少兩個「模型 / 步驟種類」`tokens > 0`，最高列佔合計 `>= 35%` |
 | `hot_failing_step` | 單一執行步驟失敗次數過多 | 合併後有步驟 `failed >= 3`：先取失敗最多的 agent 步驟，沒有才取 cmd |
 
 `model add/check` 對 Claude Code、Codex 與 Gemini CLI 明確指定模型，在獨立暫存目錄送出短請求，不沿用正常工作的 `extraArgs`，30 秒逾時；macOS／Linux 逾時或 Ctrl-C 中斷時會停止整個程序群組，包含 CLI 啟動的子程序。成功必須同時有文字、成功完成事件與零工具事件；任何失敗事件都會使探測失敗，即使後來又回報成功也一樣。Codex 的 `error` item 依 Codex CLI 定義是非致命通知（設定警告、棄用提示、找不到模型 metadata、模型改派），只顯示為警告，不影響探測與 run 結果；真正的失敗是 `turn.failed` 與頂層 `error` 事件。CLI 不支援探測參數或 Gemini 未載入工具限制時直接失敗，不會用更寬鬆權限重試；失敗不新增模型，`model check` 不修改設定。

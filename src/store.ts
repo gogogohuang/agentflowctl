@@ -124,7 +124,10 @@ export const usageKeyAgent = (e: UsageEntry) => e.agent;
 export const usageKeyStrength = (e: UsageEntry) => e.strength ?? "未知";
 export const usageKeyStage = (e: UsageEntry) => stageOfStep(e.stage) ?? "其他";
 export const usageKeyTask = (e: UsageEntry) => /^(T-\d+)-/.exec(e.stage)?.[1] ?? "非任務步驟";
-export const usageKeyModelStage = (e: UsageEntry) => `${e.model ?? "CLI 預設（名稱未知）"} / ${e.stage}`;
+const modelName = (e: UsageEntry) => e.model ?? "CLI 預設（名稱未知）";
+export const usageKeyModelStage = (e: UsageEntry) => `${modelName(e)} / ${e.stage}`;
+/** 跨 run 用：任務步驟換成步驟種類（T-1-code → taskCode），不同 run 的 task id 不互相合併 */
+export const usageKeyModelStageKind = (e: UsageEntry) => `${modelName(e)} / ${stageOfStep(e.stage) ?? e.stage}`;
 
 function groupUsage(id: string, keyOf: (e: UsageEntry) => string): Record<string, UsageSummary> {
   return summarizeUsage(listUsage(id), keyOf);
@@ -138,8 +141,7 @@ export const usageByTask = (id: string) => groupUsage(id, usageKeyTask);
 
 /** 這個 run 已執行 agent 的次數（每次執行都會記一筆用量） */
 export function agentRuns(id: string): number {
-  const p = usagePath(id);
-  return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).length : 0;
+  return listUsage(id).length;
 }
 
 export interface Substitution {
