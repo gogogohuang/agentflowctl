@@ -132,7 +132,7 @@ agentflowctl model mode adaptive
 agentflowctl run --req-file ./requirement.md
 ```
 
-把 `MODEL_NAME` 換成該 CLI 目前可呼叫的別名或完整 ID。`model add` 會用目前登入的帳號送出短請求，可能耗用少量 token；成功才寫入設定。需要重驗時執行 `model check`。用 `model set claude MODEL_NAME --strength medium` 改強度、`model remove claude MODEL_NAME` 移除模型，或用 `model stage taskReview high` 調整階段最低強度；`model stage` 不帶強度時列出各階段實際生效的強度。終端機每次呼叫會顯示送給 CLI 的模型名稱，Claude Code 與 Gemini CLI 回報的實際模型不同時也會顯示；`status <id>` 會按階段、任務、模型與步驟顯示用量。`run --model-mode balanced` 可暫時回到原設定。
+把 `MODEL_NAME` 換成該 CLI 目前可呼叫的別名或完整 ID。`model add` 會用目前登入的帳號送出短請求，可能耗用少量 token；成功才寫入設定。需要重驗時執行 `model check`。用 `model set claude MODEL_NAME --strength medium` 改強度、`model remove claude MODEL_NAME` 移除模型，或用 `model stage taskReview high` 調整階段最低強度；`model stage` 不帶強度時列出各階段實際生效的強度。終端機每次呼叫會顯示送給 CLI 的模型名稱；CLI 回報的實際模型不同時也會顯示（Claude Code 與 Gemini CLI 每次回報，Codex 只在模型被改派時回報）；`status <id>` 會按階段、任務、模型與步驟顯示用量。`run --model-mode balanced` 可暫時回到原設定。
 
 `status <id>` 的用量以每次 LLM 呼叫為一筆，失敗、額度用完及代打也會計入呼叫次數。只有 CLI 同時回報輸入與輸出 token，才把兩者納入合計與模型強度占比；明確回報的 0 仍算已回報。缺少任一數字列為「未回報」；舊紀錄無法分辨真實 0 與預設補值，列為「舊紀錄不明」，原始數字只供查閱。各 agent、階段、任務、模型與步驟、模型強度是同一批呼叫的不同分組，不應跨組相加。輸入 token 一律包含 cache 讀取與寫入：Claude Code 回報的 `input_tokens` 不含 cache，agentflowctl 會把 cache 讀寫加回去；Codex 的 `input_tokens` 本來就包含 cache。有回報 cache 時，`status` 與 `logs` 會另外標出其中讀取與寫入 cache 各多少。`model add/check` 的探測請求可能耗用 token，但不屬於 run，因此不在 `status` 內。
 
@@ -148,11 +148,17 @@ Claude Code、Codex 與 Gemini CLI 都使用專用探測流程：以 `--model` �
 | Codex | 唯讀沙箱與 `approval_policy="never"` 禁止寫入及權限升級；停用 shell、外部工具與 hooks，忽略使用者設定及 rules。仍可能有模型內建檔案工具，由唯讀沙箱限制 |
 | Gemini CLI | admin/user policy 禁止所有工具（合法優先級 `999`），停用 extensions、MCP 與 hooks；政策載入問題使驗證失敗 |
 
-三家共用相同的通過條件：CLI 結束碼為 0、有非空文字與成功完成事件，且沒有工具嘗試或失敗事件。即使後來回覆成功，先前的失敗也不會被忽略；Codex 只在 stderr 回報的工具拒絕同樣算失敗。Codex 的非致命錯誤通知（例如找不到模型 metadata 改用預設值）不影響結果，`logs` 以 ⚠️ 顯示，不列入錯誤段落；模型被改派時顯示為 CLI 回報的實際模型。
+三家共用相同的通過條件：CLI 結束碼為 0、有非空文字與成功完成事件，且沒有工具嘗試或失敗事件。即使後來回覆成功，先前的失敗也不會被忽略。
 
-探測上限為 30 秒，結束後清除暫存目錄；macOS／Linux 逾時或按 Ctrl-C 中斷時會停止整個程序群組，包含 CLI 啟動的子程序。`model add` 成功才新增模型，失敗保持設定原狀；`model check` 只重驗、不修改設定。CLI 不支援探測參數時會提示更新，不會改用更寬鬆的權限重試。
+探測上限為 30 秒，結束後清除暫存目錄；macOS／Linux 逾時或按 Ctrl-C 中斷時會停止整個程序群組，包含 CLI 啟動的子程序。`model add` 成功才新增模型，失敗保持設定原狀；`model check` 只重驗、不修改設定。CLI 不支援探測參數（版本過舊或參數已改名）時直接失敗並提示更新 CLI，不會改用更寬鬆的權限重試。
 
-Codex 未回報實際模型 ID 時，只確認指定名稱可呼叫，不推測別名對應；`logs` 會顯示 Codex 的完成事件，跨回合的 shell 指令分開整理。自訂 `command` adapter 另需提供會實際呼叫模型的探測命令；設定方式與各 CLI 已查核版本見[詳細參考](docs/reference.md#模型設定與自動選模)。
+Codex 另有幾點差異：
+- 只寫在 stderr 的工具拒絕（例如唯讀沙箱擋下 patch）同樣算失敗。
+- Codex 的 `error` item 是非致命通知，例如找不到模型 metadata 改用預設值、設定警告、棄用提示，不影響探測與 run 結果；`logs` 以 ⚠️ 顯示，不列入錯誤段落。真正的失敗是 `turn.failed` 與頂層 `error` 事件。
+- Codex 只在模型被改派時回報實際模型，其餘情況只確認指定名稱可呼叫，不推測別名對應。
+- `logs` 會顯示 Codex 每回合的完成事件，跨回合的 shell 指令分開整理。
+
+自訂 `command` adapter 另需提供會實際呼叫模型的探測命令；設定方式與各 CLI 已查核版本見[詳細參考](docs/reference.md#模型設定與自動選模)。
 
 ### 專案設定
 
