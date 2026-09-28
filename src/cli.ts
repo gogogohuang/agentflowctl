@@ -666,7 +666,7 @@ program
       const tokens = u ? `  ${String(u.tokens).padStart(9)} tokens` : "";
       console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${tokens}${cat}`);
     }
-    console.log("\n建議對應可改的 prompt、model stage 或關卡；單一 run 用 agentflowctl status <id>、stats <id> 與 logs <id>");
+    console.log("\n建議對應可改的 prompt、model stage 或關卡；各分組是同一批呼叫的不同切片，不要跨組相加。單一 run 用 agentflowctl status <id>、stats <id> 與 logs <id>");
   });
 
 program.parseAsync().catch((err: unknown) => {

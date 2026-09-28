@@ -419,7 +419,7 @@ agentflowctl model stage taskReview high
 
 終端機每次呼叫都顯示送給 CLI 的模型名稱；Claude Code 與 Gemini CLI 在初始化事件回報實際模型，與送出名稱不同時完成後顯示 `↳ CLI 回報實際模型：…`。Codex CLI 只在模型被改派時回報實際模型（`model rerouted: A -> B`），其餘情況別名沒有 CLI 的實際模型回報，不推測解析結果。`status` 按階段、任務、模型與步驟、強度顯示呼叫和 token：階段用量以上表的階段鍵加總所有任務的同一步，認不得的舊步驟歸為「其他」；任務用量加總該任務的寫測試、實作、任務審查與任務修正，規格、計畫、整體驗證修正與整體審查歸為「非任務步驟」。只有明確回報的 token 納入合計與占比。沒有 usage 事件顯示「未回報」，舊紀錄因無法分辨真實 0 與補值而顯示「回報狀態不明」，各 agent 用量另列其原始數字供查閱，不算進合計與占比。
 
-`insights` 跨 run 讀 `costs.jsonl`、log 檔頭檔尾、`retries.jsonl` 與 `failureCategory`，分區塊列印，並依固定門檻列出最多五則建議。模型×步驟只印 tokens 最高的 10 列。不把 `model add/check` 探測算進去。不印跨 run 總經過時間。殘行略過也涵蓋 `costs.jsonl`。
+`insights` 跨 run 讀 `costs.jsonl`、log 檔頭檔尾、`retries.jsonl` 與 `failureCategory`，分區塊列印，並依固定門檻列出最多五則建議。各 agent、階段、任務、模型×步驟、模型強度是同一批呼叫的不同切片，不要跨組相加。模型×步驟只印 tokens 最高的 10 列。不把 `model add/check` 探測算進去。不印跨 run 總經過時間。殘行略過也涵蓋 `costs.jsonl`。
 
 | code | 顯示 | 觸發條件 |
 |---|---|---|
