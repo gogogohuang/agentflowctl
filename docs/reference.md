@@ -102,7 +102,8 @@ agentflowctl run --req-file ./req.md --cycle codex,claude --max-agent-runs 40
 agentflowctl run --req "..." --manual-plan   # 計畫通過 AI 審查後，仍停下來等你確認
 
 agentflowctl approve f-xxxx        # 搭配 --manual-plan
-agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄
+agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄、重試紀錄
+agentflowctl insights              # 這個專案所有 run 的結果與重試原因
 agentflowctl list
 agentflowctl logs f-xxxx           # 列出每一份 log 的編號、結果、階段、步驟、agent
 agentflowctl logs f-xxxx 7         # 解析第 7 份 log，最後附上錯誤整理（--latest 看最新一份）
@@ -214,6 +215,26 @@ stderr：
 ```
 
 執行成功時，stderr 會放在「其他輸出」段落，不算錯誤。
+
+### 重試紀錄
+
+關卡沒通過而重試時，原因代碼 append 到 `.agentflowctl/runs/<id>/retries.jsonl`，與 log、用量放在同一份執行紀錄裡。`insights` 彙總所有 run 的最終狀態與這些原因；`status <id>` 列出該 run 的明細。舊 run 沒有這份檔案，不會回填。分類由程式在重試當下寫入，不從 `feedback.md` 的文字回推。
+
+| category | 顯示 | 呼叫點 |
+|---|---|---|
+| `agent_error` | Agent 執行失敗 | `!r.ok` |
+| `missing_artifact` | 缺少必要檔案 | 缺少 `spec.md` / `plan.md` |
+| `format_invalid` | 輸出格式錯誤 | zod／驗收 id 重複／`validatePlan` 字串 |
+| `handoff_invalid` | 交接回覆不合格 | `finishHandoff` 回傳錯誤 |
+| `open_handoff` | 未結交接事項 | `planSettled` 的未結 action |
+| `review_changes` | 審查要求修改 | 計畫／任務／整體審查 `changes_requested` |
+| `plan_tampered` | 改動已鎖定的計畫檔 | `planTamperedMessage` |
+| `tests_not_written` | 未寫測試 | 無 commit、或沒改測試檔 |
+| `tests_not_red` | 紅燈測試未失敗 | 實作前測試就全過 |
+| `tests_modified` | 實作改了測試 | 綠燈階段動到測試檔 |
+| `tests_not_green` | 測試仍未通過 | 實作後測試失敗 |
+| `tests_deleted` | 刪除測試檔 | fix 刪測試 |
+| `checks_failed` | 專案檢查失敗 | `runChecks` 有失敗 |
 
 ### 停下來時的結果與下一步
 

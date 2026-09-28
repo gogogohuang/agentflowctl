@@ -13,8 +13,9 @@ import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, TaskList, type FlowRun } from "./schemas.js";
+import { computeInsights, RETRY_LABEL } from "./insights.js";
 import { computeStats, formatDuration } from "./stats.js";
-import { agentRuns, getRun, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
+import { agentRuns, getRun, listRetries, listRuns, listSubstitutions, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
 import { readJsonFile } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
@@ -256,6 +257,13 @@ program
     if (subs.length) {
       console.log("\n代打紀錄");
       for (const sub of subs) console.log(`  ${sub.at.slice(0, 16)}  ${sub.step.padEnd(14)} ${sub.planned} → ${sub.actual}${sub.note ? `（${sub.note}）` : ""}`);
+    }
+    const retries = listRetries(id);
+    if (retries.length) {
+      console.log("\n重試紀錄");
+      for (const r of retries) {
+        console.log(`  ${r.key.padEnd(19)}  ${RETRY_LABEL[r.category]}${r.final ? "（達上限）" : `（第 ${r.attempt} 次）`}`);
+      }
     }
     const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), TaskList);
     if (!tasks.ok) return;
@@ -557,6 +565,34 @@ program
       );
     }
     console.log(`\n次數多或失敗多的步驟可用 agentflowctl logs ${id} 找出編號查看原因；token 用量見 agentflowctl status ${id}`);
+  });
+
+program
+  .command("insights")
+  .description("彙總這個專案所有 run 的結果與重試原因，找出該先改的 prompt 或關卡")
+  .action(() => {
+    const runs = listRuns();
+    if (!runs.length) return console.log("還沒有 run");
+    const insights = computeInsights(runs.map((r) => ({ id: r.id, stage: r.stage, retries: listRetries(r.id) })));
+    const o = insights.byOutcome;
+    console.log(`專案彙總（${insights.runCount} 個 run）`);
+    console.log(`  完成 ${o.done}  失敗 ${o.failed}  暫停 ${o.paused}  等待核准 ${o.awaiting_approval}  進行中 ${o.active}`);
+    if (!insights.byCategory.length) return console.log("\n還沒有重試紀錄（舊 run 不會回填）");
+    console.log("\n重試原因");
+    for (const row of insights.byCategory) {
+      const finals = row.finals ? `，其中 ${row.finals} 次達上限` : "";
+      console.log(`  ${RETRY_LABEL[row.category].padEnd(14)}  ${String(row.count).padStart(4)} 次${finals}`);
+    }
+    console.log("\n最常重試的關卡");
+    for (const row of insights.byKey.slice(0, 10)) {
+      console.log(`  ${row.key.padEnd(19)}  ${String(row.count).padStart(4)} 次`);
+    }
+    console.log("\n各 run");
+    for (const r of insights.runs) {
+      const cat = r.topCategory ? `  最多 ${RETRY_LABEL[r.topCategory]}` : "";
+      console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${cat}`);
+    }
+    console.log("\n次數多的原因對應 prompt 或關卡；單一 run 用 agentflowctl status <id> 與 stats <id>");
   });
 
 program.parseAsync().catch((err: unknown) => {
