@@ -10,6 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-29-parallel-reviewers-design.md`
 
+> **實作狀態（已完成）：** 九個 task 已依序實作並各自審查，之後經一次整支 branch 的最終 review 與一次修正波。下列程式碼片段是**寫計畫當時**的版本，實作過程中有以下偏離，**以 spec 與現行程式碼為準**：
+> - `ReviewCall` 的選填欄位 `modelScope` 改名為 `scope`（與 `PlanReviewCallSpec.scope` 同名，`executeOne` 再傳給 `agentStep` 的 `modelScope`）。
+> - 序列收尾的核准門檻不再用全輪單一帳本快照，而是每個 `StoredCall` 帶「它實際看到的帳本 `base`」，門檻以該呼叫自己的 stored base 評估；`executeReviewCalls` 不再回傳 `base`，`applyPlanReview` 第 4 參數仍是 `dir`。
+> - 存檔重用要通過 `storedCallValid` 有效性檢查（writer／fixer 的 callKey 已套用則作廢重跑）。
+> - 臨時 worktree 放在每次呼叫唯一的父目錄下（`tmp-review/<唯一>/slot-N`），內含 `node_modules` symlink；`cleanupTempWorktrees` 會強制移除 locked 登記。
+> - `codeReview` 開頭會 `discardChanges(repo)`；`clean` 指令也會清臨時 worktree。
+
 ## Global Constraints
 
 - 程式碼、註解、prompt、commit 訊息與使用者看到的輸出一律用繁體中文。
