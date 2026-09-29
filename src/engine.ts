@@ -685,8 +685,14 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     if (!result?.ok || handoffError) {
       const outputError = !r.ok ? `Agent 執行失敗：${r.summary}` : !result ? "未產生有效裁決" : result.ok ? "未產生有效裁決" : result.error;
       const reason = handoffError ?? outputError;
-      info(run, `   ⏸️  ${arbiter} 未產生有效裁決：${reason}`);
-      return { ...run, stage: "paused", pausedStage: "plan_review", pauseReason: `${arbiter} 仲裁未產生有效裁決：${reason}` };
+      const category: RetryCategory = handoffError ? "handoff_invalid" : !r.ok ? "agent_error" : "format_invalid";
+      info(run, `   ✗ ${arbiter} 未產生有效裁決：${reason}`);
+      // 無效的裁決移到 worktree 外保存，供事後查看；plan-arbitration.json 還在，重試時直接回到仲裁
+      if (existsSync(flowFile(run, "plan-arbiter.json"))) {
+        mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
+        renameSync(flowFile(run, "plan-arbiter.json"), join(runDir(run.id), "reviews", `plan-arbiter-${arbitrationRound}-${arbiter}-invalid.json`));
+      }
+      return retry(run, "plan-arbitration-run", `上次仲裁未產生有效裁決：${reason}`, "plan_review", category);
     }
     mkdirSync(join(runDir(run.id), "reviews"), { recursive: true });
     renameSync(flowFile(run, "plan-arbiter.json"), join(runDir(run.id), "reviews", `plan-arbiter-${arbitrationRound}-${arbiter}.json`));
@@ -698,6 +704,8 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
   }
   rmSync(flowFile(run, "dispute.md"), { force: true });
   rmSync(planArbitrationPath(run.id), { force: true });
+  run = { ...run, attempts: { ...run.attempts } };
+  delete run.attempts["plan-arbitration-run"];
 
   const approvals = verdicts.filter((v) => v.verdict === "approve").length;
   const unanimous = approvals === verdicts.length;

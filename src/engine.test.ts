@@ -940,11 +940,11 @@ ${APPROVE}`, { agents: ["p1", "p2"] });
     expect(readFileSync(join(flowDir(id), "plan-replies.md"), "utf8")).toBe("## 整體\n上一輪的舊回應\n");
   });
 
-  it("仲裁未產生有效裁決而暫停時，resume 直接回到仲裁，不重跑索引與群", async () => {
-    const id = "f-plan-layers-arbiter-pause";
+  it("仲裁輸出格式錯誤時重試仲裁，不暫停、不重跑索引與群，無效檔案移到 run 目錄", async () => {
+    const id = "f-plan-layers-arbiter-invalid";
     await layeredRun(id, `if (kind === "arbiter" && !existsSync(".flow/arbiter-failed")) {
   writeFileSync(".flow/arbiter-failed", "");
-  writeFileSync(".flow/plan-arbiter.json", "{");
+  writeFileSync(".flow/plan-arbiter.json", JSON.stringify({ verdict: "changes_requested", items: [{ criterion: "範圍", status: "blocked", note: "x" }] }));
   writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 } else {
 ${OBJECT}
@@ -954,15 +954,32 @@ ${OBJECT}
       '<issue criterion="任務群" status="not_met">太大</issue>',
       '<issue criterion="需求覆蓋" status="not_met">缺逾時</issue>',
     ].join("\n"));
-    const paused = await planReviewRun(id, 10, ["p1", "p2"]);
-    expect(paused.stage).toBe("paused");
-    expect(paused.pausedStage).toBe("plan_review");
-    expect(seen(id)).toBe("index\ngroup\ngroup\narbiter\n");
-    resetSeen(id);
-    const run = await advance({ ...paused, stage: paused.pausedStage!, pausedStage: undefined, pauseReason: undefined, maxAgentRuns: 6 });
-    expect(seen(id)).toBe("arbiter\narbiter\n");
-    expect(listRetries(id).some((item) => item.category === "arbitration_revise")).toBe(true);
+    const run = await planReviewRun(id, 6, ["p1", "p2"]);
+    expect(seen(id)).toBe("index\ngroup\ngroup\narbiter\narbiter\narbiter\n");
+    const retries = listRetries(id);
+    expect(retries.find((item) => item.key === "plan-arbitration-run")?.category).toBe("format_invalid");
+    expect(retries.some((item) => item.category === "arbitration_revise")).toBe(true);
+    expect(run.attempts["plan-arbitration-run"]).toBeUndefined();
+    expect(readdirSync(join(root, ".agentflowctl", "runs", id, "reviews")).some((f) => /^plan-arbiter-1-p\d-invalid\.json$/.test(f))).toBe(true);
+    expect(run.stage).toBe("failed");
     expect(run.failedStage).toBe("plan_fix");
+  });
+
+  it("仲裁者沒寫出裁決檔時重試仲裁，並在 feedback.md 告訴下一次原因", async () => {
+    const id = "f-plan-full-arbiter-missing";
+    await layeredRun(id, `if (kind === "arbiter" && !existsSync(".flow/arbiter-failed")) {
+  writeFileSync(".flow/arbiter-failed", "");
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+if (kind === "arbiter" && existsSync(".flow/feedback.md")) appendFileSync(".flow/arbiter-feedback.txt", readFileSync(".flow/feedback.md", "utf8"));
+${OBJECT}
+}`, { agents: ["p1", "p2"], layers: { enabled: false } });
+    writeFileSync(join(flowDir(id), "plan-review-last.txt"), '<issue criterion="任務群" status="not_met">太大</issue>');
+    const run = await planReviewRun(id, 4, ["p1", "p2"]);
+    expect(run.stage).not.toBe("paused");
+    expect(seen(id)).toBe("other\narbiter\narbiter\narbiter\n");
+    expect(readFileSync(join(flowDir(id), "arbiter-feedback.txt"), "utf8")).toContain("plan-arbiter.json");
+    expect(listRetries(id).find((item) => item.key === "plan-arbitration-run")?.category).toBe("format_invalid");
   });
 
   it("仲裁者額度用完而暫停時，resume 直接回到仲裁，不重跑整份審查", async () => {

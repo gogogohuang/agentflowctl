@@ -77,7 +77,7 @@
 | `feedback.md` | 有人要求修改、且尚未送仲裁時覆寫。每位審查者的意見以 `<opinion author="…">` 包住，交給修訂者。agent 執行失敗或 JSON 不合法則用計數鍵 `plan-review-run`，重跑這一輪；分層審查時這一輪已成功的呼叫直接沿用，而且每有一次呼叫真的執行成功，`plan-review-run` 就歸零（整份審查不歸零）。全員核准時刪除 | 程式，`retry("plan-review")` | 計畫修訂 agent |
 | `dispute.md` | 意見與上一輪相同，或輪數已達上限，且開啟仲裁時才寫。只留 `<issue>` 意見，不含審查者名稱 | 程式 | 仲裁 agent |
 | `reviews/dispute-full.md` | 同一份爭議，以 `<opinion author="…">` 保留審查者名字，供人事後對照 | 程式 | 人 |
-| `.agentflowctl/runs/<id>/plan-arbitration.json` | 交付仲裁時記下最後一位反對者與計畫內容雜湊。仲裁暫停後 resume 仍停在 plan_review，程式看到這份檔就直接回到仲裁，不重跑審查；得出裁決後刪除，計畫檔改過或 `dispute.md` 不見了也刪除並重新審查 | 程式 | resume 後的 plan_review 程式。在 worktree 外，agent 改不到 |
+| `.agentflowctl/runs/<id>/plan-arbitration.json` | 交付仲裁時記下最後一位反對者與計畫內容雜湊。仲裁重試或額度暫停後仍停在 plan_review，程式看到這份檔就直接回到仲裁，不重跑審查；得出裁決後刪除，計畫檔改過或 `dispute.md` 不見了也刪除並重新審查 | 程式 | resume 後的 plan_review 程式。在 worktree 外，agent 改不到 |
 | `.agentflowctl/runs/<id>/plan-review-state.json` | `reviewed`：每個任務上次的指紋與 verdict，以及整體做法的指紋；`round`：本輪已成功的審查呼叫，重跑同一輪時沿用，整輪結束即拿掉。壞掉則全部重審；整份審查或仲裁要求修訂時刪除 | 程式，每個呼叫成功後與整輪結束時 | 下一輪與同一輪重跑時的程式。在 worktree 外，agent 讀不到也改不到 |
 | `plan-review-group.json` | 單一任務群的裁決，驗證後移走 | 群審查 agent | 程式 |
 | `reviews/plan-review-<輪次>-<群>-<審查者>.json` | 群審查原檔 | 程式移出 | 人 |
@@ -94,13 +94,13 @@
 | `spec.md`、`acceptance.json`、`plan.md`、`tasks.json` | 目前的規格與計畫 | 計畫或計畫修訂 agent | 仲裁 agent |
 | `plan-replies.md` | 審查意見的處理結果，讀整份；沒有這份檔表示尚未回應 | 上一輪 plan_fix 寫回 | 仲裁 agent |
 | `dispute.md` | 尚未被接受的意見，已拿掉模型名稱 | 剛結束的 plan_review | 仲裁 agent |
-| `feedback.md` | 進入仲裁前程式會刪掉，避免仲裁者讀到帶審查者名字的報告 | 程式刪除 | 仲裁 agent 讀不到 |
+| `feedback.md` | 進入仲裁前程式會刪掉，避免仲裁者讀到帶審查者名字的報告。上次仲裁輸出無效而重試時，程式改寫成無效原因，給這次的仲裁者避開 | 程式 | 仲裁 agent（只有重試時） |
 
 ### 產出
 
 | 檔案 | 用途 | 誰寫 | 交給誰 |
 | --- | --- | --- | --- |
-| `plan-arbiter.json` | 這一票：可以開工，或必須再修。程式用全體 `verdict` 決定放行、交回修訂，或停下等人。JSON 不合法時 run 暫停，檔案留在 `.flow`；resume 直接重跑仲裁，不重跑計畫審查 | 仲裁 agent | 程式。有效則移走；無效則留給 `resume` 前查看 |
+| `plan-arbiter.json` | 這一票：可以開工，或必須再修。程式用全體 `verdict` 決定放行、交回修訂，或停下等人。缺檔、JSON 不合法或交接無效時不暫停，記一次 `plan-arbitration-run` 重試並直接重跑仲裁，不重跑計畫審查；連續達上限才失敗 | 仲裁 agent | 程式。有效則移走；無效則移到 `reviews/plan-arbiter-<輪次>-<仲裁者>-invalid.json` |
 | `reviews/plan-arbiter-<輪次>-<仲裁者>.json` | 每位仲裁者的原始裁決。雙盲分歧時，人靠它看 `tieBreak` 為什麼那樣走 | 程式自 `.flow` 移出 | 人 |
 | `dispute.md` | 裁決結束後刪除，避免之後的實作者把它當成另一份規格 | 程式刪除 | 無 |
 | `feedback.md` | 只有「交回修訂」時寫入，標題是「仲裁要求修訂」，每位仲裁者的理由以 `<opinion>` 包住 | 程式 | 計畫修訂 agent |

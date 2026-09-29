@@ -24,6 +24,7 @@
 <inputs>
 - .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json：目前的規格與計畫（審查意見的處理在 .flow/plan-replies.md；沒有這份檔表示尚未回應）
 - .flow/dispute.md：尚未被接受的審查意見
+- .flow/feedback.md（可能不存在）：上次仲裁輸出沒有通過程式檢查的原因，這次必須避免
 </inputs>
 
 <criteria>
@@ -47,6 +48,10 @@
 ```
 
 dispute.md 裡的每一條意見都要列一筆並說明你的判斷。
+`status` 只能是以下三個值之一，不可自創其他值：
+- `met`：這條意見不成立，或計畫已經處理好
+- `not_met`：意見成立，計畫必須修改
+- `partial`：意見部分成立，計畫仍需補強
 `verdict` 只能寫 `approve` 或 `changes_requested`。若計畫有會導致錯誤結果、遺漏需求或無法驗收的問題，請寫 `changes_requested`，不要寫 `reject`。
 </output_format>
 
