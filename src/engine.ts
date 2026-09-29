@@ -11,6 +11,7 @@ import { flowDir, logDir, planArbitrationPath, planReviewStatePath, projectRoot,
 import { CMD_AGENT, nextLogFile } from "./logs.js";
 import { exec } from "./proc.js";
 import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
+import { cleanupTempWorktrees, withTempWorktree, type Workspace } from "./tempWorktree.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
 import {
   AcceptanceList,
@@ -57,8 +58,8 @@ const logHint = (run: FlowRun, seq: number) => `（agentflowctl logs ${run.id} $
 const flowFile = (run: FlowRun, name: string) => join(flowDir(run.id), name);
 const to = (run: FlowRun, stage: Stage): FlowRun => ({ ...run, stage });
 
-function target(run: FlowRun, step: string, agent: string): AgentTarget {
-  return { runId: run.id, cwd: worktreeDir(run.id), logFile: nextLogFile(logDir(run.id), run.stage, step, agent), stage: run.stage, step };
+function target(run: FlowRun, step: string, agent: string, cwd = worktreeDir(run.id)): AgentTarget {
+  return { runId: run.id, cwd, logFile: nextLogFile(logDir(run.id), run.stage, step, agent), stage: run.stage, step };
 }
 
 /** 額度用完而必須停下：審查類步驟，或所有 agent 的額度都用完 */
@@ -88,6 +89,10 @@ interface StepMode {
   reset?: () => Promise<void> | void;
   slot?: number;
   blind?: boolean;
+  /** 在這個臨時 workspace 執行：agent 的 cwd 與交接檔都用它，不碰共用的 worktree；審查類額度用完不會在這裡重試，reset 是空操作 */
+  workspace?: Workspace;
+  /** 平行時加在終端機訊息前面，分辨是哪位審查者 */
+  tag?: string;
   /** 審查失敗升級計數的範圍（任務群 id），讓一群的失敗不影響其他群選模 */
   modelScope?: string;
 }
@@ -115,7 +120,8 @@ async function agentStep(
   mode: StepMode,
 ): Promise<StepOutcome> {
   const cfg = loadRepoConfig();
-  const reset = mode.reset ?? (() => discardChanges(worktreeDir(run.id)));
+  const say = (msg: string) => info(run, mode.tag ? `[${mode.tag}] ${msg}` : msg);
+  const reset = mode.reset ?? (mode.workspace ? () => {} : () => discardChanges(worktreeDir(run.id)));
   let agent = planned;
   for (;;) {
     if (exhausted.has(agent)) {
@@ -126,18 +132,18 @@ async function agentStep(
       if (!sub) throw new QuotaPause(`所有 agent 的額度都已用完（${[...exhausted].join("、")}）`);
       const note = step.endsWith("-code") && sub === run.lastTestsAuthor ? "測試與實作由同一家負責" : undefined;
       addSubstitution(run.id, { step, planned, actual: sub, note });
-      info(run, `🔁 ${agent} 額度已用完，${step} 由 ${sub} 代打${note ? `（注意：${note}）` : ""}`);
+      say(`🔁 ${agent} 額度已用完，${step} 由 ${sub} 代打${note ? `（注意：${note}）` : ""}`);
       agent = sub;
     }
     const selected = selectModel(run, cfg, agent, step,
       /^T-\d+-/.test(step) ? loadOrderedTasks(run)[run.taskIndex]?.complexity : undefined,
       mode.kind === "review" ? agent : undefined, mode.modelScope);
-    info(run, `🤖 ${step}：${agent} 使用 ${selected.name ?? "CLI 預設（名稱未知）"}${selected.insufficient ? `（低於目標 ${selected.targetStrength}）` : ""}`);
+    say(`🤖 ${step}：${agent} 使用 ${selected.name ?? "CLI 預設（名稱未知）"}${selected.insufficient ? `（低於目標 ${selected.targetStrength}）` : ""}`);
     const callKey = handoffKey(run, step, mode.slot ?? 0, agent);
-    prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false);
+    prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false, mode.workspace?.flow);
     const r = await runAgent(agent, { ...resolveAgent(cfg, agent), model: selected.name },
-      { ...target(run, step, agent), strength: selected.strength, targetStrength: selected.targetStrength }, prompt);
-    if (r.resolvedModel && r.resolvedModel !== selected.name) info(run, `   ↳ CLI 回報實際模型：${r.resolvedModel}`);
+      { ...target(run, step, agent, mode.workspace?.dir), strength: selected.strength, targetStrength: selected.targetStrength }, prompt);
+    if (r.resolvedModel && r.resolvedModel !== selected.name) say(`   ↳ CLI 回報實際模型：${r.resolvedModel}`);
     addUsage(run.id, { stage: step, agent, model: selected.name, resolvedModel: r.resolvedModel,
       strength: selected.strength, targetStrength: selected.targetStrength, usageReported: r.usageReported,
       inputTokens: r.inputTokens, outputTokens: r.outputTokens, cacheReadTokens: r.cacheReadTokens, cacheWriteTokens: r.cacheWriteTokens });
@@ -145,7 +151,7 @@ async function agentStep(
       reportMeta(run, agent, r);
       return { r, agent, step, callKey };
     }
-    info(run, `⛽ ${agent} 的額度已用完`);
+    say(`⛽ ${agent} 的額度已用完`);
     exhausted.add(agent);
     await reset();
     // 迴圈回到開頭：review 會停下，write 會找代打
@@ -1185,6 +1191,7 @@ const STAGES: Record<ActiveStage, (run: FlowRun) => Promise<FlowRun>> = {
 export async function advance(initial: FlowRun): Promise<FlowRun> {
   let run = initial;
   recoverHandoff(run.id);
+  await cleanupTempWorktrees(run.id); // 上次被中斷（Ctrl-C、SIGTERM、當機）時留下的平行審查臨時 worktree
   for (;;) {
     if (["done", "failed", "awaiting_approval", "paused"].includes(run.stage)) return run;
     const stage = run.stage as ActiveStage;
