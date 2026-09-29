@@ -94,7 +94,7 @@ if [[ "$dry_run" == 1 ]]; then
 fi
 
 read -r -p "確定要發布 $next_tag 嗎？(y/N) " answer
-[[ "$answer" == "y" ]] || die "已取消"
+[[ "$answer" == [yY] ]] || die "已取消"
 
 # 9. 建立 Release，npm-publish.yml 會接手發布
 gh release create "$next_tag" --target main --generate-notes --title "$next_tag"
