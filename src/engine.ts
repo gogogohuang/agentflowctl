@@ -195,9 +195,9 @@ function readFeedback(run: FlowRun): string {
 /** 計畫審查第幾輪仍有人要求修改時交付仲裁；固定值，不受重試上限影響 */
 const PLAN_ARBITRATION_ROUND = 2;
 
-/** 這個 run 的重試上限：`--max-attempts` 存在 run 裡，沒設定才用環境變數 */
+/** 這個 run 的重試上限：`--max-attempts` 存在 run 裡，沒設定才用 flow.config.json 的 maxAttempts */
 function attemptLimit(run: FlowRun): number {
-  return run.maxAttempts ?? config.maxAttempts;
+  return run.maxAttempts ?? loadRepoConfig().maxAttempts;
 }
 
 /** 關卡未通過：寫入 feedback.md 給下一次嘗試參考，並把原因分類記進 retries.jsonl；超過上限就讓整個 run 失敗 */
@@ -220,6 +220,27 @@ function succeed(run: FlowRun, key: string, next: Stage): FlowRun {
   const attempts = { ...run.attempts };
   delete attempts[key];
   return { ...run, attempts, stage: next };
+}
+
+/** 回傳這次 transition 完成的公開階段；內部審查／修正 transition 不算交付邊界。 */
+function completedStopStage(current: Stage, next: Stage): "spec" | "plan" | "implement" | "verify" | "review" | undefined {
+  if (current === "spec" && next === "plan") return "spec";
+  if (current === "plan_review" && next === "implement") return "plan";
+  if (current === "implement" && next === "verify") return "implement";
+  if (current === "verify" && next === "review") return "verify";
+  if (current === "review" && next === "pr") return "review";
+  return undefined;
+}
+
+function pauseAtStopAfter(run: FlowRun, next: FlowRun): FlowRun {
+  const completed = completedStopStage(run.stage, next.stage);
+  if (!completed || run.stopAfter !== completed) return next;
+  return {
+    ...next,
+    stage: "paused",
+    pausedStage: next.stage,
+    pauseReason: `已完成指定階段 ${completed}，等待使用者執行 resume 接續`,
+  };
 }
 
 /** 設定檔放在主專案根目錄，未 commit 的修改也會生效 */
@@ -1178,7 +1199,7 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
       });
     }
     try {
-      run = saveRun(await STAGES[stage](run));
+      run = saveRun(pauseAtStopAfter(run, await STAGES[stage](run)));
     } catch (err) {
       if (err instanceof QuotaPause) {
         info(run, `⏸️  暫停：${err.message}`);

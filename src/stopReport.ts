@@ -63,6 +63,11 @@ export function stopReport(i: StopReportInput): string[] {
     for (const item of i.open) out.push(`  [${item.targetStage}] ${item.id} ${item.summary}（${item.status}）`);
   }
 
+  const stoppedAfterStage = run.stage === "paused" && run.stopAfter && run.pauseReason?.startsWith("已完成指定階段");
+  if (stoppedAfterStage) {
+    out.push("", "── 指定停點 ──", `  ${run.pauseReason}`, `  指定停點：${run.stopAfter}`, `  下一階段：${run.pausedStage ?? "?"}`);
+  }
+
   const cmd = (c: string, why: string) => `  ${c.padEnd(40)} ${why}`;
   const actions: string[] = [];
   if (run.stage === "failed") {
@@ -71,7 +76,7 @@ export function stopReport(i: StopReportInput): string[] {
     actions.push(cmd(`agentflowctl resume ${run.id}`, `從 ${run.failedStage ?? "失敗的階段"} 重試`));
     actions.push(cmd(`agentflowctl cancel ${run.id}`, "放棄這個 run"));
   } else if (run.stage === "paused") {
-    actions.push(cmd(`agentflowctl resume ${run.id}`, "額度恢復後接續"));
+    actions.push(cmd(`agentflowctl resume ${run.id}`, stoppedAfterStage ? `從 ${run.pausedStage ?? "下一階段"} 接續` : "額度恢復後接續"));
   } else if (run.stage === "awaiting_approval") {
     actions.push(cmd(`less ${join(i.worktree, ".flow", "plan.md")}`, "檢視計畫"));
     actions.push(cmd(`agentflowctl approve ${run.id}`, "核准並開始實作"));

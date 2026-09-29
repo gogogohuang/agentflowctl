@@ -39,11 +39,13 @@ npx agentflowctl run --req-file ./requirement.md
 
 流程預設會自動往下走。想在計畫通過審查後親自確認，可加 `--manual-plan`；確認後執行 `agentflowctl approve <id>`。
 
+需要先取用某個階段的產出時，可用 `--stop-after <階段>`。可選停點是 `spec`（規格）、`plan`（計畫審查完成）、`implement`（所有任務完成）、`verify`（測試與 checks 通過）、`review`（程式碼審查完成）或 `pr`（PR 流程完成）。除了 `pr` 會照常結束外，其他停點完成後會進入 `paused`，可檢視 worktree 與 `.flow/` 檔案，再執行 `agentflowctl resume <id>` 從下一階段接續；`--manual-plan` 與 `--stop-after` 不能同時使用。
+
 agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。
 
 ## 查看進度
 
-`run` 開始時會印出 run id，例如 `f-xxxx`。執行中預設只顯示階段進度；加 `-v` 可看到 agent 文字、工具呼叫與專案指令。
+`run` 開始時會印出 run id，例如 `f-xxxx`。執行中預設只顯示階段進度；加 `-v`（或在 `flow.config.json` 設 `"verbose": true`）可看到 agent 文字、工具呼叫與專案指令。
 
 ```bash
 agentflowctl list                  # 列出 run
@@ -72,6 +74,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 | 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
 | `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>` |
 | `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審。在仲裁途中暫停時，resume 直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，或在 `flow.config.json` 把 `planArbiter` 關掉，就改成重新審查 |
+| `paused`：已完成指定停點 | 依 `status` 顯示的下一階段檢視產出，再執行 `agentflowctl resume <id>` 接續；run 會保留原本的停點設定 |
 | `failed`：仲裁連續沒有產生有效裁決 | 仲裁者沒寫出 `.flow/plan-arbiter.json`、格式錯誤或交接無效時不會暫停，會把原因寫進 `.flow/feedback.md` 並自動重跑仲裁（不重跑計畫審查）；無效的檔案移到 `.agentflowctl/runs/<id>/reviews/plan-arbiter-<輪>-<agent>-invalid.json`。連續達重試上限才失敗，查看 log 後執行 `agentflowctl resume <id>` 會再回到仲裁 |
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
 | `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
@@ -96,10 +99,11 @@ agentflowctl resume f-xxxx
 | --- | --- |
 | `run --req "..."` / `--req-file <檔案>` | 二選一，直接輸入需求或讀取檔案 |
 | `run --manual-plan` | 計畫通過審查後等待你確認，再用 `approve <id>` 繼續 |
+| `run --stop-after <階段>` | 在 `spec`、`plan`、`implement`、`verify` 或 `review` 完成後暫停；`pr` 會完成 PR 流程並結束。與 `--manual-plan` 互斥 |
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
 | `run --model-mode balanced\|adaptive` | 只覆蓋這次 run 的模型模式；`resume` 沿用建立時的模式 |
 | `run --base <分支>` | 指定起始分支；未設定時使用目前分支 |
-| `run --max-attempts <次數>` | 覆蓋這次的重試上限（至少 3；預設取 `AGENTFLOWCTL_MAX_ATTEMPTS`，未設定為 5）；失敗後可用 `resume <id> --max-attempts <次數>` 調高 |
+| `run --max-attempts <次數>` | 覆蓋這次的重試上限（至少 3；預設取 `flow.config.json` 的 `maxAttempts`，未設定為 5）；失敗後可用 `resume <id> --max-attempts <次數>` 調高 |
 | `run --max-agent-runs <次數>` | 覆蓋這次的 `maxAgentRuns`；上限不夠時可用 `resume <id> --max-agent-runs <次數>` 調高 |
 | `-v` / `--verbose` | 執行時顯示 agent 文字、工具呼叫與專案指令，適用於 `run`、`resume`、`approve` |
 
@@ -107,6 +111,7 @@ agentflowctl resume f-xxxx
 
 ```bash
 agentflowctl run --req-file ./requirement.md --cycle claude,codex --max-agent-runs 80 --manual-plan
+agentflowctl run --req-file ./requirement.md --stop-after plan
 agentflowctl resume f-xxxx --max-agent-runs 100
 agentflowctl resume f-xxxx --max-attempts 8
 ```
@@ -125,7 +130,7 @@ agentflowctl agent cycle claude,codex
 
 `agent add` 的 `--adapter` 可填 `claude`、`codex`、`gemini` 或 `command`。`--model` 指定個別 agent 的模型；`--extra-arg=--參數` 可重複使用，傳給該 CLI。使用 `command` adapter 時，把指令寫在 `--` 後，例如 `agentflowctl agent add aider --adapter command -- aider --message {prompt}`。`agent remove <名稱>` 會移除設定與參與名單；`agent cycle` 不帶名單則顯示目前參與者。
 
-`model add/set/remove` 只修改指定 agent 的模型清單；`model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`agent setup` 遇到同名 agent 會先詢問是否覆寫。
+`model add/set/remove` 只修改指定 agent 的模型清單；`model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`agent setup` 遇到同名 agent 會先詢問是否覆寫。目前是 adaptive 模式、但參與的 agent 沒有 `models` 時，`agent setup` 會提醒並詢問是否改回 balanced；`run` 遇到同樣情況會列出所有缺 `models` 的 agent，並附上 `model add` 與 `model mode balanced` 兩種修法。
 
 ### 依階段與任務難度選模型
 
@@ -197,6 +202,8 @@ Codex 另有幾點差異：
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |
 | `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
 | `maxAgentRuns` | `60` | 一次 run 最多執行幾次 agent；可用指令選項覆蓋 |
+| `maxAttempts` | `5` | 同一關連續失敗幾次後停止，至少 3；可用 `run`／`resume` 的 `--max-attempts` 覆蓋 |
+| `verbose` | `false` | 顯示 agent 文字、工具呼叫與專案指令，效果同 `-v` |
 | `install`、`test` | 依專案偵測 | 寫成指令字串，例如 `"install": "pnpm install"` |
 | `checks` | 依專案偵測 | 檢查清單，例如 `[{ "name": "test", "cmd": "pnpm test" }]`；提供時會取代整份預設清單 |
 | `testPattern` | 常見的 `.test.`、`.spec.` 檔名 | 辨識測試檔的正規表示式字串；非標準檔名時調整 |
@@ -207,15 +214,7 @@ Codex 另有幾點差異：
 
 `install`、`test`、`checks` 未設定時，會依 `packageManager`、lockfile 和 `package.json` scripts 偵測。完整範例見 [examples/flow.config.json](examples/flow.config.json)。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
 
-### 環境變數
-
-| 變數 | 預設 | 設定方式與用途 |
-| --- | --- | --- |
-| `AGENTFLOWCTL_MAX_ATTEMPTS` | `5` | 同一關連續失敗幾次後停止，至少 3（設得更小以 3 計）；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."` |
-| `AGENTFLOWCTL_VERBOSE` | 未開啟 | 設為 `1` 顯示詳細輸出，效果同 `-v` |
-| `AGENTFLOWCTL_MAX_TURNS` | `200` | 目前程式會讀取此值，但尚未用它限制 agent 執行 |
-
-環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限（至少 3），單一 run 可用 `run`／`resume` 的 `--max-attempts` 覆蓋；計畫審查何時交付仲裁與它無關：意見沒有變化，或第 2 輪（修訂過一次）仍被要求修改時就交付，兩家 agent 時自動進入雙盲交叉仲裁，有第三方時由第三方單獨仲裁；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。
+agentflowctl 不讀取任何 `AGENTFLOWCTL_*` 環境變數，設定都寫在 `flow.config.json`。`maxAttempts`（預設 5、至少 3；設得更小會直接報設定錯誤）是單一關卡的重試上限（至少 3），單一 run 可用 `run`／`resume` 的 `--max-attempts` 覆蓋；計畫審查何時交付仲裁與它無關：意見沒有變化，或第 2 輪（修訂過一次）仍被要求修改時就交付，兩家 agent 時自動進入雙盲交叉仲裁，有第三方時由第三方單獨仲裁；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。
 
 ## 發版（維護者）
 

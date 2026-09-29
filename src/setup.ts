@@ -1,4 +1,6 @@
 import { addAgent, setAgent, setCycle, type Edit, type RawConfig } from "./agentConfig.js";
+import { missingModelsMessage } from "./modelSelection.js";
+import { setModelMode } from "./modelConfig.js";
 import { ADAPTERS, type AdapterName } from "./agents/index.js";
 
 /**
@@ -88,6 +90,17 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
       break;
     } catch (e) {
       log(`  ${(e as Error).message}`);
+    }
+  }
+
+  // adaptive 只看 models；精靈只會寫 model，參與的 agent 缺 models 時 run 會直接失敗
+  const defs = (cfg.agents ?? {}) as Record<string, { models?: unknown[] }>;
+  const lacking = (cfg.cycle as string[]).filter((n) => !defs[n]?.models?.length);
+  if (lacking.length && ((cfg.modelSelection ?? {}) as { mode?: string }).mode === "adaptive") {
+    log(`\n⚠️  ${missingModelsMessage(lacking)}`);
+    if (await confirm("改回 balanced 模式？（選 n 則維持 adaptive，請之後自行登記 models）", true)) {
+      cfg = setModelMode(cfg, "balanced");
+      changes.push("modelSelection.mode → balanced");
     }
   }
 

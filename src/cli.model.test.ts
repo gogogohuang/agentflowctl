@@ -118,4 +118,58 @@ describe("model CLI", () => {
     expect(result.stderr).toContain("models");
     expect(readFileSync(join(runDir, "state.json"), "utf8")).toBe(state);
   });
+
+  it.each(["plan_review", "later"])("run 在建立 worktree 前拒絕非法停點 %s", (stopAfter) => {
+    const root = mkdtempSync(join(tmpdir(), "agentflowctl-stop-cli-"));
+    execFileSync("git", ["init", "-q", "-b", "main", root]);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: { local: { adapter: "command", command: [process.execPath, "-e", "console.log('ok')"] } },
+      cycle: ["local"],
+    }));
+    const result = spawnSync(process.execPath, ["--import", tsx, cli, "run", "--req", "測試", "--stop-after", stopAfter], { cwd: root, encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("停點");
+    expect(existsSync(join(root, ".agentflowctl", "worktrees"))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("run 同時使用 manual-plan 與 stop-after 時，在建立 worktree 前拒絕", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentflowctl-stop-cli-"));
+    execFileSync("git", ["init", "-q", "-b", "main", root]);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: { local: { adapter: "command", command: [process.execPath, "-e", "console.log('ok')"] } },
+      cycle: ["local"],
+    }));
+    const result = spawnSync(process.execPath, ["--import", tsx, cli, "run", "--req", "測試", "--manual-plan", "--stop-after", "plan"], { cwd: root, encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("不能同時");
+    expect(existsSync(join(root, ".agentflowctl", "worktrees"))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("run 接受公開停點並把 stopAfter 寫入新 run", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentflowctl-stop-cli-"));
+    execFileSync("git", ["init", "-q", "-b", "main", root]);
+    writeFileSync(join(root, "base.txt"), "base\n");
+    execFileSync("git", ["-C", root, "add", "base.txt"]);
+    execFileSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]);
+    const agent = join(root, "agent.mjs");
+    writeFileSync(agent, `import { mkdirSync, writeFileSync } from "node:fs";
+mkdirSync(".flow", { recursive: true });
+writeFileSync(".flow/spec.md", "# 規格\\n");
+writeFileSync(".flow/acceptance.json", JSON.stringify([{ id: "AC-1", description: "完成" }]));
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: { local: { adapter: "command", command: [process.execPath, agent] } },
+      cycle: ["local"], install: "true",
+    }));
+    const result = spawnSync(process.execPath, ["--import", tsx, cli, "run", "--req", "測試", "--stop-after", "spec"], { cwd: root, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const runId = result.stdout.match(/run\s+(f-[^\s]+)/)?.[1];
+    expect(runId).toBeDefined();
+    const state = JSON.parse(readFileSync(join(root, ".agentflowctl", "runs", runId!, "state.json"), "utf8"));
+    expect(state).toMatchObject({ stage: "paused", stopAfter: "spec", pausedStage: "plan" });
+    rmSync(root, { recursive: true, force: true });
+  }, 30_000);
 });

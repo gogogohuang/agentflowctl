@@ -12,7 +12,7 @@ import { cleanableRuns, cleanRun } from "./cleanup.js";
 import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
-import { ModelStage, ModelStrength, TaskList, type FlowRun } from "./schemas.js";
+import { ModelStage, ModelStrength, StopAfterStage, TaskList, type FlowRun, type StopAfterStage as StopAfterStageType } from "./schemas.js";
 import { computeInsights, failureLabel, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
 import { computeStats, formatDuration } from "./stats.js";
@@ -44,6 +44,13 @@ function positiveInt(text: string, flag: string, min = 1): number {
   return n;
 }
 
+function parseStopAfter(value?: string): StopAfterStageType | undefined {
+  if (value === undefined) return undefined;
+  const result = StopAfterStage.safeParse(value);
+  if (!result.success) throw new Error(`未知的流程停點：${value}（可用：spec、plan、implement、verify、review、pr）`);
+  return result.data;
+}
+
 function mustGetRun(id: string): FlowRun {
   const run = getRun(id);
   if (!run) throw new Error(`找不到 run：${id}`);
@@ -64,6 +71,7 @@ function printSummary(run: FlowRun, interrupted = false): void {
   console.log("");
   console.log(`run      ${run.id}`);
   console.log(`階段     ${run.stage}`);
+  if (run.stopAfter) console.log(`停點     ${run.stopAfter}`);
   console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次`);
   console.log(`agent    ${run.cycle.join("、")}${run.lastWriter ? `（最後作者：${run.lastWriter}）` : ""}`);
   console.log(`分支     ${run.branch}`);
@@ -114,9 +122,13 @@ const TASK_PHASE_MARK: Record<FlowRun["taskPhase"], string> = { tests: "🧪", c
 const program = new Command()
   .name("agentflowctl")
   .description("在專案資料夾內執行的 Agent 開發流程：規格 → 計畫 → TDD 實作 → 驗證 → 審查 → PR")
-  .option("-v, --verbose", "執行時印出 agent 的文字、工具呼叫與專案指令（預設只印階段進度）")
+  .option("-v, --verbose", "執行時印出 agent 的文字、工具呼叫與專案指令（預設只印階段進度；也可在 flow.config.json 設 verbose）")
   .hook("preAction", (cmd) => {
     if (cmd.opts().verbose) config.verbose = true;
+    else {
+      // doctor、agent setup 等可能在沒有專案或設定壞掉時執行；這裡讀不到就維持安靜，指令本身會回報設定錯誤
+      try { config.verbose = loadRepoConfig().verbose; } catch { /* 維持預設 */ }
+    }
   });
 
 program
@@ -126,13 +138,16 @@ program
   .option("--req-file <file>", "從檔案讀取需求")
   .option("--base <branch>", "基底分支（預設為目前的分支）")
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
-  .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 AGENTFLOWCTL_MAX_ATTEMPTS，未設定為 5）")
+  .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 flow.config.json 的 maxAttempts，未設定為 5）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
+  .option("--stop-after <stage>", "完成公開階段後暫停：spec、plan、implement、verify、review 或 pr")
   .option("--cycle <agents>", "參與的 agent，例如 claude,codex,gemini（順序不影響分工）")
   .option("--model-mode <mode>", "這次 run 的模型模式：balanced 或 adaptive")
-  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; maxAttempts?: string; manualPlan: boolean; cycle?: string; modelMode?: string }) => {
+  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; maxAttempts?: string; manualPlan: boolean; stopAfter?: string; cycle?: string; modelMode?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
+    const stopAfter = parseStopAfter(opts.stopAfter);
+    if (opts.manualPlan && stopAfter) throw new Error("--manual-plan 與 --stop-after 不能同時使用");
     const root = projectRoot();
     const base = opts.base ?? (await git(root, "branch", "--show-current"));
     if (!base) throw new Error("目前不在任何分支上，請用 --base 指定基底分支");
@@ -154,6 +169,7 @@ program
       branch,
       requirement: requirement.trim(),
       stage: "spec",
+      stopAfter,
       autopilot: !opts.manualPlan,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
       maxAttempts: opts.maxAttempts ? positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) : undefined,
