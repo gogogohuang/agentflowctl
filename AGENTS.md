@@ -14,6 +14,7 @@ npx vitest run src/runner.test.ts         # 單一檔案
 npx vitest run -t "adapter 事件解析"       # 依測試名稱篩選
 pnpm run build                            # tsc → dist/（bin 指向 dist/cli.js）
 pnpm dev doctor                           # 用 tsx 直接跑 src/cli.ts
+pnpm release patch --dry-run              # 本機發版（限 main）；patch|minor|major|x.y.z，去掉 --dry-run 才會建立 GitHub Release
 ```
 
 CI（`.github/workflows/ci.yml`）在 ubuntu／macos × Node 22／24 跑 typecheck、test、build。發布是在 GitHub 建 Release 時自動做的：版本號取自 tag，`package.json` 的 version 不需要手動改。
