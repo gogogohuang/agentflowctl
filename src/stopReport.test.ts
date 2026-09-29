@@ -75,4 +75,14 @@ describe("run 停下時的結果與下一步", () => {
     expect(out).toContain("agentflowctl approve f-1");
     expect(stopReport({ run: run({ stage: "done" }), worktree: "/wt", open: [issue], read, logs: [] })).toEqual([]);
   });
+
+  it("指定停點完成而暫停：顯示停點與下一階段的 resume", () => {
+    const out = stopReport({
+      run: run({ stage: "paused", stopAfter: "verify", pausedStage: "review", pauseReason: "已完成指定階段 verify，等待使用者執行 resume 接續" }),
+      worktree: "/wt", open: [], read, logs: [],
+    }).join("\n");
+    expect(out).toContain("已完成指定階段 verify");
+    expect(out).toContain("下一階段：review");
+    expect(out).toContain("agentflowctl resume f-1");
+  });
 });

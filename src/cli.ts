@@ -71,6 +71,7 @@ function printSummary(run: FlowRun, interrupted = false): void {
   console.log("");
   console.log(`run      ${run.id}`);
   console.log(`階段     ${run.stage}`);
+  if (run.stopAfter) console.log(`停點     ${run.stopAfter}`);
   console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次`);
   console.log(`agent    ${run.cycle.join("、")}${run.lastWriter ? `（最後作者：${run.lastWriter}）` : ""}`);
   console.log(`分支     ${run.branch}`);
