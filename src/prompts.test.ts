@@ -80,6 +80,8 @@ describe("prompts", () => {
     const arbiter = renderPrompt("plan-arbiter", vars);
     expect(arbiter).toContain(".flow/plan-replies.md");
     expect(arbiter).not.toContain("plan.md 最後有作者對審查意見的回應");
+    expect(arbiter).toContain("`status` 只能是以下三個值之一");
+    expect(arbiter).toContain(".flow/feedback.md");
     expect(renderPrompt("plan-review", vars)).toContain(".flow/plan-replies.md");
   });
 });
