@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
 import { arbitrationDecision } from "./arbitration.js";
-import { detectProjectDefaults, withProjectDefaults } from "./detect.js";
+import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
@@ -234,6 +234,19 @@ export function loadRepoConfig(): RepoConfig {
   return r.data;
 }
 
+/** 專案有測試框架（偵測到或手動設定 test） */
+function hasTestFramework(): boolean {
+  const root = projectRoot();
+  const p = join(root, "flow.config.json");
+  const r = existsSync(p) ? readJsonFile(p, z.unknown()) : undefined;
+  return usesTestFramework(r?.ok ? r.data : {}, detectProjectDefaults(root));
+}
+
+/** 這個任務要不要走紅綠燈：沒有測試框架一律不走，其餘依 planner 標記（沒標視為要走） */
+function taskUsesTdd(task: TaskItem, framework: boolean): boolean {
+  return framework && task.tdd !== false;
+}
+
 function loadOrderedTasks(run: FlowRun): TaskItem[] {
   const r = readJsonFile(flowFile(run, "tasks.ordered.json"), TaskList);
   if (!r.ok) throw new Error(r.error);
@@ -308,9 +321,12 @@ function acceptPlan(run: FlowRun, ordered: TaskItem[]): void {
 function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
   const cfg = loadRepoConfig();
   info(run, `📋 共 ${ordered.length} 個任務：${ordered.map((t) => t.id).join(" → ")}`);
+  const framework = hasTestFramework();
   ordered.forEach((t, i) => {
     const a = taskAgents(run.cycle, i, cfg.tddSplit, run.id);
-    info(run, `   ${t.id} 測試：${a.tests}　實作：${a.code}　審查：${a.review}`);
+    info(run, taskUsesTdd(t, framework)
+      ? `   ${t.id} 測試：${a.tests}　實作：${a.code}　審查：${a.review}`
+      : `   ${t.id} 略過 TDD　實作：${a.code}　審查：${a.review}`);
   });
 }
 
@@ -772,6 +788,14 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
   if (run.taskPhase === "fix") return taskFixStep(run, task, progress);
   const agents = taskAgents(run.cycle, run.taskIndex, cfg.tddSplit, run.id);
+  const framework = hasTestFramework();
+  const tdd = taskUsesTdd(task, framework);
+
+  // ── 不走 TDD：略過紅燈，實作前的 HEAD 就是這個任務的起點 ──
+  if (!tdd && run.taskPhase === "tests") {
+    info(run, `⏭️  [${progress}] 略過 TDD（${framework ? "planner 標記不適合先寫測試" : "專案沒有測試框架"}）`);
+    return { ...run, taskPhase: "code", taskBase: await headCommit(repo), testsCommit: undefined, lastTestsAuthor: undefined };
+  }
 
   // ── 紅燈：只寫測試，而且測試必須失敗 ──
   if (run.taskPhase === "tests") {
@@ -818,14 +842,17 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
 
   // ── 綠燈：實作到測試通過，而且不可動測試 ──
   const key = `${task.id}:code`;
-  const testsCommit = run.testsCommit;
-  if (!testsCommit) throw new Error("缺少 testsCommit，狀態不一致");
-  info(run, `🛠️  [${progress}] 實作（${agents.code}，測試由 ${run.lastTestsAuthor ?? agents.tests} 撰寫）`);
+  // 走 TDD 時以測試 commit 為基準；不走 TDD 時以任務起點為基準
+  const testsCommit = tdd ? run.testsCommit : run.taskBase;
+  if (!testsCommit) throw new Error(tdd ? "缺少 testsCommit，狀態不一致" : "缺少 taskBase，狀態不一致");
+  info(run, tdd ? `🛠️  [${progress}] 實作（${agents.code}，測試由 ${run.lastTestsAuthor ?? agents.tests} 撰寫）` : `🛠️  [${progress}] 實作（${agents.code}，不走 TDD）`);
   const redOutput = existsSync(flowFile(run, "red-output.txt")) ? readFileSync(flowFile(run, "red-output.txt"), "utf8") : "";
   const snap = snapshotPlan(run, LOCKED_FILES);
   const outcome = await agentStep(
     run, agents.code, `${task.id}-code`,
-    renderPrompt("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) }),
+    tdd
+      ? renderPrompt("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) })
+      : renderPrompt("implement-direct", { task: taskJson, acceptance: acceptanceJson, testCmd: framework ? testCmd : "" }),
     { kind: "write", reset: async () => { await resetTo(repo, testsCommit); restorePlan(run, snap); } },
   );
   const { r, agent: codeAuthor } = outcome;
@@ -835,13 +862,15 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     await resetTo(repo, testsCommit);
     return retry(run, key, planTamperedMessage(tampered), "implement", "plan_tampered");
   }
-  await commitAll(repo, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
-  const touched = (await changedFiles(repo, testsCommit, await headCommit(repo))).filter((f) => testRe.test(f));
+  const codeCommit = await commitAll(repo, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
+  if (!tdd && !codeCommit) return retry(run, key, "沒有任何檔案變更，這個任務必須完成實作。", "implement", "code_not_written");
+  const touched = tdd ? (await changedFiles(repo, testsCommit, await headCommit(repo))).filter((f) => testRe.test(f)) : [];
   if (touched.length) {
     await resetTo(repo, testsCommit);
     return retry(run, key, `實作階段不可修改測試檔，已還原你的變更：${touched.join(", ")}`, "implement", "tests_modified");
   }
-  const green = await runCommand(target(run, `${task.id}-green`, CMD_AGENT), testCmd);
+  // 沒有測試框架時沒有東西可跑，後面的驗證與審查照常把關
+  const green = framework ? await runCommand(target(run, `${task.id}-green`, CMD_AGENT), testCmd) : { ok: true as const, output: "", seq: 0 };
   if (!green.ok) {
     info(run, `   ✗ 測試仍未通過${logHint(run, green.seq)}`);
     return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement", "tests_not_green");
@@ -851,7 +880,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     await resetTo(repo, testsCommit);
     return retry(run, key, handoffError, "implement", "handoff_invalid");
   }
-  info(run, `🟢 [${progress}] 測試通過`);
+  info(run, framework ? `🟢 [${progress}] 測試通過` : `✔️  [${progress}] 實作完成`);
   return { ...succeed(run, key, "implement"), taskPhase: "review", lastWriter: codeAuthor };
 }
 

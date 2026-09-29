@@ -23,6 +23,16 @@ describe("detectProjectDefaults", () => {
     expect(d.checks).toEqual(defaults.checks);
   });
 
+  it("依依賴與 test script 判斷有沒有測試框架", () => {
+    expect(detectProjectDefaults(project({ "package.json": {} })).testFramework).toBe(false);
+    expect(detectProjectDefaults(project({})).testFramework).toBe(false);
+    expect(detectProjectDefaults(project({ "package.json": { devDependencies: { vitest: "^3" } } })).testFramework).toBe(true);
+    expect(detectProjectDefaults(project({ "package.json": { dependencies: { jest: "^29" } } })).testFramework).toBe(true);
+    expect(detectProjectDefaults(project({ "package.json": { scripts: { test: "node --test" } } })).testFramework).toBe(true);
+    const placeholder = 'echo "Error: no test specified" && exit 1';
+    expect(detectProjectDefaults(project({ "package.json": { scripts: { test: placeholder } } })).testFramework).toBe(false);
+  });
+
   it("沒有 package.json 時仍回傳 npm 的預設值", () => {
     const d = detectProjectDefaults(project({}));
     expect(d.manager).toBe("npm");
@@ -90,7 +100,7 @@ describe("detectProjectDefaults", () => {
 });
 
 describe("withProjectDefaults", () => {
-  const detected = detectProjectDefaults(project({ "pnpm-lock.yaml": "" }));
+  const detected = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { devDependencies: { vitest: "^3" } } }));
 
   it("補上設定裡沒寫的 install、test、checks", () => {
     const raw = withProjectDefaults({ tddSplit: false }, detected) as Record<string, unknown>;
@@ -108,6 +118,14 @@ describe("withProjectDefaults", () => {
     expect(raw.test).toBe("pnpm exec vitest run");
   });
 
+  it("沒有測試框架且沒手動設定 test 時，預設 checks 不含 test", () => {
+    const none = detectProjectDefaults(project({ "package.json": {} }));
+    const raw = withProjectDefaults({}, none) as { checks: { name: string }[] };
+    expect(raw.checks.map((c) => c.name)).not.toContain("test");
+    const manual = withProjectDefaults({ test: "make test" }, none) as { checks: { name: string }[] };
+    expect(manual.checks.map((c) => c.name)).toContain("test");
+  });
+
   it("不是物件時原樣回傳，交給 schema 報錯", () => {
     expect(withProjectDefaults([], detected)).toEqual([]);
     expect(withProjectDefaults(null, detected)).toBeNull();
@@ -115,7 +133,7 @@ describe("withProjectDefaults", () => {
 });
 
 describe("describeDetected", () => {
-  const detected = detectProjectDefaults(project({ "pnpm-lock.yaml": "" }));
+  const detected = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { devDependencies: { vitest: "^3" } } }));
 
   it("列出這次改用偵測結果的欄位", () => {
     expect(describeDetected({ checks: [] }, detected)).toEqual([
@@ -128,6 +146,12 @@ describe("describeDetected", () => {
   it("checks 逐項列出", () => {
     const lines = describeDetected({ install: "x", test: "y" }, detected);
     expect(lines.slice(1)).toEqual(detected.checks.map((c) => `   checks.${c.name}：${c.cmd}`));
+  });
+
+  it("沒有測試框架時說明會略過紅綠燈", () => {
+    const none = detectProjectDefaults(project({ "package.json": {} }));
+    expect(describeDetected({ install: "x", checks: [] }, none).join("\n")).toContain("未偵測到測試框架");
+    expect(describeDetected({ install: "x", test: "y", checks: [] }, none)).toEqual([]);
   });
 
   it("三個欄位都手動設定時不輸出", () => {

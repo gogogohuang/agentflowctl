@@ -139,6 +139,8 @@
 
 依 `tasks.ordered.json` 逐項做。紅燈與綠燈的輸入、產出不同。
 
+任務略過 TDD（專案沒有測試框架，或任務的 `tdd` 為 `false`）時不做紅燈：進入實作時把當下的 HEAD 記進 `state.json` 的 `taskBase`，`testsCommit` 留空，也沒有 `red-output.txt`。實作改用 `implement-direct` prompt，成功條件是至少有一顆 commit；有測試框架時仍跑一次測試指令當回歸檢查，通過後照常進入任務審查。沒有 commit 以 `code_not_written` 重試，`feedback.md` 與綠燈用同一個 key（`<任務 id>:code`）。
+
 ### 紅燈輸入
 
 | 檔案 | 用途 | 誰準備的 | 這個階段誰讀 |
@@ -288,7 +290,7 @@
 | plan_fix 失敗／`plan-fix` | 進入時讀到的全文，再附加 agent 執行失敗，或「格式檢查沒過、已還原」與錯誤說明 | 停在 plan_fix。因此失敗越多次，舊標題會包在新標題裡面 |
 | plan_fix 成功 | 把進入時讀到的原文原樣寫回，不另加「第 N 次」 | 進入下一輪 plan_review。`plan-fix` 次數清掉。檔案留在 `.flow`，讓下一輪審查看得到上次的意見；審查 prompt 仍不要求必讀。若再次要求修改，`retry("plan-review")` 會整份覆蓋 |
 | 紅燈／`<任務 id>:tests` | 執行失敗、沒有任何變更、沒有改到測試檔、或測試在實作前就全部通過 | 停在該任務的紅燈。通過後刪除 |
-| 綠燈／`<任務 id>:code` | 執行失敗、改了測試檔（含檔名）、或測試仍未通過並附上輸出尾段 | 停在該任務的綠燈。通過後刪除。測試仍失敗時，失敗的實作 commit 留在分支上 |
+| 綠燈／`<任務 id>:code` | 執行失敗、改了測試檔（含檔名）、測試仍未通過並附上輸出尾段；略過 TDD 的任務則是沒有任何變更 | 停在該任務的綠燈。通過後刪除。測試仍失敗時，失敗的實作 commit 留在分支上 |
 | verify／`verify` | 每個失敗項目一節：`## <check 名稱> 失敗` 與輸出。install 失敗就只有 install 這一節 | 進入 fix，`fixSource` 為 `verify` |
 | review／`review` | `程式碼審查要求修改：` 加上每位未核准審查者的 `<opinion>` 與未達成 `<issue>` | 進入 fix，`fixSource` 為 `review` |
 | review／`review-run` | agent 執行失敗摘要，或 `review.json` 驗證錯誤 | 停在 review，整輪重跑 |

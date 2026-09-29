@@ -17,6 +17,8 @@ export interface ProjectDefaults {
   install: string;
   test: string;
   checks: Check[];
+  /** package.json 看得出有測試框架；沒有就不做紅綠燈 */
+  testFramework: boolean;
 }
 
 const LOCKFILES: [string, PackageManager][] = [
@@ -46,9 +48,22 @@ const CHECK_SCRIPTS: Record<string, string[]> = {
   build: ["build"],
 };
 
+/** 出現在依賴裡就代表專案有測試框架 */
+const TEST_FRAMEWORKS = ["vitest", "jest", "mocha", "ava", "jasmine", "tap", "uvu", "@playwright/test", "cypress"];
+
 interface PackageJson {
   packageManager?: unknown;
   scripts?: Record<string, unknown>;
+  dependencies?: Record<string, unknown>;
+  devDependencies?: Record<string, unknown>;
+}
+
+function hasTestFramework(pkg: PackageJson): boolean {
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  if (TEST_FRAMEWORKS.some((name) => name in deps)) return true;
+  const script = pkg.scripts?.test;
+  // npm init 產生的佔位 script 不算
+  return typeof script === "string" && !/no test specified/i.test(script);
 }
 
 function readPackageJson(root: string): PackageJson {
@@ -84,22 +99,30 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
     const script = CHECK_SCRIPTS[name]?.find((s) => typeof scripts[s] === "string");
     return { name, cmd: script ? `${manager} run ${script}` : withExec(cmd, manager) };
   });
-  return { manager, source, install: INSTALL[manager], test: withExec(defaults.test, manager), checks };
+  return { manager, source, install: INSTALL[manager], test: withExec(defaults.test, manager), checks, testFramework: hasTestFramework(pkg) };
 }
+
+/** 手動設定 test 指令就當作有測試框架 */
+export const usesTestFramework = (raw: unknown, detected: ProjectDefaults): boolean =>
+  detected.testFramework || (!!raw && typeof raw === "object" && "test" in raw);
 
 /** 補上原始設定裡沒寫的 install、test、checks；不是物件就原樣回傳，交給 schema 報錯 */
 export function withProjectDefaults(raw: unknown, detected: ProjectDefaults): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
-  const { install, test, checks } = detected;
+  const { install, test } = detected;
+  // 沒有測試框架也沒手動設定 test 時，預設的檢查不含 test
+  const checks = usesTestFramework(raw, detected) ? detected.checks : detected.checks.filter((c) => c.name !== "test");
   return { install, test, checks, ...raw };
 }
 
 /** run 開始時印出的說明：只列出這次用了偵測結果的欄位 */
 export function describeDetected(raw: Record<string, unknown>, detected: ProjectDefaults): string[] {
   const lines: string[] = [];
+  const framework = usesTestFramework(raw, detected);
   if (!("install" in raw)) lines.push(`   install：${detected.install}`);
-  if (!("test" in raw)) lines.push(`   test：${detected.test}`);
-  if (!("checks" in raw)) lines.push(...detected.checks.map((c) => `   checks.${c.name}：${c.cmd}`));
+  if (!("test" in raw) && framework) lines.push(`   test：${detected.test}`);
+  if (!("checks" in raw)) lines.push(...detected.checks.filter((c) => framework || c.name !== "test").map((c) => `   checks.${c.name}：${c.cmd}`));
+  if (!framework) lines.push("ℹ️  未偵測到測試框架，所有任務略過紅綠燈，也不跑 test 檢查（在 flow.config.json 設定 test 可改回來）");
   if (!lines.length) return [];
   const why = detected.source === "預設" ? "預設" : `依 ${detected.source}`;
   return [`🔧 依專案偵測指令：${detected.manager}（${why}）`, ...lines];
