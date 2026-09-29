@@ -114,9 +114,13 @@ const TASK_PHASE_MARK: Record<FlowRun["taskPhase"], string> = { tests: "🧪", c
 const program = new Command()
   .name("agentflowctl")
   .description("在專案資料夾內執行的 Agent 開發流程：規格 → 計畫 → TDD 實作 → 驗證 → 審查 → PR")
-  .option("-v, --verbose", "執行時印出 agent 的文字、工具呼叫與專案指令（預設只印階段進度）")
+  .option("-v, --verbose", "執行時印出 agent 的文字、工具呼叫與專案指令（預設只印階段進度；也可在 flow.config.json 設 verbose）")
   .hook("preAction", (cmd) => {
     if (cmd.opts().verbose) config.verbose = true;
+    else {
+      // doctor、agent setup 等可能在沒有專案或設定壞掉時執行；這裡讀不到就維持安靜，指令本身會回報設定錯誤
+      try { config.verbose = loadRepoConfig().verbose; } catch { /* 維持預設 */ }
+    }
   });
 
 program
@@ -126,7 +130,7 @@ program
   .option("--req-file <file>", "從檔案讀取需求")
   .option("--base <branch>", "基底分支（預設為目前的分支）")
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
-  .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 AGENTFLOWCTL_MAX_ATTEMPTS，未設定為 5）")
+  .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 flow.config.json 的 maxAttempts，未設定為 5）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
   .option("--cycle <agents>", "參與的 agent，例如 claude,codex,gemini（順序不影響分工）")
   .option("--model-mode <mode>", "這次 run 的模型模式：balanced 或 adaptive")

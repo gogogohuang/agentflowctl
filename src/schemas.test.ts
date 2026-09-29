@@ -44,3 +44,15 @@ describe("FlowRun.maxAttempts", () => {
     expect(FlowRun.safeParse({ ...base, maxAttempts: 2 }).success).toBe(false);
   });
 });
+
+describe("RepoConfig 的 maxAttempts 與 verbose", () => {
+  it("預設 5 次、不顯示詳細輸出；可在設定檔覆蓋", () => {
+    expect(RepoConfig.parse({})).toMatchObject({ maxAttempts: 5, verbose: false });
+    expect(RepoConfig.parse({ maxAttempts: 10, verbose: true })).toMatchObject({ maxAttempts: 10, verbose: true });
+  });
+
+  it("maxAttempts 低於 3 直接報錯", () => {
+    expect(() => RepoConfig.parse({ maxAttempts: 2 })).toThrow();
+  });
+});
+

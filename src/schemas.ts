@@ -191,6 +191,10 @@ export const RepoConfig = z.object({
   tieBreak: z.enum(["proceed", "stop"]).default("proceed"),
   /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive().default(60),
+  /** 同一關連續失敗幾次後停止；至少 3，修正與審查才來得及往返一輪 */
+  maxAttempts: z.number().int().min(3).default(5),
+  /** 終端機是否印出 agent 的文字、工具呼叫與專案指令；命令列 -v 也能開啟 */
+  verbose: z.boolean().default(false),
   install: z.string().default("npm install --no-audit --no-fund"),
   test: z.string().default("npx vitest run"),
   testPattern: z.string().default("\\.(test|spec)\\.[cm]?[jt]sx?$"),
@@ -218,7 +222,7 @@ export const FlowRun = z.object({
   autopilot: z.boolean(),
   /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive(),
-  /** 這個 run 同一關連續失敗的上限；沒寫就用 AGENTFLOWCTL_MAX_ATTEMPTS（舊 state.json 沒有此欄位） */
+  /** 這個 run 同一關連續失敗的上限；沒寫就用 flow.config.json 的 maxAttempts（舊 state.json 沒有此欄位） */
   maxAttempts: z.number().int().min(3).optional(),
   /** 暫停前所在的階段與原因（額度用完時） */
   pausedStage: Stage.optional(),

@@ -195,9 +195,9 @@ function readFeedback(run: FlowRun): string {
 /** 計畫審查第幾輪仍有人要求修改時交付仲裁；固定值，不受重試上限影響 */
 const PLAN_ARBITRATION_ROUND = 2;
 
-/** 這個 run 的重試上限：`--max-attempts` 存在 run 裡，沒設定才用環境變數 */
+/** 這個 run 的重試上限：`--max-attempts` 存在 run 裡，沒設定才用 flow.config.json 的 maxAttempts */
 function attemptLimit(run: FlowRun): number {
-  return run.maxAttempts ?? config.maxAttempts;
+  return run.maxAttempts ?? loadRepoConfig().maxAttempts;
 }
 
 /** 關卡未通過：寫入 feedback.md 給下一次嘗試參考，並把原因分類記進 retries.jsonl；超過上限就讓整個 run 失敗 */
