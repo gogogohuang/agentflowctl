@@ -100,6 +100,7 @@ T-2  測試：codex    實作：claude   任務審查：codex
 agentflowctl run --req "..."
 agentflowctl run --req-file ./req.md --cycle codex,claude --max-agent-runs 40
 agentflowctl run --req "..." --manual-plan   # 計畫通過 AI 審查後，仍停下來等你確認
+agentflowctl run --req "..." --stop-after plan   # 完成計畫審查後暫停，檢視產出再 resume
 
 agentflowctl approve f-xxxx        # 搭配 --manual-plan
 agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄、重試紀錄
@@ -122,6 +123,7 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 | `--cycle` | 這次 run 參與的 agent，例如 `claude,codex,gemini`；順序不影響分工；建立後就固定，`resume` 沿用 |
 | `--max-agent-runs` | 這次 run 的 agent 執行次數上限 |
 | `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
+| `--stop-after <階段>` | 完成 `spec`、`plan`、`implement`、`verify` 或 `review` 後進入 `paused`，用 `resume` 接續；`pr` 照常完成。與 `--manual-plan` 互斥，`resume` 不能更改停點 |
 | `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可在 `flow.config.json` 設 `"verbose": true` |
 
 `status` 會列出任務。進行中的任務會標出目前的步驟：🧪 寫測試、🛠️ 寫實作、👀 任務審查、🔍 任務驗證、🩹 任務修正。
