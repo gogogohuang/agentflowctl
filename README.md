@@ -226,7 +226,7 @@ pnpm release minor             # 確認後建立 v0.x+1.0 的 GitHub Release
 pnpm release 1.0.0             # 指定版本，必須大於目前最新的 tag
 ```
 
-腳本會先檢查目前在 `main`、工作區乾淨、與 `origin/main` 同步、`gh` 已登入、新 tag 不存在，再跑 typecheck、test、build，列出自上個 tag 以來的 commit 並等你輸入 `y` 確認，然後用 `gh release create --generate-notes` 建立 Release。npm 由 Release 觸發的 `npm-publish.yml` 發布；版本號取自 tag，腳本不會改 `package.json`。
+腳本會先檢查目前在 `main`、工作區乾淨、與 `origin/main` 同步、`gh` 已登入、新 tag 不存在，再跑 typecheck、test、build（通過只顯示 ✓，失敗才印出完整輸出），列出自上個 tag 以來的 commit 並等你輸入 `y` 確認，然後用 `gh release create --generate-notes` 建立 Release。npm 由 Release 觸發的 `npm-publish.yml` 發布；版本號取自 tag，腳本不會改 `package.json`。
 
 ## 更多文件
 
