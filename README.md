@@ -218,6 +218,18 @@ Codex 另有幾點差異：
 
 環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限（至少 3），單一 run 可用 `run`／`resume` 的 `--max-attempts` 覆蓋；計畫審查何時交付仲裁與它無關：意見沒有變化，或第 2 輪（修訂過一次）仍被要求修改時就交付，兩家 agent 時自動進入雙盲交叉仲裁，有第三方時由第三方單獨仲裁；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。
 
+## 發版（維護者）
+
+在 clone 下來的 repo 裡用 `pnpm release <patch|minor|major|x.y.z> [--dry-run]` 發版，只能在 `main` 執行：
+
+```bash
+pnpm release patch --dry-run   # 只檢查與驗證，不建立 Release
+pnpm release minor             # 確認後建立 v0.x+1.0 的 GitHub Release
+pnpm release 1.0.0             # 指定版本，必須大於目前最新的 tag
+```
+
+腳本會先檢查目前在 `main`、工作區乾淨、與 `origin/main` 同步、`gh` 已登入、新 tag 不存在，再跑 typecheck、test、build，列出自上個 tag 以來的 commit 並等你輸入 `y` 確認，然後用 `gh release create --generate-notes` 建立 Release。npm 由 Release 觸發的 `npm-publish.yml` 發布；版本號取自 tag，腳本不會改 `package.json`。
+
 ## 更多文件
 
 - [完整指令、設定與流程說明](docs/reference.md)：選項、角色分配、審查規則、log、額度處理與技術細節。
