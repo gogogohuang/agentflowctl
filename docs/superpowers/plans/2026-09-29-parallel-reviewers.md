@@ -14,7 +14,7 @@
 > - `ReviewCall` 的選填欄位 `modelScope` 改名為 `scope`（與 `PlanReviewCallSpec.scope` 同名，`executeOne` 再傳給 `agentStep` 的 `modelScope`）。
 > - 序列收尾的核准門檻不再用全輪單一帳本快照，而是每個 `StoredCall` 帶「它實際看到的帳本 `base`」，門檻以該呼叫自己的 stored base 評估；`executeReviewCalls` 不再回傳 `base`，`applyPlanReview` 第 4 參數仍是 `dir`。
 > - 存檔重用要通過 `storedCallValid` 有效性檢查（writer／fixer 的 callKey 已套用則作廢重跑）。
-> - 臨時 worktree 放在每次呼叫唯一的父目錄下（`tmp-review/<唯一>/slot-N`），內含 `node_modules` symlink；`cleanupTempWorktrees` 會強制移除 locked 登記。
+> - 臨時 worktree 放在固定路徑 `tmp-review/slot-N`（每個 run、每個 slot 一個，避免在家目錄留下無限增加的工作目錄記錄）；只有該路徑被佔用（目錄已存在，或 `git worktree add` 在那裡失敗，例如殘留的鎖住登記）才退回唯一父目錄 `tmp-review/<唯一>/slot-N`。內含 `node_modules` symlink；`cleanupTempWorktrees` 會強制移除 locked 登記；`removeTempWorktree` 永不丟例外。
 > - `codeReview` 開頭會 `discardChanges(repo)`；`clean` 指令也會清臨時 worktree。
 
 ## Global Constraints
