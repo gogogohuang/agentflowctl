@@ -38,6 +38,12 @@ function printUsage(title: string, rows: Array<[string, UsageSummary]>): void {
   }
 }
 
+function positiveInt(text: string, flag: string): number {
+  const n = Number(text);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`${flag} 必須是正整數：${text}`);
+  return n;
+}
+
 function mustGetRun(id: string): FlowRun {
   const run = getRun(id);
   if (!run) throw new Error(`找不到 run：${id}`);
@@ -120,10 +126,11 @@ program
   .option("--req-file <file>", "從檔案讀取需求")
   .option("--base <branch>", "基底分支（預設為目前的分支）")
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
+  .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 AGENTFLOWCTL_MAX_ATTEMPTS，未設定為 5）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
   .option("--cycle <agents>", "參與的 agent，例如 claude,codex,gemini（順序不影響分工）")
   .option("--model-mode <mode>", "這次 run 的模型模式：balanced 或 adaptive")
-  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string; modelMode?: string }) => {
+  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; maxAttempts?: string; manualPlan: boolean; cycle?: string; modelMode?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
     const root = projectRoot();
@@ -149,6 +156,7 @@ program
       stage: "spec",
       autopilot: !opts.manualPlan,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
+      maxAttempts: opts.maxAttempts ? positiveInt(opts.maxAttempts, "--max-attempts") : undefined,
       cycle,
       attempts: {},
       modelMode,
@@ -177,10 +185,12 @@ program
   .command("resume <id>")
   .description("從暫停、中斷或失敗的階段接續")
   .option("--max-agent-runs <n>", "調整 agent 執行次數上限")
-  .action(async (id: string, opts: { maxAgentRuns?: string }) => {
+  .option("--max-attempts <n>", "調整同一關連續失敗的上限")
+  .action(async (id: string, opts: { maxAgentRuns?: string; maxAttempts?: string }) => {
     let run = mustGetRun(id);
     if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
     if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
+    if (opts.maxAttempts) run = { ...run, maxAttempts: positiveInt(opts.maxAttempts, "--max-attempts") };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
     }

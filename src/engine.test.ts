@@ -879,7 +879,7 @@ ${APPROVE}
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));`, { layers: { enabled: false } });
     const run = await planReviewRun(id, 10);
     expect(run.failureCategory).toBe("retry_limit");
-    expect(listRetries(id).map((item) => item.key)).toEqual(["plan-review-run", "plan-review-run", "plan-review-run"]);
+    expect(listRetries(id).map((item) => item.key)).toEqual(Array(5).fill("plan-review-run"));
   });
 
   it("plan-fix 沒寫 plan-replies.md 時，下一輪不會讀到上一輪的回應", async () => {
