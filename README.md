@@ -62,7 +62,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 
 `stats` 依 log 的開始與結束時間統計每個步驟的執行次數、失敗次數、總耗時與最長一次，並分開列出 agent 與專案指令（install、測試、checks）各占多少時間，最耗時的步驟排在最前面。沒有結束紀錄的 log 列為未完成，不計入耗時；總經過時間包含暫停與等待核准。紅燈階段的測試指令（`T-<n>-red`）失敗是預期結果，只有測試意外通過才計為失敗。
 
-`insights` 把所有 run 分成獨立區塊彙總：最終狀態、失敗原因（重試達上限、仲裁停止、agent 次數用完等）、用量（輸入／輸出／cache、強度占比、階段／agent，各 run 用量最高的任務）、各模型與步驟、步驟執行與失敗（與 `stats` 相同取 log 的檔頭檔尾，跨 run 不計總經過時間）、關卡重試原因。任務關卡與任務步驟不分 task id 合併計算。最後列出最多五則建議，規則由程式套門檻，不是再請 agent 分析。合計 token 不是主指標。覆蓋不足時會先警告占比可能失真。各分組是同一批呼叫的不同切片，不要跨組相加。舊 run 沒有重試或失敗原因紀錄，不會回填。單一 run 的全量明細仍用 `status <id>` 與 `stats <id>`。
+`insights` 把所有 run 分成獨立區塊彙總：最終狀態、失敗原因（重試達上限、仲裁停止、agent 次數用完等）、用量（輸入／輸出／cache、強度占比、階段／agent，各 run 用量最高的任務）、各模型與步驟、步驟執行與失敗（與 `stats` 相同取 log 的檔頭檔尾，跨 run 不計總經過時間）、關卡重試原因。任務關卡與任務步驟不分 task id 合併計算。最後列出最多五則建議，規則由程式套門檻，不是再請 agent 分析。「輸入遠大於輸出」不計入 cache 讀取（Claude 的 cache 寫入仍計入），門檻是非 cache 的輸入與輸出合計至少 5000 tokens 且輸入佔 85% 以上；cache 讀取量另外列在說明中。合計 token 不是主指標。覆蓋不足時會先警告占比可能失真。各分組是同一批呼叫的不同切片，不要跨組相加。舊 run 沒有重試或失敗原因紀錄，不會回填。單一 run 的全量明細仍用 `status <id>` 與 `stats <id>`。
 
 執行紀錄在 `.agentflowctl/runs/<id>/`，工作分支在 `.agentflowctl/worktrees/<id>/`。不再需要某次 run 時，可用 `agentflowctl clean <id>` 清除 worktree 與紀錄；`agentflowctl clean --all` 一次清除所有 done、failed 的 run，以及沒有紀錄的 worktree（進行中、暫停、等待核准的不動）。`flow/<id>` 分支會保留。
 

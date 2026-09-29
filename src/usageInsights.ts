@@ -122,10 +122,12 @@ export function usageFindings(input: {
     });
   }
 
-  if (total.tokens >= 5000 && total.inputTokens / total.tokens >= 0.85) {
+  const freshInput = total.inputTokens - total.cacheReadTokens;
+  const freshTotal = freshInput + total.outputTokens;
+  if (freshTotal >= 5000 && freshInput / freshTotal >= 0.85) {
     out.push({
-      code: "input_heavy", impactTokens: total.inputTokens, title: FINDING_LABEL.input_heavy,
-      detail: `輸入 ${total.inputTokens}、輸出 ${total.outputTokens}（輸入佔 ${pct(total.inputTokens, total.tokens)}）。上下文可能太大：規格、計畫、測試輸出或一次讀太多檔。`,
+      code: "input_heavy", impactTokens: freshInput, title: FINDING_LABEL.input_heavy,
+      detail: `不含 cache 讀取的輸入 ${freshInput}、輸出 ${total.outputTokens}（輸入佔 ${pct(freshInput, freshTotal)}）；另有 cache 讀取 ${total.cacheReadTokens} 未計入。上下文可能太大：規格、計畫、測試輸出或一次讀太多檔。`,
     });
   }
 
