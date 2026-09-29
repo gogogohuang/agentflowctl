@@ -1200,4 +1200,35 @@ ${APPROVE}`, { concurrency: 8 });
     expect(reviewState(id).reviewed.tasks["T-1"].verdict).toBe("approve");
     expect(reviewState(id).reviewed.tasks["T-8"].verdict).toBe("approve");
   });
+
+  it("adaptive 選模：某一群失敗後只有那一群的重審升級模型", async () => {
+    const id = "f-plan-layers-escalate";
+    const g2Failed = JSON.stringify(join(root, `${id}-g2-failed`));
+    await layeredRun(id, `if (kind === "group" && prompt.includes("任務群 G-2") && !existsSync(${g2Failed})) {
+  writeFileSync(${g2Failed}, "");
+  writeFileSync(file, "{");
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+${APPROVE}
+}`);
+    const script = join(root, `${id}.mjs`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["p1", "p2", "p3"].map((name) => [name, {
+        adapter: "command", command: ["node", script, "{model}"], modelProbe: ["node", script, "{model}"],
+        models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }],
+      }])),
+      cycle: ["p1", "p2", "p3"], planReviewQuorum: 1, planArbiter: true, reviewConcurrency: 1,
+      modelSelection: { mode: "adaptive", stageStrength: { planReview: "low" } },
+    }));
+    const now = new Date().toISOString();
+    await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
+      autopilot: true, maxAgentRuns: 4, cycle: ["p1", "p2", "p3"], planWriter: "p1", attempts: {}, modelMode: "adaptive",
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    const models = listUsage(id).map((e) => `${e.stage}:${e.model}`);
+    expect(models.filter((m) => m === "plan-review:small")).toHaveLength(1);
+    expect(models.filter((m) => m === "plan-review-group:small")).toHaveLength(2); // G-1 與 G-2 的第一次
+    expect(models.filter((m) => m === "plan-review-group:large")).toHaveLength(1); // 只有 G-2 的重審升級
+  });
 });

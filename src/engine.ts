@@ -439,7 +439,8 @@ interface ReviewCall {
   prompt: string;
   /** agent 寫在 .flow/ 的裁決檔名 */
   output: string;
-  modelScope?: string;
+  /** 任務群 id；選模升級計數依群分開（與 PlanReviewCallSpec.scope 同名，applyPlanReview 也用它） */
+  scope?: string;
 }
 
 /** ok＝false 代表 agent 執行失敗（不存檔，交給序列收尾走原有的 retry） */
@@ -487,7 +488,7 @@ async function executeOne(
     return await withTempWorktree(run.id, `slot-${call.slot}`, async (ws) => {
       rmSync(join(ws.flow, call.output), { force: true });
       const outcome = await agentStep(run, call.reviewer, call.step, call.prompt, {
-        kind: "review", slot: call.slot, modelScope: call.modelScope, workspace: ws, tag: tagged ? call.reviewer : undefined,
+        kind: "review", slot: call.slot, modelScope: call.scope, workspace: ws, tag: tagged ? call.reviewer : undefined,
       });
       const stored: StoredCall = {
         key: call.key, reviewer: call.reviewer, agent: outcome.agent, step: outcome.step, callKey: outcome.callKey,
