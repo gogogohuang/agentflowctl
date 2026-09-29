@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -1156,5 +1156,48 @@ ${APPROVE}
     await planReviewRun(id, 4);
     expect(seen(id)).toBe("index\ngroup\ngroup\ngroup\n");
     expect(readHandoff(id).issues.filter((issue) => issue.summary === "補逾時")).toHaveLength(1);
+  });
+
+  it("索引與各群審查同時執行", async () => {
+    const id = "f-plan-layers-parallel";
+    const log = join(root, `${id}-events.log`);
+    writeFileSync(log, "");
+    await layeredRun(id, `appendFileSync(${JSON.stringify(log)}, "start\\n");
+await new Promise((r) => setTimeout(r, 300));
+appendFileSync(${JSON.stringify(log)}, "end\\n");
+${APPROVE}`, { concurrency: 8 });
+    const run = await planReviewRun(id, 3);
+    expect(run.failureReason).toMatch(/達到上限/); // 三個呼叫都成功套用，之後進 implement 時預算用完
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    expect(lines.slice(0, 3)).toEqual(["start", "start", "start"]); // 索引與兩群同時開始，之後才有人結束
+    expect(reviewState(id).reviewed.tasks["T-8"].verdict).toBe("approve");
+  });
+
+  it("一個群額度用完時其他呼叫跑完並存檔，resume 只補跑沒完成的", async () => {
+    const id = "f-plan-layers-quota";
+    const log = join(root, `${id}-calls.log`);
+    const flag = join(root, `${id}-quota`);
+    writeFileSync(log, "");
+    writeFileSync(flag, "");
+    // 索引是 slot-0，兩群依序是 slot-1、slot-2；slot-2 額度用完
+    await layeredRun(id, `const slot = process.cwd().split("/").pop();
+appendFileSync(${JSON.stringify(log)}, kind + ":" + slot + "\\n");
+if (slot === "slot-2" && existsSync(${JSON.stringify(flag)})) { console.error("usage limit reached"); process.exit(1); }
+${APPROVE}`, { concurrency: 8 });
+
+    const paused = await planReviewRun(id, 3);
+    expect(paused.stage).toBe("paused");
+    expect(paused.pausedStage).toBe("plan_review");
+    expect(readFileSync(log, "utf8").trim().split("\n").sort()).toEqual(["group:slot-1", "group:slot-2", "index:slot-0"]);
+
+    rmSync(flag);
+    resetQuotaState(); // 模擬 resume 時是新的程序
+    writeFileSync(log, "");
+    // 前面已用掉 3 次，這次只剩 1 次可用：剛好夠補跑 slot-2
+    const resumed = await planReviewRun(id, 4);
+    expect(readFileSync(log, "utf8").trim()).toBe("group:slot-2"); // 索引與 slot-1 沿用存檔，沒有重跑
+    expect(resumed.failureReason).toMatch(/達到上限/);
+    expect(reviewState(id).reviewed.tasks["T-1"].verdict).toBe("approve");
+    expect(reviewState(id).reviewed.tasks["T-8"].verdict).toBe("approve");
   });
 });

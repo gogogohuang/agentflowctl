@@ -688,41 +688,17 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
   const calls: PlanReviewCall[] = [];
   // 沿用的呼叫也佔一格，重跑時每個呼叫的 slot 才不會變
   let nextSlot = 0;
-  /** 執行或沿用一次呼叫；失敗時回傳 false，run 已是 retry 後的狀態 */
-  const runCall = async (
-    key: string, taskIds: string[] | undefined, label: string,
-    spec: Omit<PlanReviewCallSpec, "slot" | "key">,
-  ): Promise<boolean> => {
-    const slot = nextSlot++;
+  interface Item { key: string; taskIds?: string[]; spec: PlanReviewCallSpec; reused?: PlanReviewCall }
+  const items: Item[] = [];
+  const add = (key: string, taskIds: string[] | undefined, label: string, spec: Omit<PlanReviewCallSpec, "slot" | "key">) => {
     const reused = done.get(key);
-    if (reused) {
-      info(run, `   ↪ 沿用本輪已完成的${label}（${reused.reviewer}）`);
-      calls.push(reused);
-      return true;
-    }
-    info(run, `🧐 ${label}第 ${round} 輪（${spec.reviewer}，作者 ${author}）`);
-    // run 是外層參數，刻意在閉包裡更新：後續呼叫與最後的彙總都要看到 retry、clearModelReviewFailure 之後的 run
-    const callSpec = { ...spec, slot, key };
-    const ran = await executeReviewCalls(run, cfg, "plan-review", `${round}:${planKey}`, [callSpec]);
-    if (!ran) return false;
-    const passed = applyPlanReview(run, callSpec, ran.finished[0]!, ran);
-    run = passed.run;
-    if (!passed.collected) return false;
-    // 真的執行並成功就是有進展：同一輪不同呼叫輪流失敗時，不會累計到重試上限而讓 run 失敗。
-    // 進度寫在 round 裡、不會重跑，所以一輪最多失敗「呼叫數 × maxAttempts」次。
-    // 整份審查每次重跑整輪，不能這樣歸零，否則同一位審查者反覆失敗會無限重試。
-    const attempts = { ...run.attempts };
-    delete attempts["plan-review-run"];
-    run = { ...run, attempts };
-    const call: PlanReviewCall = { key, ...passed.collected, ...(taskIds ? { taskIds } : {}) };
-    progress.calls.push(call);
-    calls.push(call);
-    saveState({ version: 1, ...(reviewed ? { reviewed } : {}), round: progress });
-    return true;
+    if (reused) info(run, `   ↪ 沿用本輪已完成的${label}（${reused.reviewer}）`);
+    else info(run, `🧐 ${label}第 ${round} 輪（${spec.reviewer}，作者 ${author}）`);
+    items.push({ key, taskIds, reused, spec: { ...spec, slot: nextSlot++, key } });
   };
 
   for (const reviewer of panel) {
-    const ok = await runCall(`index:${reviewer}`, undefined, "計畫索引審查", {
+    add(`index:${reviewer}`, undefined, "計畫索引審查", {
       reviewer, step: "plan-review", gated: true, subject: "計畫索引",
       prompt: renderPrompt("plan-review-index", {
         reviewer, author, requirement: run.requirement,
@@ -733,7 +709,6 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
       }),
       output: "plan-review.json", archive: `plan-review-${round}-${reviewer}.json`,
     });
-    if (!ok) return run;
   }
   for (const group of layered.dirty) {
     const groupTasks = layered.tasks.filter((task) => group.taskIds.includes(task.id));
@@ -741,7 +716,7 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
     const neighbors = neighborTasks(layered.tasks, group.taskIds).map(({ id, title, description, dependsOn }) => ({ id, title, description, dependsOn }));
     const groupPanel = reviewers(run.cycle, author, groupReviewerCount(groupTasks, cfg.planReviewQuorum), `${run.id}:plan-group:${group.id}:${round}`);
     for (const reviewer of groupPanel) {
-      const ok = await runCall(`group:${group.id}:${group.taskIds.join(",")}:${reviewer}`, group.taskIds, `計畫群 ${group.id} 審查`, {
+      add(`group:${group.id}:${group.taskIds.join(",")}:${reviewer}`, group.taskIds, `計畫群 ${group.id} 審查`, {
         reviewer, step: "plan-review-group", gated: false, subject: `任務群 ${group.id}`, scope: group.id,
         prompt: renderPrompt("plan-review-group", {
           reviewer, author, groupId: group.id,
@@ -754,9 +729,32 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
         }),
         output: "plan-review-group.json", archive: `plan-review-${round}-${group.id}-${reviewer}.json`,
       });
-      if (!ok) return run;
     }
   }
+
+  // 平行執行還沒套用的呼叫；沿用的（已套用、記在進度檔裡）不再跑
+  const pending = items.filter((item) => !item.reused);
+  const ran = await executeReviewCalls(run, cfg, "plan-review", `${round}:${planKey}`, pending.map((item) => item.spec));
+  if (!ran) return run;
+
+  // 序列收尾，依原本的順序逐一套用；每套用一個就寫進度檔，中途被中斷也不會重複套用
+  const applied = new Map<string, PlanReviewCall>();
+  for (const [i, item] of pending.entries()) {
+    const passed = applyPlanReview(run, item.spec, ran.finished[i]!, ran);
+    run = passed.run;
+    if (!passed.collected) return run;
+    // 真的執行並成功就是有進展：同一輪不同呼叫輪流失敗時，不會累計到重試上限而讓 run 失敗。
+    // 進度寫在 round 裡、不會重跑，所以一輪最多失敗「呼叫數 × maxAttempts」次。
+    // 整份審查每次重跑整輪，不能這樣歸零，否則同一位審查者反覆失敗會無限重試。
+    const attempts = { ...run.attempts };
+    delete attempts["plan-review-run"];
+    run = { ...run, attempts };
+    const call: PlanReviewCall = { key: item.key, ...passed.collected, ...(item.taskIds ? { taskIds: item.taskIds } : {}) };
+    progress.calls.push(call);
+    applied.set(item.key, call);
+    saveState({ version: 1, ...(reviewed ? { reviewed } : {}), round: progress });
+  }
+  calls.push(...items.map((item) => item.reused ?? applied.get(item.key)!));
 
   // 只放這一輪真的審過的群（含沿用的），沒審到的任務才留得住前次 verdict
   const groupVerdicts = calls.flatMap((call) => call.taskIds ? [{ taskIds: call.taskIds, verdict: call.verdict }] : []);
