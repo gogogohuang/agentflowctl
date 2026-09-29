@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { config } from "./config.js";
+import { MIN_ATTEMPTS, config } from "./config.js";
 import { advance, loadRepoConfig } from "./engine.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git } from "./git.js";
@@ -36,6 +36,12 @@ function printUsage(title: string, rows: Array<[string, UsageSummary]>): void {
     const value = c.reportedRuns ? `輸入 ${c.inputTokens}${cacheNote(c)}、輸出 ${c.outputTokens}、合計 ${c.tokens} tokens` : "未回報或回報狀態不明";
     console.log(`  ${key}: ${value}；${c.runs} 次（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}）`);
   }
+}
+
+function positiveInt(text: string, flag: string, min = 1): number {
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < min) throw new Error(`${flag} 必須是不小於 ${min} 的整數：${text}`);
+  return n;
 }
 
 function mustGetRun(id: string): FlowRun {
@@ -120,10 +126,11 @@ program
   .option("--req-file <file>", "從檔案讀取需求")
   .option("--base <branch>", "基底分支（預設為目前的分支）")
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
+  .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 AGENTFLOWCTL_MAX_ATTEMPTS，未設定為 5）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
   .option("--cycle <agents>", "參與的 agent，例如 claude,codex,gemini（順序不影響分工）")
   .option("--model-mode <mode>", "這次 run 的模型模式：balanced 或 adaptive")
-  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; manualPlan: boolean; cycle?: string; modelMode?: string }) => {
+  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; maxAttempts?: string; manualPlan: boolean; cycle?: string; modelMode?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
     const root = projectRoot();
@@ -149,6 +156,7 @@ program
       stage: "spec",
       autopilot: !opts.manualPlan,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
+      maxAttempts: opts.maxAttempts ? positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) : undefined,
       cycle,
       attempts: {},
       modelMode,
@@ -177,10 +185,12 @@ program
   .command("resume <id>")
   .description("從暫停、中斷或失敗的階段接續")
   .option("--max-agent-runs <n>", "調整 agent 執行次數上限")
-  .action(async (id: string, opts: { maxAgentRuns?: string }) => {
+  .option("--max-attempts <n>", "調整同一關連續失敗的上限")
+  .action(async (id: string, opts: { maxAgentRuns?: string; maxAttempts?: string }) => {
     let run = mustGetRun(id);
     if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
     if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
+    if (opts.maxAttempts) run = { ...run, maxAttempts: positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
     }

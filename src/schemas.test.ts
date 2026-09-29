@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConsistentReviewResult, RepoConfig } from "./schemas.js";
+import { ConsistentReviewResult, FlowRun, RepoConfig } from "./schemas.js";
 
 describe("審查結果的 verdict 與 items 一致性", () => {
   const unmet = { criterion: "AC-1", status: "not_met", note: "src/form.tsx 缺少錯誤訊息" };
@@ -33,5 +33,14 @@ describe("計畫分層審查設定", () => {
   it("群數上限小於 2 或寫了未知子欄位時拒絕", () => {
     expect(RepoConfig.safeParse({ planReviewLayers: { maxGroups: 1 } }).success).toBe(false);
     expect(RepoConfig.safeParse({ planReviewLayers: { groups: 3 } }).success).toBe(false);
+  });
+});
+
+describe("FlowRun.maxAttempts", () => {
+  it("舊 state.json 沒有這個欄位也讀得進來", () => {
+    const base = { id: "f-a", baseBranch: "main", branch: "flow/f-a", requirement: "x", stage: "spec", autopilot: true, maxAgentRuns: 60, cycle: ["claude"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: "t", updatedAt: "t" };
+    expect(FlowRun.safeParse(base).success).toBe(true);
+    expect(FlowRun.safeParse({ ...base, maxAttempts: 8 }).success).toBe(true);
+    expect(FlowRun.safeParse({ ...base, maxAttempts: 2 }).success).toBe(false);
   });
 });

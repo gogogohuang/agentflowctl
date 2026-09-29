@@ -237,7 +237,7 @@
 
 整個 run 只有這一個檔，路徑是 worktree 裡的 `.flow/feedback.md`。它不是意見歷史，每次寫入都整份覆蓋。agent 不寫這個檔；內容一律由程式組出來。下一輪 agent 用它知道上次卡在哪，不靠終端機上的 `<result>`。
 
-通過某一關時，`succeed()` 會刪除它，並清掉該關的失敗次數。`plan_fix` 與 `fix` 成功時不走 `succeed()`，所以檔案會留著，規則見下表。連續失敗達到 `maxAttempts`（預設 3）時，程式仍會先寫入這份檔，再把 run 標成 `failed`。`resume` 失敗的 run 會清空次數並從失敗階段重跑，這份檔還在，重跑的 agent 讀得到上次的原因。
+通過某一關時，`succeed()` 會刪除它，並清掉該關的失敗次數。`plan_fix` 與 `fix` 成功時不走 `succeed()`，所以檔案會留著，規則見下表。連續失敗達到 `maxAttempts`（預設 5，可用 `--max-attempts` 覆蓋）時，程式仍會先寫入這份檔，再把 run 標成 `failed`。`resume` 失敗的 run 會清空次數並從失敗階段重跑，這份檔還在，重跑的 agent 讀得到上次的原因。
 
 ### 兩種內文
 

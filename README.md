@@ -97,6 +97,7 @@ agentflowctl resume f-xxxx
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
 | `run --model-mode balanced\|adaptive` | 只覆蓋這次 run 的模型模式；`resume` 沿用建立時的模式 |
 | `run --base <分支>` | 指定起始分支；未設定時使用目前分支 |
+| `run --max-attempts <次數>` | 覆蓋這次的重試上限（至少 3；預設取 `AGENTFLOWCTL_MAX_ATTEMPTS`，未設定為 5）；失敗後可用 `resume <id> --max-attempts <次數>` 調高 |
 | `run --max-agent-runs <次數>` | 覆蓋這次的 `maxAgentRuns`；上限不夠時可用 `resume <id> --max-agent-runs <次數>` 調高 |
 | `-v` / `--verbose` | 執行時顯示 agent 文字、工具呼叫與專案指令，適用於 `run`、`resume`、`approve` |
 
@@ -105,6 +106,7 @@ agentflowctl resume f-xxxx
 ```bash
 agentflowctl run --req-file ./requirement.md --cycle claude,codex --max-agent-runs 80 --manual-plan
 agentflowctl resume f-xxxx --max-agent-runs 100
+agentflowctl resume f-xxxx --max-attempts 8
 ```
 
 ### Agent 設定
@@ -189,7 +191,7 @@ Codex 另有幾點差異：
 | `tddSplit` | `true` | 有多位 agent 時，`true` 會把同一任務的測試與實作分給不同 agent |
 | `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准 |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者核准 |
-| `planArbiter` | `true` | 計畫審查僵持時是否啟用仲裁 |
+| `planArbiter` | `true` | 計畫審查僵持，或修訂一次後仍被要求修改時是否啟用仲裁 |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |
 | `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
 | `maxAgentRuns` | `60` | 一次 run 最多執行幾次 agent；可用指令選項覆蓋 |
@@ -207,11 +209,11 @@ Codex 另有幾點差異：
 
 | 變數 | 預設 | 設定方式與用途 |
 | --- | --- | --- |
-| `AGENTFLOWCTL_MAX_ATTEMPTS` | `3` | 同一關連續失敗幾次後停止；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."` |
+| `AGENTFLOWCTL_MAX_ATTEMPTS` | `5` | 同一關連續失敗幾次後停止，至少 3（設得更小以 3 計）；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."` |
 | `AGENTFLOWCTL_VERBOSE` | 未開啟 | 設為 `1` 顯示詳細輸出，效果同 `-v` |
-| `AGENTFLOWCTL_MAX_TURNS` | `80` | 目前程式會讀取此值，但尚未用它限制 agent 執行 |
+| `AGENTFLOWCTL_MAX_TURNS` | `200` | 目前程式會讀取此值，但尚未用它限制 agent 執行 |
 
-環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。
+環境變數對新啟動的 agentflowctl 程序生效。`AGENTFLOWCTL_MAX_ATTEMPTS` 是單一關卡的重試上限（至少 3），單一 run 可用 `run`／`resume` 的 `--max-attempts` 覆蓋；計畫審查何時交付仲裁與它無關：意見沒有變化，或第 2 輪（修訂過一次）仍被要求修改時就交付，兩家 agent 時自動進入雙盲交叉仲裁，有第三方時由第三方單獨仲裁；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。
 
 ## 更多文件
 

@@ -192,18 +192,26 @@ function readFeedback(run: FlowRun): string {
   return flowText(run, "feedback.md");
 }
 
+/** 計畫審查第幾輪仍有人要求修改時交付仲裁；固定值，不受重試上限影響 */
+const PLAN_ARBITRATION_ROUND = 2;
+
+/** 這個 run 的重試上限：`--max-attempts` 存在 run 裡，沒設定才用環境變數 */
+function attemptLimit(run: FlowRun): number {
+  return run.maxAttempts ?? config.maxAttempts;
+}
+
 /** 關卡未通過：寫入 feedback.md 給下一次嘗試參考，並把原因分類記進 retries.jsonl；超過上限就讓整個 run 失敗 */
 function retry(run: FlowRun, key: string, reason: string, backTo: Stage, category: RetryCategory): FlowRun {
   const n = (run.attempts[key] ?? 0) + 1;
   const attempts = { ...run.attempts, [key]: n };
-  const final = n >= config.maxAttempts;
+  const final = n >= attemptLimit(run);
   mkdirSync(flowDir(run.id), { recursive: true });
   writeFileSync(flowFile(run, "feedback.md"), `# 前次嘗試未通過（第 ${n} 次）\n\n${reason}\n`);
   addRetry(run.id, { key, backTo, category, attempt: n, final }, run.updatedAt);
   if (final) {
     return { ...run, attempts, stage: "failed", failedStage: backTo, failureCategory: "retry_limit", failureReason: `${key} 連續失敗 ${n} 次：${tail(reason, 500)}` };
   }
-  info(run, `⚠️  ${key} 未通過，重試（${n}/${config.maxAttempts}）`);
+  info(run, `⚠️  ${key} 未通過，重試（${n}/${attemptLimit(run)}）`);
   return { ...run, attempts, stage: backTo };
 }
 
@@ -427,7 +435,8 @@ async function concludePlanReview(run: FlowRun, cfg: RepoConfig, round: number, 
   const fingerprint = reviewFingerprint(issueLines);
   const stalled = existsSync(lastPath) && readFileSync(lastPath, "utf8") === fingerprint;
   writeFileSync(lastPath, fingerprint);
-  const exhausted = round >= config.maxAttempts;
+  // 修訂過一次仍被要求修改就交付仲裁，不等到重試上限
+  const exhausted = round >= PLAN_ARBITRATION_ROUND;
   if ((stalled || exhausted) && cfg.planArbiter) {
     // 雙盲：帶有審查者名稱的 feedback.md 不留在 worktree，完整報告另存到 worktree 外
     rmSync(flowFile(run, "feedback.md"), { force: true });
