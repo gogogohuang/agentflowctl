@@ -39,6 +39,8 @@ npx agentflowctl run --req-file ./requirement.md
 
 流程預設會自動往下走。想在計畫通過審查後親自確認，可加 `--manual-plan`；確認後執行 `agentflowctl approve <id>`。
 
+需要先取用某個階段的產出時，可用 `--stop-after <階段>`。可選停點是 `spec`（規格）、`plan`（計畫審查完成）、`implement`（所有任務完成）、`verify`（測試與 checks 通過）、`review`（程式碼審查完成）或 `pr`（PR 流程完成）。除了 `pr` 會照常結束外，其他停點完成後會進入 `paused`，可檢視 worktree 與 `.flow/` 檔案，再執行 `agentflowctl resume <id>` 從下一階段接續；`--manual-plan` 與 `--stop-after` 不能同時使用。
+
 agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。
 
 ## 查看進度
@@ -72,6 +74,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 | 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
 | `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>` |
 | `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審。在仲裁途中暫停時，resume 直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，或在 `flow.config.json` 把 `planArbiter` 關掉，就改成重新審查 |
+| `paused`：已完成指定停點 | 依 `status` 顯示的下一階段檢視產出，再執行 `agentflowctl resume <id>` 接續；run 會保留原本的停點設定 |
 | `failed`：仲裁連續沒有產生有效裁決 | 仲裁者沒寫出 `.flow/plan-arbiter.json`、格式錯誤或交接無效時不會暫停，會把原因寫進 `.flow/feedback.md` 並自動重跑仲裁（不重跑計畫審查）；無效的檔案移到 `.agentflowctl/runs/<id>/reviews/plan-arbiter-<輪>-<agent>-invalid.json`。連續達重試上限才失敗，查看 log 後執行 `agentflowctl resume <id>` 會再回到仲裁 |
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
 | `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
@@ -96,6 +99,7 @@ agentflowctl resume f-xxxx
 | --- | --- |
 | `run --req "..."` / `--req-file <檔案>` | 二選一，直接輸入需求或讀取檔案 |
 | `run --manual-plan` | 計畫通過審查後等待你確認，再用 `approve <id>` 繼續 |
+| `run --stop-after <階段>` | 在 `spec`、`plan`、`implement`、`verify` 或 `review` 完成後暫停；`pr` 會完成 PR 流程並結束。與 `--manual-plan` 互斥 |
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
 | `run --model-mode balanced\|adaptive` | 只覆蓋這次 run 的模型模式；`resume` 沿用建立時的模式 |
 | `run --base <分支>` | 指定起始分支；未設定時使用目前分支 |
@@ -107,6 +111,7 @@ agentflowctl resume f-xxxx
 
 ```bash
 agentflowctl run --req-file ./requirement.md --cycle claude,codex --max-agent-runs 80 --manual-plan
+agentflowctl run --req-file ./requirement.md --stop-after plan
 agentflowctl resume f-xxxx --max-agent-runs 100
 agentflowctl resume f-xxxx --max-attempts 8
 ```
