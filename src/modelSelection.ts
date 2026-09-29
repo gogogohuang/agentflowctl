@@ -112,13 +112,25 @@ export function selectModel(
   return { mode, name: chosen.name, strength: chosen.strength, targetStrength, insufficient: LEVEL[chosen.strength] < LEVEL[targetStrength] };
 }
 
+/** adaptive 模式下缺少 models 的錯誤說明：列出全部 agent，並給兩種修法 */
+export function missingModelsMessage(names: string[]): string {
+  return [
+    `目前是 adaptive 模式，但以下 agent 沒有登記 models（adaptive 只看 models，不看 model）：${names.join("、")}`,
+    "  修法一：登記模型與強度（會用目前帳號送一個短請求驗證）",
+    ...names.map((n) => `    agentflowctl model add ${n} <模型名稱> --strength low|medium|high`),
+    "  修法二：改用 balanced，沿用各 agent 的 model",
+    "    agentflowctl model mode balanced（只改這次 run：run --model-mode balanced）",
+  ].join("\n");
+}
+
 /** 啟用 adaptive 前檢查本次實際參與的 agent。 */
 export function validateAdaptiveConfig(cfg: RepoConfig, cycle: string[]): void {
+  const lacking = cycle.filter((name) => cfg.agents[name] && !cfg.agents[name]!.models?.length);
+  if (lacking.length) throw new Error(missingModelsMessage(lacking));
   for (const name of cycle) {
     const def = cfg.agents[name];
     if (!def) throw new Error(`未定義的 agent：${name}`);
-    if (!def.models?.length) throw new Error(`agent ${name} 的 models 至少要有一個模型`);
-    const names = def.models.map((m) => m.name);
+    const names = (def.models ?? []).map((m) => m.name);
     if (new Set(names).size !== names.length) throw new Error(`agent ${name} 的 models 有重複名稱`);
     if (def.adapter === "command") {
       if (!def.command?.some((arg) => arg.includes("{model}"))) throw new Error(`agent ${name} 的 command 缺少 {model}`);

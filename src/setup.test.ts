@@ -77,4 +77,20 @@ describe("runSetup", () => {
     expect(await runSetup({}, { ...scripted(["n", "n", "n"]), detected: all })).toBeNull();
     expect(await runSetup({}, { ...scripted(["y", "", "", "n", "n", "", "n"]), detected: all })).toBeNull();
   });
+
+  it("adaptive 模式下參與的 agent 缺 models：提醒並可改回 balanced", async () => {
+    const lines: string[] = [];
+    const cfg = { modelSelection: { mode: "adaptive" } };
+    // claude: 加入、名稱、model；參與的 agent；改回 balanced；確認寫入
+    const s = scripted(["", "", "", "", "", ""]);
+    const edit = await runSetup(cfg, { ...s, log: (l) => lines.push(l), detected: { claude: true } });
+    expect((edit?.cfg.modelSelection as { mode: string }).mode).toBe("balanced");
+    expect(lines.join("\n")).toContain("model add claude");
+  });
+
+  it("adaptive 模式下選擇維持 adaptive：模式不變", async () => {
+    const s = scripted(["", "", "", "", "n", ""]);
+    const edit = await runSetup({ modelSelection: { mode: "adaptive" } }, { ...s, detected: { claude: true } });
+    expect((edit?.cfg.modelSelection as { mode: string }).mode).toBe("adaptive");
+  });
 });
