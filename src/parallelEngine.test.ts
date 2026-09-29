@@ -30,6 +30,11 @@ const slot = basename(process.cwd());
 const mode = readFileSync(".flow/review-mode.txt", "utf8").trim();
 appendFileSync(ROOT + "/events.log", "start " + slot + "\\n");
 if (existsSync(ROOT + "/quota-" + slot)) { console.error("usage limit reached"); process.exit(1); }
+if (existsSync(ROOT + "/barrier")) {
+  const need = Number(readFileSync(ROOT + "/barrier", "utf8"));
+  const until = Date.now() + 20000;
+  while (Date.now() < until && readFileSync(ROOT + "/events.log", "utf8").split("\\n").filter((l) => l.startsWith("start")).length < need) await new Promise((r) => setTimeout(r, 20));
+}
 if (existsSync(ROOT + "/sleep")) await new Promise((r) => setTimeout(r, Number(readFileSync(ROOT + "/sleep", "utf8"))));
 if (existsSync(ROOT + "/tamper")) { writeFileSync("feature.ts", "亂改"); writeFileSync(".flow/acceptance.json", "[]"); }
 const context = readFileSync(".flow/handoff-context.md", "utf8");
@@ -252,5 +257,114 @@ describe("分裂裁決的核准關卡", () => {
     expect(listRetries(id).map((r) => r.category)).toEqual(["review_changes"]);
     expect(run.failureCategory).toBe("agent_budget");
     expect(run.failedStage).toBe("plan_fix");
+  });
+});
+
+async function codeReviewSetup(id: string, mode: "close" | "open" = "close") {
+  await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+  writeFileSync(join(worktreeDir(id), "feature.ts"), "export const answer = 42;\n");
+  await commitAll(worktreeDir(id), "feat: 測試功能 [a]");
+  mkdirSync(flowDir(id), { recursive: true });
+  writeFileSync(join(flowDir(id), "review-mode.txt"), mode);
+  writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "匯出 answer" }]));
+  const source = { stage: "implement" as const, step: "T-1-code", agent: "a", callKey: `${id}:code` };
+  mergeHandoff(id, source.callKey, source, { newIssues: [{ kind: "action", summary: "測試待核對", evidence: "src/api.test.ts:20", targetStage: "code" }], dispositions: [] }, "writer");
+}
+
+describe("程式碼審查平行", () => {
+  it("兩位審查者同時執行", async () => {
+    const id = "pe-code-par";
+    configure(writeReviewer("reviewer.mjs"), { reviewQuorum: 2 });
+    await codeReviewSetup(id);
+    resetEvents();
+    // 柵欄：兩位都啟動後才往下；序列執行時第一位會等到逾時，events 不會是 start start
+    setFlag("barrier", "2");
+    const run = await advance(baseRun(id, "review", { lastWriter: "a", stopAfter: "review" }));
+    clearFlag("barrier");
+    expect(run.stage).toBe("paused");
+    expect(events().slice(0, 2).every((line) => line.startsWith("start"))).toBe(true);
+  });
+
+  it("審查者亂改程式碼與 .flow 不會動到共用的 worktree", async () => {
+    const id = "pe-code-tamper";
+    configure(writeReviewer("reviewer.mjs"));
+    await codeReviewSetup(id);
+    setFlag("tamper");
+    const before = readFileSync(join(flowDir(id), "acceptance.json"), "utf8");
+    const run = await advance(baseRun(id, "review", { lastWriter: "a", stopAfter: "review" }));
+    clearFlag("tamper");
+    expect(run.stage).toBe("paused");
+    expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).toBe(before);
+    expect(readFileSync(join(worktreeDir(id), "feature.ts"), "utf8")).toBe("export const answer = 42;\n");
+    expect(execFileSync("git", ["-C", worktreeDir(id), "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+  });
+
+  it("額度用完後 resume 只補跑沒完成的審查者", async () => {
+    const id = "pe-code-quota";
+    configure(writeReviewer("reviewer.mjs"), { reviewQuorum: 2 });
+    await codeReviewSetup(id);
+    resetEvents();
+    setFlag("quota-slot-1");
+    const paused = await advance(baseRun(id, "review", { lastWriter: "a" }));
+    expect(paused.stage).toBe("paused");
+    clearFlag("quota-slot-1");
+
+    resetQuotaState();
+    resetEvents();
+    const resumed = await advance({ ...paused, stage: "review", pausedStage: undefined, pauseReason: undefined });
+    expect(resumed.stage).toBe("done");
+    expect(events()).not.toContain("start slot-0");
+    expect(events()).toContain("start slot-1");
+  });
+
+  it("HEAD 變了（程式碼被修過）就不沿用舊的審查結果", async () => {
+    const id = "pe-code-stale";
+    configure(writeReviewer("reviewer.mjs"), { reviewQuorum: 2 });
+    await codeReviewSetup(id);
+    setFlag("quota-slot-1");
+    const paused = await advance(baseRun(id, "review", { lastWriter: "a" }));
+    clearFlag("quota-slot-1");
+    writeFileSync(join(worktreeDir(id), "feature.ts"), "export const answer = 43;\n");
+    await commitAll(worktreeDir(id), "fix: 改答案 [a]");
+
+    resetQuotaState();
+    resetEvents();
+    await advance({ ...paused, stage: "review", pausedStage: undefined, pauseReason: undefined });
+    expect(events()).toContain("start slot-0"); // 指紋變了，舊結果作廢，重跑
+  });
+});
+
+/** 程式碼審查的分裂裁決：slot-0 要求修改並新增程式碼事項；slot-1 核准並結掉原有事項（看不到 slot-0 剛新增的） */
+function writeCodeSplitReviewer(name: string): string {
+  const file = join(root, name);
+  writeFileSync(file, `import { readFileSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
+const slot = basename(process.cwd());
+const context = readFileSync(".flow/handoff-context.md", "utf8");
+const id = context.match(/## ([a-f0-9]+)：/)?.[1];
+if (slot === "slot-0") {
+  writeFileSync(".flow/review.json", JSON.stringify({ verdict: "changes_requested", items: [{ criterion: "AC-1", status: "not_met", note: "沒做" }] }));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({
+    newIssues: [{ kind: "action", summary: "並行新增程式碼事項", evidence: "feature.ts:1", targetStage: "code" }], dispositions: [],
+  }));
+} else {
+  writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({
+    newIssues: [], dispositions: id ? [{ id, status: "resolved", reason: "已核對", evidence: "src/api.test.ts:25" }] : [],
+  }));
+}
+`);
+  return file;
+}
+
+describe("程式碼審查的分裂裁決", () => {
+  it("核准者不會因為同輪其他審查者新增的事項而被判矛盾", async () => {
+    const id = "pe-code-split";
+    configure(writeCodeSplitReviewer("code-split.mjs"), { reviewQuorum: 2 });
+    await codeReviewSetup(id);
+    const run = await advance(baseRun(id, "review", { lastWriter: "a", maxAgentRuns: 2 }));
+    expect(listRetries(id).filter((r) => r.category === "handoff_invalid")).toEqual([]);
+    expect(run.attempts["review-run"]).toBeUndefined();
+    expect(listRetries(id).map((r) => r.category)).toEqual(["review_changes"]);
   });
 });

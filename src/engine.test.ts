@@ -441,12 +441,15 @@ describe("修正階段", () => {
 const worker = join(root, "worker.mjs");
 writeFileSync(worker, `import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 const prompt = readFileSync(0, "utf8");
+// 審查者在臨時 worktree 執行、.flow/ 是複本；要讓測試看得到的副作用得寫回 run 自己的 worktree（絕對路徑）
+const tempRun = process.cwd().match(/runs\\/([^/]+)\\/tmp-review/)?.[1];
+const shared = tempRun ? ${JSON.stringify(root)} + "/.agentflowctl/worktrees/" + tempRun + "/.flow" : ".flow";
 const id = prompt.match(/"id": "(T-\\d+)"/)?.[1];
 const role = prompt.includes("你是任務審查者") ? "task-review" : prompt.includes("你是程式碼審查者") ? "review"
   : prompt.includes("你是除錯工程師") ? "fix" : prompt.includes("<red_output>") ? "code" : "tests";
-appendFileSync(".flow/steps.txt", \`\${role}\${role === "review" || role === "fix" ? "" : ":" + id}\\n\`);
-if (role === "task-review" && existsSync(".flow/fail-review-once.txt")) {
-  rmSync(".flow/fail-review-once.txt");
+appendFileSync(shared + "/steps.txt", \`\${role}\${role === "review" || role === "fix" ? "" : ":" + id}\\n\`);
+if (role === "task-review" && existsSync(shared + "/fail-review-once.txt")) {
+  rmSync(shared + "/fail-review-once.txt");
   process.exit(1);
 }
 if (role === "fix" && existsSync(".flow/fail-fix-once.txt")) {
@@ -457,9 +460,9 @@ if (role === "tests") writeFileSync(\`\${id}.test.mjs\`, \`import { ok } from ".
 if (role === "code") writeFileSync(\`\${id}.mjs\`, "export const ok = true;\\n");
 if (role === "fix") writeFileSync("fixed.txt", readFileSync(".flow/feedback.md"));
 if (role === "task-review" || role === "review") {
-  writeFileSync(\`.flow/diff-\${role}-\${id ?? "all"}.txt\`, readFileSync(".flow/diff.patch"));
-  const reject = role === "task-review" && existsSync(".flow/reject-once.txt");
-  if (reject) rmSync(".flow/reject-once.txt");
+  writeFileSync(\`\${shared}/diff-\${role}-\${id ?? "all"}.txt\`, readFileSync(".flow/diff.patch"));
+  const reject = role === "task-review" && existsSync(shared + "/reject-once.txt");
+  if (reject) rmSync(shared + "/reject-once.txt");
   writeFileSync(".flow/review.json", JSON.stringify(reject
     ? { verdict: "changes_requested", items: [{ criterion: "AC-1", status: "partial", note: "缺少邊界情況" }] }
     : { verdict: "approve", items: [] }));

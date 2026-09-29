@@ -1186,25 +1186,33 @@ async function codeReview(
   const authors = [...new Set((await git(repo, "log", "--format=%s", `${opts.base}..HEAD`)).match(/\[[^\]]+\]$/gm) ?? [])]
     .map((s) => s.slice(1, -1));
 
+  const specs: ReviewCall[] = panel.map((reviewer, slot) => ({
+    key: `${slot}:${reviewer}`, slot, reviewer, step: opts.step,
+    prompt: opts.prompt(reviewer, authors.join("、") || "未知"),
+    output: "review.json",
+  }));
+  for (const spec of specs) info(run, `👀 ${opts.label}（${spec.reviewer}）`);
+  // 指紋含 HEAD：程式碼被修過就不沿用舊的審查結果
+  const ran = await executeReviewCalls(run, cfg, opts.step, `${opts.seed}|${await headCommit(repo)}|${opts.base}`, specs);
+  if (!ran) return { run };
+
   const issues: string[] = [];
   let objector: string | undefined;
-  for (const [slot, reviewer] of panel.entries()) {
-    info(run, `👀 ${opts.label}（${reviewer}）`);
-    rmSync(flowFile(run, "review.json"), { force: true });
-    const snap = snapshotPlan(run, LOCKED_FILES);
-    const outcome = await agentStep(run, reviewer, opts.step, opts.prompt(reviewer, authors.join("、") || "未知"), {
-      kind: "review", slot, reset: async () => { await discardChanges(repo); restorePlan(run, snap); },
-    });
-    const { r } = outcome;
-    await discardChanges(repo); // 審查者不可改程式碼
-    const tampered = restorePlan(run, snap); // .flow/ 不受 git 管理，要另外還原
-    if (tampered.length) info(run, `   ↩️  已還原審查者修改的檔案：${tampered.join(", ")}`);
-    if (!r.ok) return { run: retry(opts.step === "review" ? recordModelReviewFailure(run, "review", reviewer) : run, opts.runKey, `Agent 執行失敗：${r.summary}`, opts.backTo, "agent_error") };
+  for (const [i, spec] of specs.entries()) {
+    const reviewer = spec.reviewer;
+    const done = ran.finished[i]!;
+    const fail = (reason: string, category: RetryCategory) => {
+      dropCall(ran.dir, spec.key); // 不合格的存檔不能留著，否則同一輪重跑會讀到同一份
+      return { run: retry(opts.step === "review" ? recordModelReviewFailure(run, "review", reviewer) : run, opts.runKey, reason, opts.backTo, category) };
+    };
+    if (!done.ok) return fail(`Agent 執行失敗：${done.stored.summary}`, "agent_error");
+    replay(run, done.stored, "review.json");
     const review = readJsonFile(flowFile(run, "review.json"), ConsistentReviewResult);
-    if (!review.ok) return { run: retry(opts.step === "review" ? recordModelReviewFailure(run, "review", reviewer) : run, opts.runKey, review.error, opts.backTo, "format_invalid") };
+    if (!review.ok) return fail(review.error, "format_invalid");
     const gate = opts.gate ? { target: "code" as const, verdict: review.data.verdict } : undefined;
-    const handoffError = finishHandoff(run, outcome, "reviewer", gate);
-    if (handoffError) return { run: retry(opts.step === "review" ? recordModelReviewFailure(run, "review", reviewer) : run, opts.runKey, handoffError, opts.backTo, "handoff_invalid") };
+    // 門檻對「序列階段開始前的帳本快照」評估：平行審查者只看得到 round 起點的帳本，不能拿同輪其他審查者剛新增的事項判它矛盾
+    const handoffError = finishHandoff(run, storedOutcome(done.stored, true), "reviewer", gate, ran.base);
+    if (handoffError) return fail(handoffError, "handoff_invalid");
     if (opts.step === "review") run = clearModelReviewFailure(run, "review", reviewer);
     renameSync(flowFile(run, "review.json"), flowFile(run, opts.saveAs(reviewer)));
     if (review.data.verdict === "approve") {
