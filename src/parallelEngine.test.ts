@@ -116,6 +116,24 @@ describe("孤兒臨時 worktree", () => {
   });
 });
 
+describe("advance 不動別的 worktree 登記", () => {
+  it("沒有臨時 worktree 要清時不執行 prune：資料夾暫時不在的別的 worktree 仍保有登記", async () => {
+    const id = "pe-no-prune";
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    const foreign = `${root}-foreign`;
+    execFileSync("git", ["-C", root, "worktree", "add", "-q", "--detach", foreign, "HEAD"]);
+    rmSync(foreign, { recursive: true, force: true }); // 例如放在尚未掛載的磁碟上
+    const now = new Date().toISOString();
+    await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "x", stage: "done",
+      autopilot: true, maxAgentRuns: 10, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(listed()).toContain(foreign.split("/").pop()); // git 登記的是 realpath，只比對資料夾名稱
+    execFileSync("git", ["-C", root, "worktree", "prune"]);
+  });
+});
+
 describe("整份計畫審查平行", () => {
   it("兩位審查者同時執行，log 序號不撞號", async () => {
     const id = "pe-plan-par";

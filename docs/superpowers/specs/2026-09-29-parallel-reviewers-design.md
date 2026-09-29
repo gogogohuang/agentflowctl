@@ -23,13 +23,15 @@
 
 ### 1. 每個呼叫一個臨時 worktree
 
-- 位置：`.agentflowctl/runs/<id>/tmp-review/<唯一>/slot-<N>/`（`<唯一>` 是程序 id＋時間＋計數，每次建立都不同；`.agentflowctl/` 已在 exclude 內）。路徑唯一是為了不被上次中斷留下的東西擋住：git 在 `worktree add` 途中被強制中止會留下 locked 登記，被殺掉的父程序的 agent 子程序也可能還在寫舊路徑。
+- 位置：固定為 `.agentflowctl/runs/<id>/tmp-review/slot-<N>/`（每個 run、每個 slot 一個；`.agentflowctl/` 已在 exclude 內）。路徑固定是因為 Claude Code（`~/.claude.json`、`~/.claude/projects/`）與 Gemini CLI（`~/.gemini/tmp/`）會依工作目錄記錄專案，路徑每次不同會永久累積紀錄。
+- 固定路徑被占用時才改用唯一路徑 `tmp-review/<程序 id>-<時間>-<計數>/slot-<N>/`（basename 不變）：目錄已存在（例如被殺掉的父程序的 agent 子程序還在用），或 `git worktree add` 在固定路徑失敗（例如 git 在 add 途中被強制中止留下的 locked 登記、清理沒清掉的殘骸）。失敗時先清掉這次可能留下的半成品目錄，再在唯一路徑重試一次。
 - 建立：`git worktree add --detach <dir> HEAD`，再把 run 的 `.flow/` 複製進去；run worktree 頂層有 `node_modules` 時建一個指向它的 symlink（Windows 用 junction），讓審查者讀得到依賴型別、跑局部測試。審查者看到的是 HEAD ＋ `.flow/` 複本＋ `node_modules` symlink，不含其他未 commit 或被 gitignore 的檔案（例如 `dist/`）。複製或建 symlink 失敗時先移除這個臨時 worktree 再丟出錯誤。
 - 審查者在臨時 worktree 內工作，輸出檔與交接回覆都寫在它自己的 `.flow/`。
-- 結束（成功、失敗、額度用完）後：先把結果存到 run 目錄（見 §3），再 `git worktree remove --force` 並刪掉唯一的父目錄；`remove` 失敗時刪目錄後補一次 `git worktree prune`。兩者都不會跟進 `node_modules` symlink 刪到原本的依賴。審查者亂改檔案的還原就是刪除，不再對共用 worktree 做 `discardChanges`／`restorePlan`。
+- 結束（成功、失敗、額度用完）後：先把結果存到 run 目錄（見 §3），再 `git worktree remove --force` 並刪掉這次建立的東西——固定路徑只刪 `slot-<N>/`（絕不刪 `tmp-review/` 本身，裡面可能還有別的呼叫在用），唯一路徑連唯一父目錄一起刪；`remove` 失敗時刪目錄後再對這一個路徑 `git worktree remove -f -f`（不用 repo 層級的 prune）。兩者都不會跟進 `node_modules` symlink 刪到原本的依賴。移除永遠不丟例外（它在 `finally` 裡，丟出去會蓋掉審查本身的結果），清不掉只印一行警告，交給下次 `advance`／`clean` 的清理。
+- `node_modules` symlink 是隔離的例外：審查者若在臨時 worktree 裡跑安裝，會經由 symlink 寫到 run 真正的 `node_modules`。審查者亂改檔案的還原就是刪除，不再對共用 worktree 做 `discardChanges`／`restorePlan`。
 - 程式碼審查開始前（寫 `diff.patch` 之前）對 run 的 worktree 做一次 `discardChanges`，清掉驗證階段留下的未 commit 修改與未追蹤產物，之後修正時的 `commitAll` 才不會把它們帶進去（冪等、resume 安全；`.flow/` 在 exclude 內不受影響）。
 - 審查類步驟額度用完時 `agentStep` 直接丟 `QuotaPause`、不會在同一個 worktree 重試，所以臨時 worktree 的 `reset` 是空操作。
-- `reviewConcurrency` 為 `1` 時仍走臨時 worktree，只是一次跑一個；不保留舊的共用 worktree 路徑，避免兩條路徑行為分岔。「與現在一致」指審查結果與關卡判斷一致。
+- `reviewConcurrency` 為 `1` 時仍走臨時 worktree，只是一次跑一個；不保留舊的共用 worktree 路徑，避免兩條路徑行為分岔。與舊的序列行為並非完全等價：同一輪的審查者都從這一輪開始時的帳本出發，核准門檻也以它評估（§4）。例如審查者 A 結掉了未結事項 X、B 核准卻沒結 X：舊版序列時 B 看得到 A 套用後的帳本，現在 B 會被判 `handoff_invalid`，多付一次重跑（重跑時 B 看得到 X 已結）。其餘審查結果與關卡判斷一致。
 
 ### 2. 執行器：`src/parallelReview.ts`
 
@@ -62,7 +64,7 @@
 
 ### 5. 孤兒清理
 
-- 在 `advance()` 開頭、`recoverHandoff` 旁呼叫 `cleanupTempWorktrees(run.id)`（`clean` 也會呼叫）：先從 `git worktree list --porcelain` 找出登記在 `tmp-review/` 下的 worktree，逐個 `git worktree remove -f -f`（雙 `-f` 才移除 locked 的），再刪掉 `tmp-review/` 整個目錄（`maxRetries`）並執行 `git worktree prune`。清理失敗只印一行警告、不讓 `advance` 崩潰；新的臨時 worktree 用唯一路徑，不會被殘骸擋住。因為結果檔在別的目錄，清掉不會丟資料。
+- 在 `advance()` 開頭、`recoverHandoff` 旁呼叫 `cleanupTempWorktrees(run.id)`（`clean` 也會呼叫）：先從 `git worktree list --porcelain` 找出登記在 `tmp-review/` 下的 worktree，逐個 `git worktree remove -f -f`（雙 `-f` 才移除 locked 的），再刪掉 `tmp-review/` 整個目錄（`maxRetries`）；只有確實找到這個 run 的登記時才執行 `git worktree prune`（prune 是 repo 層級的，會清掉使用者其他資料夾暫時不在的 worktree 的登記）。這個 run 沒有 `tmp-review/` 時完全不呼叫 git。清理失敗只印一行警告、不讓 `advance` 崩潰；固定路徑被殘骸占用時建立會改用唯一路徑，不會被擋住。因為結果檔在別的目錄，清掉不會丟資料。
 - 覆蓋 SIGINT（`process.exit` 跳過 `finally`）、SIGTERM、`kill -9`、當機。
 - 同一個 run 同時被兩個 `agentflowctl` 程序執行不在保證範圍（本來就不支援）。
 
@@ -93,9 +95,9 @@
   - 輸入指紋變了（計畫被改過、HEAD 變了）：舊結果作廢重跑。
   - 同一輪、同指紋重進，但帳本多了本輪以外的呼叫（修正者的交接）：舊結果作廢重跑；只多了本輪 slot 的呼叫（崩潰重用）仍沿用。
   - 結果檔損毀（含缺少 `base` 的舊格式）、寫到一半的 `.tmp`：視為缺，刪掉重跑。
-- `tempWorktree.test.ts`：同 slot 名稱每次建立的實體路徑不同、basename 不變；locked 的殘留登記（目錄在或不在）都能清掉，`clean` 也會清；複製 `.flow/` 失敗時不留下登記；`node_modules` symlink 讀得到，移除後原本的依賴完好。
+- `tempWorktree.test.ts`：同 slot 依序建立、移除、再建立時重用固定路徑；固定路徑還在用時改用唯一路徑（basename 不變），移除它不動到還在用的；固定路徑有 locked 殘留登記時改用唯一路徑而不失敗；locked 的殘留登記（目錄在或不在）都能清掉，`clean` 也會清；移除失敗時 `withTempWorktree` 仍回傳 callback 的結果或丟出 callback 自己的錯誤；沒有 `tmp-review/` 時不 prune，別的 worktree 的登記不受影響（`advance` 也是）；複製 `.flow/` 失敗時不留下登記；`node_modules` symlink 讀得到，移除後原本的依賴完好。
 - 程式碼審查前清掉 run worktree 的未 commit 修改與未追蹤產物。
 - `runPool` 某項丟例外後排隊中的項目仍會執行，最後丟出第一個例外。
 - claude adapter 的權限設定檔內容沒變時不重寫（並行時不會被截斷）。
-- `engine.test.ts`：三個套用點在 `reviewConcurrency: 1` 時行為與現在完全一致；預設（不限）時結果與序列相同。
+- `engine.test.ts`：三個套用點在 `reviewConcurrency: 1` 時的審查結果與關卡判斷與現在一致（例外見 §1：同輪審查者看不到彼此本輪套用的交接）；預設（不限）時結果與 `reviewConcurrency: 1` 相同。
 - `config` 驗證：`reviewConcurrency` 非正整數時報錯。

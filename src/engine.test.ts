@@ -1184,10 +1184,16 @@ ${APPROVE}`, { concurrency: 8 });
     const flag = join(root, `${id}-quota`);
     writeFileSync(log, "");
     writeFileSync(flag, "");
-    // 索引是 slot-0，兩群依序是 slot-1、slot-2；slot-2 額度用完
+    // 索引是 slot-0，兩群依序是 slot-1、slot-2；slot-2 額度用完（三者可能是同一家 agent，見腳本內的柵欄）
     await layeredRun(id, `const slot = process.cwd().split("/").pop();
 appendFileSync(${JSON.stringify(log)}, kind + ":" + slot + "\\n");
-if (slot === "slot-2" && existsSync(${JSON.stringify(flag)})) { console.error("usage limit reached"); process.exit(1); }
+if (slot === "slot-2" && existsSync(${JSON.stringify(flag)})) {
+  // 三個呼叫用同一家 agent：先等另外兩個都啟動再回報額度用完，否則還沒啟動的會因這家已額度用完而不執行
+  const until = Date.now() + 20000;
+  while (Date.now() < until && readFileSync(${JSON.stringify(log)}, "utf8").trim().split("\\n").length < 3) await new Promise((r) => setTimeout(r, 20));
+  console.error("usage limit reached");
+  process.exit(1);
+}
 ${APPROVE}`, { concurrency: 8 });
 
     const paused = await planReviewRun(id, 3);

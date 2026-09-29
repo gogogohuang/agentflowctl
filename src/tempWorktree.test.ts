@@ -76,17 +76,75 @@ describe("臨時 worktree", () => {
     await expect(cleanupTempWorktrees("t-none")).resolves.toBeUndefined();
   });
 
-  it("同一個 slot 名稱每次建立都是不同的實體路徑，basename 仍是 slot 名稱", async () => {
-    await setupRun("t-unique");
-    const a = await createTempWorktree("t-unique", "slot-0");
-    const b = await createTempWorktree("t-unique", "slot-0"); // 例如被中斷的前一個程序的 agent 還在用舊路徑
-    expect(a.dir).not.toBe(b.dir);
-    expect(basename(a.dir)).toBe("slot-0");
-    expect(basename(b.dir)).toBe("slot-0");
-    await removeTempWorktree("t-unique", a);
-    await removeTempWorktree("t-unique", b);
+  it("依序建立、移除、再建立同一個 slot 時重用同一個固定路徑", async () => {
+    await setupRun("t-stable");
+    const a = await createTempWorktree("t-stable", "slot-0");
+    expect(a.dir).toBe(join(tempWorktreesDir("t-stable"), "slot-0"));
+    await removeTempWorktree("t-stable", a);
     expect(listed()).not.toContain(a.dir);
-    expect(listed()).not.toContain(b.dir);
+    const b = await createTempWorktree("t-stable", "slot-0");
+    expect(b.dir).toBe(a.dir);
+    await removeTempWorktree("t-stable", b);
+  });
+
+  it("固定路徑還有人在用時改用唯一路徑（basename 不變），移除它不會動到還在用的那個", async () => {
+    await setupRun("t-busy");
+    const live = await createTempWorktree("t-busy", "slot-0");
+    const other = await createTempWorktree("t-busy", "slot-0"); // 例如被中斷的前一個程序的 agent 還在用固定路徑
+    expect(other.dir).not.toBe(live.dir);
+    expect(basename(other.dir)).toBe("slot-0");
+    await removeTempWorktree("t-busy", other);
+    expect(existsSync(other.dir)).toBe(false);
+    expect(listed()).not.toContain(other.dir);
+    expect(readFileSync(join(live.flow, "spec.md"), "utf8")).toBe("# spec\n");
+    expect(listed()).toContain(live.dir);
+    await removeTempWorktree("t-busy", live);
+  });
+
+  it("固定路徑有 locked 的殘留登記（目錄已不在）時改用唯一路徑，不會失敗", async () => {
+    await setupRun("t-stale-lock");
+    const orphan = await createTempWorktree("t-stale-lock", "slot-0");
+    execFileSync("git", ["-C", root, "worktree", "lock", orphan.dir]);
+    rmSync(orphan.dir, { recursive: true, force: true }); // 模擬 git 在 worktree add 途中被強制中止
+    const ws = await createTempWorktree("t-stale-lock", "slot-0");
+    expect(ws.dir).not.toBe(orphan.dir);
+    expect(basename(ws.dir)).toBe("slot-0");
+    expect(listed()).toContain(ws.dir);
+    await removeTempWorktree("t-stale-lock", ws);
+    await cleanupTempWorktrees("t-stale-lock");
+    expect(listed()).not.toContain(orphan.dir);
+  });
+
+  it("移除失敗時 withTempWorktree 仍回傳 callback 的結果，或丟出 callback 自己的錯誤", async () => {
+    if (process.getuid?.() === 0) return; // root 不受目錄權限限制，無法模擬移除失敗
+    await setupRun("t-remove-fail");
+    const lockDir = () => chmodSync(tempWorktreesDir("t-remove-fail"), 0o555); // 臨時 worktree 無法從父目錄刪掉
+    const unlock = () => chmodSync(tempWorktreesDir("t-remove-fail"), 0o755);
+    try {
+      await expect(withTempWorktree("t-remove-fail", "slot-0", async () => {
+        lockDir();
+        return "結果";
+      })).resolves.toBe("結果");
+      unlock();
+      await expect(withTempWorktree("t-remove-fail", "slot-1", async () => {
+        lockDir();
+        throw new Error("審查者自己的錯誤");
+      })).rejects.toThrow("審查者自己的錯誤");
+    } finally {
+      unlock();
+    }
+    await cleanupTempWorktrees("t-remove-fail");
+    expect(existsSync(tempWorktreesDir("t-remove-fail"))).toBe(false);
+  });
+
+  it("沒有臨時目錄時不執行 prune：別的 worktree 資料夾暫時不在，登記也不會被清掉", async () => {
+    await setupRun("t-foreign");
+    const foreign = join(root, "..", `${basename(root)}-foreign`);
+    execFileSync("git", ["-C", root, "worktree", "add", "-q", "--detach", foreign, "HEAD"]);
+    rmSync(foreign, { recursive: true, force: true }); // 例如放在尚未掛載的磁碟上
+    await cleanupTempWorktrees("t-foreign");
+    expect(listed()).toContain(`${basename(root)}-foreign`);
+    execFileSync("git", ["-C", root, "worktree", "prune"]);
   });
 
   it("git 在建立途中被強制中止留下的 locked 登記（目錄還在或已不在）都能清掉，之後照常建立", async () => {
