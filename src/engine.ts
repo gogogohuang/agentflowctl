@@ -192,7 +192,7 @@ function readFeedback(run: FlowRun): string {
   return flowText(run, "feedback.md");
 }
 
-/** 計畫審查第幾輪仍有人要求修改時交付仲裁 */
+/** 計畫審查第幾輪仍有人要求修改時交付仲裁；固定值，不受重試上限影響 */
 const PLAN_ARBITRATION_ROUND = 2;
 
 /** 這個 run 的重試上限：`--max-attempts` 存在 run 裡，沒設定才用環境變數 */
@@ -436,7 +436,7 @@ async function concludePlanReview(run: FlowRun, cfg: RepoConfig, round: number, 
   const stalled = existsSync(lastPath) && readFileSync(lastPath, "utf8") === fingerprint;
   writeFileSync(lastPath, fingerprint);
   // 修訂過一次仍被要求修改就交付仲裁，不等到重試上限
-  const exhausted = round >= Math.min(PLAN_ARBITRATION_ROUND, attemptLimit(run));
+  const exhausted = round >= PLAN_ARBITRATION_ROUND;
   if ((stalled || exhausted) && cfg.planArbiter) {
     // 雙盲：帶有審查者名稱的 feedback.md 不留在 worktree，完整報告另存到 worktree 外
     rmSync(flowFile(run, "feedback.md"), { force: true });
