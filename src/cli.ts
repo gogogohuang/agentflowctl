@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { config } from "./config.js";
+import { MIN_ATTEMPTS, config } from "./config.js";
 import { advance, loadRepoConfig } from "./engine.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git } from "./git.js";
@@ -38,9 +38,9 @@ function printUsage(title: string, rows: Array<[string, UsageSummary]>): void {
   }
 }
 
-function positiveInt(text: string, flag: string): number {
+function positiveInt(text: string, flag: string, min = 1): number {
   const n = Number(text);
-  if (!Number.isInteger(n) || n <= 0) throw new Error(`${flag} 必須是正整數：${text}`);
+  if (!Number.isInteger(n) || n < min) throw new Error(`${flag} 必須是不小於 ${min} 的整數：${text}`);
   return n;
 }
 
@@ -156,7 +156,7 @@ program
       stage: "spec",
       autopilot: !opts.manualPlan,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
-      maxAttempts: opts.maxAttempts ? positiveInt(opts.maxAttempts, "--max-attempts") : undefined,
+      maxAttempts: opts.maxAttempts ? positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) : undefined,
       cycle,
       attempts: {},
       modelMode,
@@ -190,7 +190,7 @@ program
     let run = mustGetRun(id);
     if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
     if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
-    if (opts.maxAttempts) run = { ...run, maxAttempts: positiveInt(opts.maxAttempts, "--max-attempts") };
+    if (opts.maxAttempts) run = { ...run, maxAttempts: positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
     }

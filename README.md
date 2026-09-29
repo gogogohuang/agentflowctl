@@ -97,7 +97,7 @@ agentflowctl resume f-xxxx
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
 | `run --model-mode balanced\|adaptive` | 只覆蓋這次 run 的模型模式；`resume` 沿用建立時的模式 |
 | `run --base <分支>` | 指定起始分支；未設定時使用目前分支 |
-| `run --max-attempts <次數>` | 覆蓋這次的重試上限（預設取 `AGENTFLOWCTL_MAX_ATTEMPTS`，未設定為 5）；失敗後可用 `resume <id> --max-attempts <次數>` 調高 |
+| `run --max-attempts <次數>` | 覆蓋這次的重試上限（至少 3；預設取 `AGENTFLOWCTL_MAX_ATTEMPTS`，未設定為 5）；失敗後可用 `resume <id> --max-attempts <次數>` 調高 |
 | `run --max-agent-runs <次數>` | 覆蓋這次的 `maxAgentRuns`；上限不夠時可用 `resume <id> --max-agent-runs <次數>` 調高 |
 | `-v` / `--verbose` | 執行時顯示 agent 文字、工具呼叫與專案指令，適用於 `run`、`resume`、`approve` |
 
@@ -208,7 +208,7 @@ Codex 另有幾點差異：
 
 | 變數 | 預設 | 設定方式與用途 |
 | --- | --- | --- |
-| `AGENTFLOWCTL_MAX_ATTEMPTS` | `5` | 同一關連續失敗幾次後停止；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."` |
+| `AGENTFLOWCTL_MAX_ATTEMPTS` | `5` | 同一關連續失敗幾次後停止，至少 3（設得更小以 3 計）；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."` |
 | `AGENTFLOWCTL_VERBOSE` | 未開啟 | 設為 `1` 顯示詳細輸出，效果同 `-v` |
 | `AGENTFLOWCTL_MAX_TURNS` | `200` | 目前程式會讀取此值，但尚未用它限制 agent 執行 |
 

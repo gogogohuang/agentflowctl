@@ -41,6 +41,6 @@ describe("FlowRun.maxAttempts", () => {
     const base = { id: "f-a", baseBranch: "main", branch: "flow/f-a", requirement: "x", stage: "spec", autopilot: true, maxAgentRuns: 60, cycle: ["claude"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: "t", updatedAt: "t" };
     expect(FlowRun.safeParse(base).success).toBe(true);
     expect(FlowRun.safeParse({ ...base, maxAttempts: 8 }).success).toBe(true);
-    expect(FlowRun.safeParse({ ...base, maxAttempts: 0 }).success).toBe(false);
+    expect(FlowRun.safeParse({ ...base, maxAttempts: 2 }).success).toBe(false);
   });
 });

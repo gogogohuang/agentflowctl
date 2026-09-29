@@ -322,7 +322,7 @@ run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會
 
 verify 失敗（型別、lint、建置）一律交回最後作者。審查意見才依 `fixStrategy` 決定修正者。
 
-`AGENTFLOWCTL_MAX_ATTEMPTS` 是同一關連續失敗的上限，預設 5；可用 `run --max-attempts`／`resume <id> --max-attempts` 針對單一 run 覆蓋；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."`。`AGENTFLOWCTL_VERBOSE=1` 等同執行時加 `-v`。`AGENTFLOWCTL_MAX_TURNS` 預設 200，目前程式雖讀取此值，尚未用於限制 agent 執行。
+`AGENTFLOWCTL_MAX_ATTEMPTS` 是同一關連續失敗的上限，預設 5，至少 3（環境變數設得更小以 3 計，`--max-attempts` 小於 3 會報錯）；可用 `run --max-attempts`／`resume <id> --max-attempts` 針對單一 run 覆蓋；例如 `AGENTFLOWCTL_MAX_ATTEMPTS=10 agentflowctl run --req "..."`。`AGENTFLOWCTL_VERBOSE=1` 等同執行時加 `-v`。`AGENTFLOWCTL_MAX_TURNS` 預設 200，目前程式雖讀取此值，尚未用於限制 agent 執行。
 
 ### 專案指令的偵測
 

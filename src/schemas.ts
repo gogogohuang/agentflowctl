@@ -217,7 +217,7 @@ export const FlowRun = z.object({
   /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive(),
   /** 這個 run 同一關連續失敗的上限；沒寫就用 AGENTFLOWCTL_MAX_ATTEMPTS（舊 state.json 沒有此欄位） */
-  maxAttempts: z.number().int().positive().optional(),
+  maxAttempts: z.number().int().min(3).optional(),
   /** 暫停前所在的階段與原因（額度用完時） */
   pausedStage: Stage.optional(),
   pauseReason: z.string().optional(),
