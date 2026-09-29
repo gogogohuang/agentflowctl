@@ -15,6 +15,7 @@ const { addWorktree, commitAll } = await import("./git.js");
 const { advance, resetQuotaState } = await import("./engine.js");
 const { mergeHandoff } = await import("./handoff.js");
 const { flowDir, logDir, runDir, worktreeDir } = await import("./paths.js");
+const { listRetries } = await import("./store.js");
 const { createTempWorktree, tempWorktreesDir } = await import("./tempWorktree.js");
 
 beforeEach(() => resetQuotaState());
@@ -195,5 +196,61 @@ describe("整份計畫審查平行", () => {
     expect(run.stage).toBe("failed");
     expect(run.failureCategory).toBe("agent_budget");
     expect(events().filter((line) => line.startsWith("start"))).toHaveLength(1);
+  });
+});
+
+/** 分裂裁決：slot-0 要求修改並新增計畫事項；slot-1 在看得到該事項時要求修改，看不到時核准並結掉原有事項（一輪內的審查者都從同一份帳本開始，所以 slot-1 一律看不到） */
+function writeSplitReviewer(name: string): string {
+  const file = join(root, name);
+  writeFileSync(file, `import { readFileSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
+const slot = basename(process.cwd());
+const context = readFileSync(".flow/handoff-context.md", "utf8");
+const id = context.match(/## ([a-f0-9]+)：/)?.[1];
+const object = { verdict: "changes_requested", items: [{ criterion: "範圍", status: "not_met", note: "太大" }] };
+if (slot === "slot-0") {
+  writeFileSync(".flow/plan-review.json", JSON.stringify(object));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({
+    newIssues: [{ kind: "action", summary: "並行新增事項", evidence: "plan.md:2", targetStage: "plan" }], dispositions: [],
+  }));
+} else if (context.includes("並行新增事項")) {
+  writeFileSync(".flow/plan-review.json", JSON.stringify(object));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+  writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({
+    newIssues: [], dispositions: id ? [{ id, status: "resolved", reason: "已核對", evidence: "src/api.test.ts:25" }] : [],
+  }));
+}
+`);
+  return file;
+}
+
+describe("分裂裁決的核准關卡", () => {
+  it("平行時核准者不會因為同輪其他審查者新增的事項而被判矛盾", async () => {
+    const id = "pe-plan-split-par";
+    configure(writeSplitReviewer("split.mjs"), { planReviewQuorum: 2 });
+    await planReviewSetup(id);
+    const run = await advance(baseRun(id, "plan_review", { planWriter: "a", maxAgentRuns: 2 }));
+    // 兩位審查者用掉預算，一輪審查正常結束（要求修改）後要進 plan_fix 時因預算用完停下
+    expect(listRetries(id).filter((r) => r.category === "handoff_invalid")).toEqual([]);
+    expect(run.attempts["plan-review-run"]).toBeUndefined();
+    expect(run.attempts["plan-review"]).toBe(1);
+    expect(listRetries(id).map((r) => r.category)).toEqual(["review_changes"]);
+    expect(run.failureCategory).toBe("agent_budget");
+    expect(run.failedStage).toBe("plan_fix");
+  });
+
+  it("reviewConcurrency 為 1 時同樣走到 plan_fix，也沒有 handoff_invalid", async () => {
+    const id = "pe-plan-split-seq";
+    configure(writeSplitReviewer("split.mjs"), { planReviewQuorum: 2, reviewConcurrency: 1 });
+    await planReviewSetup(id);
+    const run = await advance(baseRun(id, "plan_review", { planWriter: "a", maxAgentRuns: 2 }));
+    // 兩位審查者用掉預算，一輪審查正常結束（要求修改）後要進 plan_fix 時因預算用完停下
+    expect(listRetries(id).filter((r) => r.category === "handoff_invalid")).toEqual([]);
+    expect(run.attempts["plan-review-run"]).toBeUndefined();
+    expect(listRetries(id).map((r) => r.category)).toEqual(["review_changes"]);
+    expect(run.failureCategory).toBe("agent_budget");
+    expect(run.failedStage).toBe("plan_fix");
   });
 });

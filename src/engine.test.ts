@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({
 const { addWorktree, commitAll } = await import("./git.js");
 const { advance, resetQuotaState } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
-const { flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
+const { flowDir, logDir, planReviewStatePath, worktreeDir } = await import("./paths.js");
 const { agentRuns, listRetries, listSubstitutions, listUsage } = await import("./store.js");
 
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
@@ -748,11 +748,11 @@ ${body}
   writeTasks(id, layeredTasks());
 }
 
-function planReviewRun(id: string, maxAgentRuns: number, agents = ["p1", "p2", "p3"]) {
+function planReviewRun(id: string, maxAgentRuns: number, agents = ["p1", "p2", "p3"], attempts: Record<string, number> = {}) {
   const now = new Date().toISOString();
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
-    autopilot: true, maxAgentRuns, cycle: agents, planWriter: agents[0], attempts: {},
+    autopilot: true, maxAgentRuns, cycle: agents, planWriter: agents[0], attempts,
     taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
   });
 }
@@ -806,9 +806,8 @@ ${APPROVE}`);
     await layeredRun(id, APPROVE);
     await planReviewRun(id, 3);
     resetSeen(id);
-    // 上一輪已套用完的存檔結果不會留給新的一輪；同輪同指紋重進 plan_review 只有測試會發生，這裡模擬新的一輪
-    rmSync(join(runDir(id), "parallel-review"), { recursive: true, force: true });
-    const run = await planReviewRun(id, 4);
+    // 存檔以輪次加指紋為鍵：第二次是真正的新一輪（第 2 輪），不會沿用第 1 輪的存檔
+    const run = await planReviewRun(id, 4, undefined, { "plan-review": 1 });
     expect(run.failureReason).toMatch(/達到上限/);
     expect(seen(id)).toBe("index\n");
   });

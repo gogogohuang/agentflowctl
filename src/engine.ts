@@ -6,6 +6,7 @@ import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
+import type { HandoffLedger } from "./schemas.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
 import { flowDir, logDir, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile } from "./logs.js";
@@ -163,6 +164,8 @@ async function agentStep(
 function finishHandoff(
   run: FlowRun, outcome: StepOutcome, role: "writer" | "reviewer",
   gate?: { target: "plan" | "code"; verdict: "approve" | "changes_requested" },
+  /** 平行審查：關卡以這一輪開始前的帳本判斷（審查者只看得到那一份），套用仍落在目前的帳本 */
+  base?: HandoffLedger,
 ): string | undefined {
   const parsed = validateHandoffResponse(run.id);
   if (!parsed.ok) return parsed.error;
@@ -170,7 +173,7 @@ function finishHandoff(
     const source = {
       stage: run.stage, step: outcome.step, agent: outcome.agent, callKey: outcome.callKey,
     };
-    const preview = previewHandoff(readHandoff(run.id), outcome.callKey, source, parsed.data, role);
+    const preview = previewHandoff(base ?? readHandoff(run.id), outcome.callKey, source, parsed.data, role);
     if (gate) {
       const error = reviewHandoffGate(preview, gate.target, gate.verdict);
       if (error) return error;
@@ -454,8 +457,8 @@ const handoffResponseFile = (run: FlowRun) => join(flowDir(run.id), "handoff-res
  */
 async function executeReviewCalls(
   run: FlowRun, cfg: RepoConfig, scope: string, fingerprint: string, calls: ReviewCall[],
-): Promise<{ dir: string; finished: Finished[] } | undefined> {
-  if (calls.length === 0) return { dir: "", finished: [] };
+): Promise<{ dir: string; finished: Finished[]; base: HandoffLedger } | undefined> {
+  if (calls.length === 0) return { dir: "", finished: [], base: readHandoff(run.id) };
   const dir = openRound(run.id, scope, fingerprint);
   const saved = loadCalls(dir);
   let budget = run.maxAgentRuns - agentRuns(run.id);
@@ -468,7 +471,8 @@ async function executeReviewCalls(
   const quota = executed.find((item): item is { quota: string } => "quota" in item);
   if (quota) throw new QuotaPause(quota.quota);
   if (launch.length < calls.length) return undefined;
-  return { dir, finished: executed as Finished[] };
+  // 平行階段不動帳本，所以這就是這一輪開始時的帳本
+  return { dir, finished: executed as Finished[], base: readHandoff(run.id) };
 }
 
 async function executeOne(
@@ -521,10 +525,13 @@ function storedOutcome(stored: StoredCall, ok: boolean): StepOutcome {
  * 失敗時回傳已呼叫 retry 的 run、沒有 collected，呼叫端應直接回傳這個 run；
  * 不合格的存檔結果一併刪掉，否則同一輪重跑會反覆讀到同一份。
  */
-function applyPlanReview(run: FlowRun, spec: PlanReviewCallSpec, done: Finished, dir: string): { run: FlowRun; collected?: Collected } {
+function applyPlanReview(
+  run: FlowRun, spec: PlanReviewCallSpec, done: Finished,
+  ran: Pick<NonNullable<Awaited<ReturnType<typeof executeReviewCalls>>>, "dir" | "base">,
+): { run: FlowRun; collected?: Collected } {
   const { reviewer, step } = spec;
   const stop = (category: RetryCategory, reason: string) => {
-    dropCall(dir, spec.key);
+    dropCall(ran.dir, spec.key);
     return { run: retry(recordModelReviewFailure(run, step, reviewer, spec.scope), "plan-review-run", reason, "plan_review", category) };
   };
   if (!done.ok) return stop("agent_error", `Agent 執行失敗：${done.stored.summary}`);
@@ -532,7 +539,7 @@ function applyPlanReview(run: FlowRun, spec: PlanReviewCallSpec, done: Finished,
   const review = readJsonFile(flowFile(run, spec.output), ConsistentReviewResult);
   if (!review.ok) return stop("format_invalid", review.error);
   // 群審查不帶關卡：索引要求修改並新增事項後，群的核准不算矛盾；最後由 planSettled 檢查未結事項
-  const handoffError = finishHandoff(run, storedOutcome(done.stored, true), "reviewer", spec.gated ? { target: "plan", verdict: review.data.verdict } : undefined);
+  const handoffError = finishHandoff(run, storedOutcome(done.stored, true), "reviewer", spec.gated ? { target: "plan", verdict: review.data.verdict } : undefined, ran.base);
   if (handoffError) return stop("handoff_invalid", handoffError);
   run = clearModelReviewFailure(run, step, reviewer, spec.scope);
   // 審查紀錄移到 worktree 外面：之後的仲裁者看不到是哪一家提的意見
@@ -605,7 +612,7 @@ async function planReviewFull(run: FlowRun, cfg: RepoConfig): Promise<FlowRun> {
 
   const calls: Collected[] = [];
   for (const [i, spec] of specs.entries()) {
-    const passed = applyPlanReview(run, spec, ran.finished[i]!, ran.dir);
+    const passed = applyPlanReview(run, spec, ran.finished[i]!, ran);
     run = passed.run;
     if (!passed.collected) return run;
     calls.push(passed.collected);
@@ -698,7 +705,7 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
     const callSpec = { ...spec, slot, key };
     const ran = await executeReviewCalls(run, cfg, "plan-review", `${round}:${planKey}`, [callSpec]);
     if (!ran) return false;
-    const passed = applyPlanReview(run, callSpec, ran.finished[0]!, ran.dir);
+    const passed = applyPlanReview(run, callSpec, ran.finished[0]!, ran);
     run = passed.run;
     if (!passed.collected) return false;
     // 真的執行並成功就是有進展：同一輪不同呼叫輪流失敗時，不會累計到重試上限而讓 run 失敗。
