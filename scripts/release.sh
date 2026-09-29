@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# 本機發版：檢查、驗證後建立 GitHub Release，由 npm-publish.yml 接手發布到 npm。
+# 用法：pnpm release <patch|minor|major|x.y.z> [--dry-run]
+set -euo pipefail
+
+usage() {
+  echo "用法：pnpm release <patch|minor|major|x.y.z> [--dry-run]" >&2
+  exit 1
+}
+
+die() {
+  echo "❌ $*" >&2
+  exit 1
+}
+
+bump=""
+dry_run=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) dry_run=1 ;;
+    patch | minor | major) bump="$arg" ;;
+    *)
+      if [[ "$arg" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then bump="$arg"; else usage; fi
+      ;;
+  esac
+done
+[[ -n "$bump" ]] || usage
+
+cd "$(git rev-parse --show-toplevel)"
+
+# 1. 只能在 main 發版
+branch="$(git rev-parse --abbrev-ref HEAD)"
+[[ "$branch" == "main" ]] || die "只能在 main 發版（目前在 ${branch}）"
+
+# 2. 工作區乾淨
+[[ -z "$(git status --porcelain)" ]] || die "工作區有未提交的修改，請先處理"
+
+# 3. 與 origin/main 同步
+git fetch origin main --tags --quiet
+[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
+  || die "本地 main 與 origin/main 不同步，請先 pull 或 push"
+
+# 4. gh 可用
+command -v gh > /dev/null || die "找不到 gh，請先安裝 GitHub CLI"
+gh auth status > /dev/null 2>&1 || die "gh 尚未登入，請先執行 gh auth login"
+
+# 5. 計算新版本（從最新的 vX.Y.Z tag 起算）
+latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+[[ -n "$latest_tag" ]] || die "找不到任何 vX.Y.Z 的 tag"
+current="${latest_tag#v}"
+IFS=. read -r major minor patch <<< "$current"
+
+case "$bump" in
+  major) next="$((major + 1)).0.0" ;;
+  minor) next="$major.$((minor + 1)).0" ;;
+  patch) next="$major.$minor.$((patch + 1))" ;;
+  *)
+    next="$bump"
+    highest="$(printf '%s\n%s\n' "$current" "$next" | sort -V | tail -1)"
+    [[ "$highest" == "$next" && "$next" != "$current" ]] \
+      || die "指定的版本 $next 必須大於目前最新版 $current"
+    ;;
+esac
+next_tag="v$next"
+
+# 6. 新 tag 不能已存在（本地與遠端）
+git rev-parse -q --verify "refs/tags/$next_tag" > /dev/null && die "tag $next_tag 已存在於本地"
+[[ -z "$(git ls-remote --tags origin "refs/tags/$next_tag")" ]] || die "tag $next_tag 已存在於遠端"
+
+# 7. 本機驗證（CI 發布時也會跑，先擋下可省一輪失敗的 Release）
+echo "▶ $latest_tag → ${next_tag}，先跑驗證"
+pnpm run typecheck
+pnpm test
+pnpm run build
+
+# 8. 確認
+echo
+echo "自 $latest_tag 以來的 commit："
+git log --oneline "$latest_tag..HEAD"
+echo
+
+if [[ "$dry_run" == 1 ]]; then
+  echo "✅ dry-run 完成：檢查與驗證都通過，將建立 ${next_tag}（未建立 Release）"
+  exit 0
+fi
+
+read -r -p "確定要發布 $next_tag 嗎？(y/N) " answer
+[[ "$answer" == "y" ]] || die "已取消"
+
+# 9. 建立 Release，npm-publish.yml 會接手發布
+gh release create "$next_tag" --target main --generate-notes --title "$next_tag"
+
+echo
+echo "✅ 已建立 Release $next_tag"
+echo "   npm 發布進度：$(gh repo view --json url --jq .url)/actions/workflows/npm-publish.yml"
