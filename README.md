@@ -31,13 +31,13 @@ npx agentflowctl run --req-file ./requirement.md
 ## 執行時會發生什麼
 
 1. agent 整理需求與驗收條件，接著寫計畫，交給其他 agent 審查。
-2. 依計畫逐個任務寫出會失敗的測試，再由另一位 agent 實作到測試通過；每個任務都會經過審查與驗證。
+2. 依計畫逐個任務寫出會失敗的測試，再由另一位 agent 實作到測試通過；每個任務都會經過審查與驗證。計畫 agent 會依改動內容在任務標記 `tdd`：建置流程、設定、文件、型別、純重構這類不適合先寫失敗測試的任務，會略過紅綠燈直接實作，改由任務審查與驗證把關。專案沒有測試框架時，所有任務都略過紅綠燈，也不跑 `test` 檢查。
 3. 全部任務完成後，再執行專案檢查與整體程式碼審查。未通過的項目會交回修正。
 4. 有 `origin` 時會推送分支；若 `gh` 可用，會嘗試建立 PR。沒有 `origin` 時，完成的分支留在本機。
 
 流程預設會自動往下走。想在計畫通過審查後親自確認，可加 `--manual-plan`；確認後執行 `agentflowctl approve <id>`。
 
-agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。
+agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。
 
 ## 查看進度
 

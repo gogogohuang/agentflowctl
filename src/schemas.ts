@@ -88,6 +88,8 @@ export const TaskItem = z.object({
   dependsOn: z.array(z.string()).default([]),
   acceptance: z.array(z.string()).min(1, "每個任務至少要對應一條驗收條件"),
   complexity: z.enum(["low", "medium", "high"]).optional(),
+  /** false＝這個任務不適合先寫會失敗的測試（建置流程、設定、文件、純重構等），略過紅燈直接實作；沒寫視為 true */
+  tdd: z.boolean().optional(),
 });
 export type TaskItem = z.infer<typeof TaskItem>;
 

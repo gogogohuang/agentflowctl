@@ -287,7 +287,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 const implementer = join(root, "implementer.mjs");
 writeFileSync(implementer, `import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 const prompt = readFileSync(0, "utf8");
-const phase = prompt.includes("<red_output>") ? "code" : "tests";
+const phase = prompt.includes("<red_output>") ? "code" : prompt.includes("<no_tdd>") ? "direct" : "tests";
 writeFileSync(\`.flow/prompt-\${phase}.txt\`, prompt);
 if (existsSync(".flow/feedback.md")) writeFileSync(\`.flow/feedback-\${phase}.txt\`, readFileSync(".flow/feedback.md"));
 if (existsSync(\`.flow/tamper-\${phase}.txt\`)) {
@@ -299,17 +299,21 @@ else writeFileSync("feature.mjs", "export const answer = 42;\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
 
-async function implementRun(id: string, acceptance: unknown, { maxAgentRuns = 2, tamper }: { maxAgentRuns?: number; tamper?: "tests" | "code" } = {}) {
+async function implementRun(
+  id: string,
+  acceptance: unknown,
+  { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs" }: { maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null } = {},
+) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
-    cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+    cycle: ["a", "b"], install: "true", ...(test === null ? {} : { test }), checks: [],
   }));
   const wt = worktreeDir(id);
   await addWorktree(root, wt, "main", `flow/${id}`);
   mkdirSync(flowDir(id), { recursive: true });
   writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
-    { id: "T-1", title: "回傳答案", description: "匯出 answer", dependsOn: [], acceptance: ["AC-2"] },
+    { id: "T-1", title: "回傳答案", description: "匯出 answer", dependsOn: [], acceptance: ["AC-2"], ...(tdd === undefined ? {} : { tdd }) },
   ]));
   if (tamper) writeFileSync(join(flowDir(id), `tamper-${tamper}.txt`), "");
   const now = new Date().toISOString();
@@ -355,6 +359,35 @@ describe("實作階段", () => {
     expect(agentRuns(run.id)).toBe(3);
     expect(readFileSync(join(flowDir(run.id), `feedback-${phase}.txt`), "utf8")).toContain("不可修改規格與計畫檔");
     expect(existsSync(join(worktreeDir(run.id), "feature.test.mjs"))).toBe(true);
+  });
+});
+
+describe("略過 TDD", () => {
+  const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
+
+  it("任務標 tdd:false 時不寫測試，直接實作，並跑既有測試當回歸檢查", async () => {
+    const run = await implementRun("f-no-tdd-flag", acceptance, { maxAgentRuns: 1, tdd: false, test: "true" });
+    expect(run.taskPhase).toBe("review");
+    expect(agentRuns(run.id)).toBe(1);
+    expect(existsSync(join(worktreeDir(run.id), "feature.test.mjs"))).toBe(false);
+    expect(readFileSync(join(worktreeDir(run.id), "feature.mjs"), "utf8")).toContain("42");
+    const prompt = readFileSync(join(flowDir(run.id), "prompt-direct.txt"), "utf8");
+    expect(prompt).not.toContain("<red_output>");
+    expect(prompt).toContain("匯出 answer 為 42");
+  });
+
+  it("專案沒有測試框架時，即使任務沒標 tdd 也直接實作，不跑測試", async () => {
+    const run = await implementRun("f-no-tdd-framework", acceptance, { maxAgentRuns: 1, test: null });
+    expect(run.taskPhase).toBe("review");
+    expect(agentRuns(run.id)).toBe(1);
+    expect(existsSync(join(worktreeDir(run.id), "feature.test.mjs"))).toBe(false);
+    expect(existsSync(join(flowDir(run.id), "prompt-direct.txt"))).toBe(true);
+  });
+
+  it("有測試框架且沒標 tdd:false 時仍走紅綠燈", async () => {
+    const run = await implementRun("f-tdd-default", acceptance);
+    expect(existsSync(join(worktreeDir(run.id), "feature.test.mjs"))).toBe(true);
+    expect(existsSync(join(flowDir(run.id), "prompt-direct.txt"))).toBe(false);
   });
 });
 

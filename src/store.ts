@@ -164,7 +164,7 @@ export function listSubstitutions(id: string): (Substitution & { at: string })[]
 
 export const RetryCategories = [
   "agent_error", "missing_artifact", "format_invalid", "handoff_invalid", "open_handoff",
-  "review_changes", "arbitration_revise", "plan_tampered", "tests_not_written", "tests_not_red", "tests_modified",
+  "review_changes", "arbitration_revise", "plan_tampered", "tests_not_written", "code_not_written", "tests_not_red", "tests_modified",
   "tests_not_green", "tests_deleted", "checks_failed",
 ] as const;
 export type RetryCategory = (typeof RetryCategories)[number];

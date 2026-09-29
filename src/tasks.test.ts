@@ -61,3 +61,12 @@ describe("任務難度", () => {
     expect(validateTaskComplexity([TaskItem.parse({ ...without[0], complexity: "high" })], "adaptive")).toBeUndefined();
   });
 });
+
+describe("TaskItem.tdd", () => {
+  it("tdd 是選填欄位，沒寫視為要走 TDD", () => {
+    const base = { id: "T-1", title: "a", description: "a", acceptance: ["AC-1"] };
+    expect(TaskItem.parse(base).tdd).toBeUndefined();
+    expect(TaskItem.parse({ ...base, tdd: false }).tdd).toBe(false);
+    expect(TaskItem.safeParse({ ...base, tdd: "no" }).success).toBe(false);
+  });
+});

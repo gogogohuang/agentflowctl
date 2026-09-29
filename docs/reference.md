@@ -235,6 +235,7 @@ stderr：
 | `arbitration_revise` | 仲裁要求修訂 | 兩家雙盲仲裁都不核准，退回 plan_fix（不計入重試上限） |
 | `plan_tampered` | 改動已鎖定的計畫檔 | `planTamperedMessage` |
 | `tests_not_written` | 未寫測試 | 無 commit、或沒改測試檔 |
+| `code_not_written` | 未實作 | 略過 TDD 的任務，實作階段沒有任何 commit |
 | `tests_not_red` | 紅燈測試未失敗 | 實作前測試就全過 |
 | `tests_modified` | 實作改了測試 | 綠燈階段動到測試檔 |
 | `tests_not_green` | 測試仍未通過 | 實作後測試失敗 |
@@ -332,6 +333,7 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 - `install`：`pnpm install`、`yarn install`、`bun install` 或 `npm install --no-audit --no-fund`。不鎖 lockfile，因為實作時 agent 可能新增依賴。
 - `checks`：typecheck、lint、test、build 四項。`package.json` 有對應的 script（`typecheck`／`type-check`、`lint`、`test`、`build`）就用 `<pm> run <script>`，否則用 `tsc --noEmit`、`eslint .`、`vitest run`、`vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`。
 - `test`：`vitest run`，前綴同上。
+- 測試框架：`package.json` 的 `dependencies`／`devDependencies` 有 `vitest`、`jest`、`mocha`、`ava`、`jasmine`、`tap`、`uvu`、`@playwright/test`、`cypress` 之一，或 `test` script 存在且不是 `npm init` 的佔位（`no test specified`），就算有測試框架；在 `flow.config.json` 手動設定 `test` 也算。沒有測試框架時：所有任務略過紅綠燈（見「任務的 `tdd` 標記」），預設 `checks` 不含 `test`，`run` 會印出「未偵測到測試框架」。手動設定的 `checks` 一律照設定。
 
 `run` 建立 worktree 後會印出這次偵測到的指令：
 
@@ -340,6 +342,19 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 [f-xxxx]    install：pnpm install
 [f-xxxx]    checks.typecheck：pnpm run type-check
 ```
+
+### 任務的 `tdd` 標記
+
+計畫 agent 會依改動內容在 `tasks.json` 的每個任務寫 `tdd`（選填，沒寫視為 `true`）。`false` 表示這個任務不適合先寫會失敗的測試，例如建置流程與打包設定、依賴與版本設定、文件與 prompt 文字、樣式、型別宣告、不改變行為的重構；計畫要寫明理由與驗收方式，計畫審查會核對，會改變程式行為卻標成 `false` 的要求改回。實際是否走 TDD 由程式決定：`專案有測試框架且 tdd 不是 false` 才走紅綠燈。
+
+略過 TDD 的任務：
+
+- 不做紅燈；進入實作時記下當下的 HEAD 作為任務起點（`taskBase`），實作用 `prompts/implement-direct.md`，沒有 `red-output.txt`。
+- 實作必須產生至少一個 commit，否則以 `code_not_written` 重試。
+- 有測試框架時仍會跑 `test` 指令，確認既有測試沒被破壞；沒有測試框架時不跑。實作階段不檢查有沒有動到測試檔。
+- 之後照常：任務審查、驗證（`checks`）、任務修正。
+
+`run` 印出任務清單時，略過 TDD 的任務會顯示「略過 TDD」取代測試 agent。
 
 ### 用指令管理 agent
 

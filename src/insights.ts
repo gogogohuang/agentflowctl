@@ -11,6 +11,7 @@ export const RETRY_LABEL: Record<RetryCategory, string> = {
   arbitration_revise: "仲裁要求修訂",
   plan_tampered: "改動已鎖定的計畫檔",
   tests_not_written: "未寫測試",
+  code_not_written: "未實作",
   tests_not_red: "紅燈測試未失敗",
   tests_modified: "實作改了測試",
   tests_not_green: "測試仍未通過",
