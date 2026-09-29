@@ -25,6 +25,9 @@ export interface RunStats {
 
 const time = (iso?: string) => (iso ? new Date(iso).getTime() : NaN);
 
+/** 紅燈階段的測試指令：失敗才是預期結果，意外通過才代表這一步沒過關 */
+const isRedCommand = (kind: StepStat["kind"], step: string) => kind === "cmd" && /^T-\d+-red$/.test(step);
+
 /** 從 log 的檔頭與檔尾算出每個步驟的次數、失敗與耗時，不讀 log 內容 */
 export function computeStats(entries: LogEntry[]): RunStats {
   const byKey = new Map<string, StepStat>();
@@ -47,7 +50,7 @@ export function computeStats(entries: LogEntry[]): RunStats {
       unfinished += 1;
       continue;
     }
-    if (!footer.ok) s.failed += 1;
+    if (isRedCommand(kind, header.step) ? footer.ok : !footer.ok) s.failed += 1;
     const ms = Math.max(0, end - start);
     s.totalMs += ms;
     s.maxMs = Math.max(s.maxMs, ms);
