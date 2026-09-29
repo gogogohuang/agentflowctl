@@ -17,6 +17,10 @@ export const Stage = z.enum([
 ]);
 export type Stage = z.infer<typeof Stage>;
 
+/** 使用者可指定的公開流程停點；內部修正階段不列入。 */
+export const StopAfterStage = z.enum(["spec", "plan", "implement", "verify", "review", "pr"]);
+export type StopAfterStage = z.infer<typeof StopAfterStage>;
+
 export const HandoffSource = z.object({
   stage: Stage,
   step: z.string().min(1),
@@ -219,6 +223,8 @@ export const FlowRun = z.object({
   branch: z.string(),
   requirement: z.string(),
   stage: Stage,
+  /** 完成這個公開階段後暫停；舊 run 沒有此欄位時一路跑完。 */
+  stopAfter: StopAfterStage.optional(),
   autopilot: z.boolean(),
   /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive(),

@@ -45,6 +45,20 @@ describe("FlowRun.maxAttempts", () => {
   });
 });
 
+describe("FlowRun.stopAfter", () => {
+  const base = { id: "f-stop", baseBranch: "main", branch: "flow/f-stop", requirement: "x", stage: "spec", autopilot: true, maxAgentRuns: 60, cycle: ["claude"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: "t", updatedAt: "t" };
+
+  it("接受公開停點，且舊 state.json 省略時仍可讀取", () => {
+    expect(FlowRun.safeParse({ ...base, stopAfter: "verify" }).success).toBe(true);
+    expect(FlowRun.safeParse(base).success).toBe(true);
+  });
+
+  it("拒絕內部階段與未知停點", () => {
+    expect(FlowRun.safeParse({ ...base, stopAfter: "plan_review" }).success).toBe(false);
+    expect(FlowRun.safeParse({ ...base, stopAfter: "later" }).success).toBe(false);
+  });
+});
+
 describe("RepoConfig 的 maxAttempts 與 verbose", () => {
   it("預設 5 次、不顯示詳細輸出；可在設定檔覆蓋", () => {
     expect(RepoConfig.parse({})).toMatchObject({ maxAttempts: 5, verbose: false });
@@ -55,4 +69,3 @@ describe("RepoConfig 的 maxAttempts 與 verbose", () => {
     expect(() => RepoConfig.parse({ maxAttempts: 2 })).toThrow();
   });
 });
-

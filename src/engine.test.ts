@@ -461,7 +461,8 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 `);
 
 async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce = false,
-  failReviewOnce = false, failFixOnce = false } = {}) {
+  failReviewOnce = false, failFixOnce = false, stopAfter }: { tasks?: number; check?: string; rejectOnce?: boolean;
+  failReviewOnce?: boolean; failFixOnce?: boolean; stopAfter?: "spec" | "plan" | "implement" | "verify" | "review" | "pr" } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", worker] }])),
     cycle: ["a", "b"], install: "true", test: "for f in T-*.test.mjs; do node $f || exit 1; done",
@@ -481,13 +482,27 @@ async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce =
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
     autopilot: true, maxAgentRuns: 20, cycle: ["a", "b"], attempts: {},
-    taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    taskIndex: 0, taskPhase: "tests", stopAfter, createdAt: now, updatedAt: now,
   });
 }
 
 const steps = (id: string) => readFileSync(join(flowDir(id), "steps.txt"), "utf8").trim().split("\n");
 
 describe("任務審查與驗證", () => {
+  it("完成 implement 停點後暫停，resume stage 指向 verify", async () => {
+    const run = await taskFlowRun("f-stop-implement", { stopAfter: "implement" });
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("verify");
+    expect(run.pauseReason).toContain("implement");
+  });
+
+  it("完成 verify 停點後暫停，resume stage 指向 review", async () => {
+    const run = await taskFlowRun("f-stop-verify", { stopAfter: "verify" });
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("review");
+    expect(run.pauseReason).toContain("verify");
+  });
+
   it("審查執行失敗後有有效結果，就清除執行失敗次數", async () => {
     const run = await taskFlowRun("f-task-review-retry-clear", { failReviewOnce: true });
     expect(run.stage).toBe("done");

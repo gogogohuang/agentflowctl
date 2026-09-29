@@ -222,6 +222,27 @@ function succeed(run: FlowRun, key: string, next: Stage): FlowRun {
   return { ...run, attempts, stage: next };
 }
 
+/** 回傳這次 transition 完成的公開階段；內部審查／修正 transition 不算交付邊界。 */
+function completedStopStage(current: Stage, next: Stage): "spec" | "plan" | "implement" | "verify" | "review" | undefined {
+  if (current === "spec" && next === "plan") return "spec";
+  if (current === "plan_review" && next === "implement") return "plan";
+  if (current === "implement" && next === "verify") return "implement";
+  if (current === "verify" && next === "review") return "verify";
+  if (current === "review" && next === "pr") return "review";
+  return undefined;
+}
+
+function pauseAtStopAfter(run: FlowRun, next: FlowRun): FlowRun {
+  const completed = completedStopStage(run.stage, next.stage);
+  if (!completed || run.stopAfter !== completed) return next;
+  return {
+    ...next,
+    stage: "paused",
+    pausedStage: next.stage,
+    pauseReason: `已完成指定階段 ${completed}，等待使用者執行 resume 接續`,
+  };
+}
+
 /** 設定檔放在主專案根目錄，未 commit 的修改也會生效 */
 /** 讀取 flow.config.json；沒寫的 install、test、checks 依專案現況偵測 */
 export function loadRepoConfig(): RepoConfig {
@@ -1178,7 +1199,7 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
       });
     }
     try {
-      run = saveRun(await STAGES[stage](run));
+      run = saveRun(pauseAtStopAfter(run, await STAGES[stage](run)));
     } catch (err) {
       if (err instanceof QuotaPause) {
         info(run, `⏸️  暫停：${err.message}`);
