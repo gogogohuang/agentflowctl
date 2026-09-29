@@ -27,7 +27,8 @@
 - 建立：`git worktree add --detach <dir> HEAD`，再把 run 的 `.flow/` 複製進去。不帶 `node_modules`，審查不跑專案指令。
 - 審查者在臨時 worktree 內工作，輸出檔與交接回覆都寫在它自己的 `.flow/`。
 - 結束（成功、失敗、額度用完）後：先把結果存到 run 目錄（見 §3），再 `git worktree remove --force` 並刪目錄。審查者亂改檔案的還原就是刪除，不再對共用 worktree 做 `discardChanges`／`restorePlan`。
-- 額度用完的重試沿用 `agentStep` 的迴圈，重試前 `reset` 改成重建臨時 worktree。
+- 審查類步驟額度用完時 `agentStep` 直接丟 `QuotaPause`、不會在同一個 worktree 重試，所以臨時 worktree 的 `reset` 是空操作。
+- `reviewConcurrency` 為 `1` 時仍走臨時 worktree，只是一次跑一個；不保留舊的共用 worktree 路徑，避免兩條路徑行為分岔。「與現在一致」指審查結果與關卡判斷一致。
 
 ### 2. 執行器：`src/parallelReview.ts`
 
@@ -43,7 +44,8 @@
 - 每個呼叫一完成，立刻把結果原子寫入 `.agentflowctl/runs/<id>/parallel-review/<輪次識別>/<slot>.json`（先寫 `.tmp` 再 rename）。內容包含審查 JSON、交接回覆、`callKey`、`source`。
 - 輪次識別包含：階段、步驟、輪數，以及**輸入指紋**（計畫用 `currentPlanKey(run)`，程式碼審查用 HEAD 與 base）。指紋變了就整個目錄作廢並刪除，避免沿用過期審查。
 - resume 時：同輪次識別下已有合法結果檔的 slot 直接沿用（印 `↪ 沿用本輪已完成的…`），只補跑缺的。結果檔損毀（zod 驗證失敗）視為缺，刪掉重跑。
-- 這一機制取代 `planReviewLayered` 現有的 `plan-review-state.json` 進度檔裡「本輪已完成呼叫」的部分；分層審查的 `reviewed` verdict 仍留在原檔。整組審查與程式碼審查因此也第一次能沿用已完成的審查。
+- 只存「agent 執行成功」的結果；執行失敗的呼叫不存檔（resume 後照原本的重試流程重跑）。序列收尾階段判定某份已存結果不合格（格式錯誤、交接矛盾）時，立刻刪掉那份結果檔，否則同一輪重跑會反覆讀到同一份壞結果。
+- 這一機制與 `planReviewLayered` 現有的 `plan-review-state.json` 並存：存檔結果是「agent 剛跑完、尚未套用」的暫存，進度檔記的是「已套用」的呼叫與分層 `reviewed` verdict，兩者各管一段，不合併。整組審查與程式碼審查因此也第一次能沿用已完成的審查。
 
 ### 4. 序列收尾階段
 
@@ -52,7 +54,7 @@
 1. 讀結果檔（不是讀臨時 worktree），驗證審查 JSON。
 2. `finishHandoff`：用結果檔內存的 `callKey`／`source` 與交接回覆，走原有的 `previewHandoff`／`acceptHandoff`。`acceptHandoff` 已有收據與 `appliedCalls`，重播冪等。
 3. 失敗的呼叫走原有的 `retry`／`recordModelReviewFailure`；歸檔審查紀錄到 `reviews/`（改為寫入而非 rename，重播不會因來源檔消失而失敗）。
-4. 有額度用完的呼叫時，前面成功的照常處理完，最後丟 `QuotaPause`。
+額度用完時不進入收尾階段：平行階段結束後若有呼叫額度用完，直接丟 `QuotaPause`。成功的呼叫此時已存檔，resume 後會被沿用並在收尾階段套用，不會丟失也不會重跑。
 
 在收尾階段中途被中斷也安全：結果檔還在，交接冪等，重播會從頭再走一遍收尾。
 
@@ -65,7 +67,8 @@
 ### 6. 終端機與 log
 
 - 平行時每行輸出加 `[<審查者>]` 前綴（既有 `info`／verbose 輸出都套用）；序列（`reviewConcurrency` 為 1 或只有一位審查者）時維持現在的格式，不加前綴。
-- log 序號：在 spawn 前同步取號並立即建立空檔佔位，`nextLogFile` 的取號與建檔之間不能有 `await`。實作時先確認 `runner.ts` 現況，不符就修。
+- log 序號：`nextLogFile` 取號到 `runAgent` 寫入檔頭之間沒有 `await`（已確認），所以同時啟動的呼叫不會撞號。不改程式，只加測試鎖住這個性質。
+- 審查者不再能改到共用的 `.flow/`，「已還原審查者修改的檔案」這行訊息不再出現；改由測試斷言共用的 `.flow/` 與程式碼完全沒被動到。
 - 中斷時終端機摘要（`stopReport`）不變；平行中的多份 log 都沒有 `# exit` 尾行，`summarizeLog` 已能處理「還在執行或被中斷」。
 
 ### 7. 設定與文件
