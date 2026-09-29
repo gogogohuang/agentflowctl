@@ -112,10 +112,11 @@ async function registeredTempWorktrees(repo: string, runId: string): Promise<str
  * 清掉上次中斷（Ctrl-C 的 process.exit 不跑 finally、SIGTERM、kill -9、當機）留下的臨時 worktree 與 git 登記。
  * git 在 worktree add 途中被強制中止會留下 locked 登記，prune 會略過它，所以先逐個 remove -f -f。
  * 這個 run 沒有 tmp-review/ 就什麼都不做（不呼叫 git）；prune 是 repo 層級的，只在確實找到這個 run 的登記時才執行。
+ * force（`clean` 用）：tmp-review/ 已不在也照樣列出登記並清掉，否則只剩 locked 登記時會永遠留在 .git/worktrees/。
  * 不丟例外：清不乾淨只印警告，下一次 advance 會再試；固定路徑被殘骸占用時建立會改用唯一路徑，不會被擋住。
  */
-export async function cleanupTempWorktrees(runId: string): Promise<void> {
-  if (!existsSync(tempWorktreesDir(runId))) return;
+export async function cleanupTempWorktrees(runId: string, opts: { force?: boolean } = {}): Promise<void> {
+  if (!opts.force && !existsSync(tempWorktreesDir(runId))) return;
   try {
     const repo = existsSync(worktreeDir(runId)) ? worktreeDir(runId) : projectRoot();
     const registered = await registeredTempWorktrees(repo, runId);

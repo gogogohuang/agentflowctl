@@ -16,8 +16,8 @@ export async function cleanRun(id: string): Promise<boolean> {
   const root = projectRoot();
   const wt = worktreeDir(id);
   const found = existsSync(wt) || existsSync(runDir(id));
-  // 平行審查中斷留下的臨時 worktree：locked 的登記 prune 不會清，要先處理
-  await cleanupTempWorktrees(id);
+  // 平行審查中斷留下的臨時 worktree：locked 的登記 prune 不會清，要先處理；tmp-review/ 已不在時也要查
+  await cleanupTempWorktrees(id, { force: true });
   if (existsSync(wt)) {
     // git 不認得這個資料夾時（登記已被 prune、或 worktree add 做到一半）改成直接刪
     await removeWorktree(root, wt).catch(() => rmSync(wt, { recursive: true, force: true }));
