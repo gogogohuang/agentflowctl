@@ -6,7 +6,7 @@ import { flowDir, handoffPath, runDir } from "./paths.js";
 import { HandoffLedger, HandoffResponse, HandoffSource, type HandoffIssue } from "./schemas.js";
 import { readJsonFile, type JsonResult } from "./util.js";
 
-const responsePath = (id: string) => join(flowDir(id), "handoff-response.json");
+const responsePath = (id: string, flow = flowDir(id)) => join(flow, "handoff-response.json");
 const receiptsDir = (id: string) => join(runDir(id), "handoff-receipts");
 const keyHash = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 16);
 const receiptPath = (id: string, key: string) => join(receiptsDir(id), `${keyHash(key)}.json`);
@@ -82,7 +82,7 @@ export function mergeHandoff(
 }
 
 /** 只把目前步驟需要處理的事項投影給 agent。 */
-export function prepareHandoff(id: string, _callKey: string, target: "plan" | "code", blind: boolean): void {
+export function prepareHandoff(id: string, _callKey: string, target: "plan" | "code", blind: boolean, flow = flowDir(id)): void {
   const items = readHandoff(id).issues.filter((item) => item.targetStage === target && (
     item.kind === "info" || item.status === "open" || item.status === "proposed_resolved"
   ));
@@ -98,13 +98,13 @@ export function prepareHandoff(id: string, _callKey: string, target: "plan" | "c
     actions.length ? `## 待處理事項（action，可在 dispositions 處置）\n\n${actions.join("\n\n")}` : "",
     infos.length ? `## 參考資訊（info，只供參考，不要放進 dispositions）\n\n${infos.join("\n\n")}` : "",
   ].filter(Boolean);
-  mkdirSync(flowDir(id), { recursive: true });
-  writeFileSync(join(flowDir(id), "handoff-context.md"), `# 待處理交接事項\n\n${sections.length ? sections.join("\n\n") : "目前沒有待處理事項。"}\n`);
-  rmSync(responsePath(id), { force: true });
+  mkdirSync(flow, { recursive: true });
+  writeFileSync(join(flow, "handoff-context.md"), `# 待處理交接事項\n\n${sections.length ? sections.join("\n\n") : "目前沒有待處理事項。"}\n`);
+  rmSync(responsePath(id, flow), { force: true });
 }
 
-export function validateHandoffResponse(id: string): JsonResult<HandoffResponse> {
-  return readJsonFile(responsePath(id), HandoffResponse);
+export function validateHandoffResponse(id: string, flow = flowDir(id)): JsonResult<HandoffResponse> {
+  return readJsonFile(responsePath(id, flow), HandoffResponse);
 }
 
 /** 已通過原有關卡的回覆先記收據，再合併；中斷後可重播。 */

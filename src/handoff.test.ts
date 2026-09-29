@@ -169,3 +169,28 @@ describe("交接紀錄", () => {
     expect(reviewHandoffGate(settled, "code", "approve")).toBeUndefined();
   });
 });
+
+describe("指定 .flow 目錄的交接檔", () => {
+  it("prepareHandoff 寫到指定目錄並只刪那裡的回覆，不動預設目錄", () => {
+    const id = "f-custom-flow";
+    mergeHandoff(id, source.callKey, source, { newIssues: [issue], dispositions: [] }, "writer");
+    const custom = mkdtempSync(join(tmpdir(), "agentflowctl-flow-"));
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "handoff-response.json"), JSON.stringify(empty));
+    writeFileSync(join(custom, "handoff-response.json"), JSON.stringify(empty));
+
+    prepareHandoff(id, "k", "code", false, custom);
+
+    expect(readFileSync(join(custom, "handoff-context.md"), "utf8")).toContain("測試未涵蓋逾時");
+    expect(existsSync(join(custom, "handoff-response.json"))).toBe(false);
+    expect(existsSync(join(flowDir(id), "handoff-response.json"))).toBe(true);
+    expect(existsSync(join(flowDir(id), "handoff-context.md"))).toBe(false);
+  });
+
+  it("validateHandoffResponse 讀指定目錄的回覆", () => {
+    const custom = mkdtempSync(join(tmpdir(), "agentflowctl-flow-"));
+    writeFileSync(join(custom, "handoff-response.json"), JSON.stringify(empty));
+    expect(validateHandoffResponse("f-custom-flow-2", custom).ok).toBe(true);
+    expect(validateHandoffResponse("f-custom-flow-2", join(custom, "不存在")).ok).toBe(false);
+  });
+});
