@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { num, str, toolDetail, tryJson, type Adapter, type AgentEvent, type InvokeOptions } from "./types.js";
 
@@ -20,7 +20,12 @@ function settingsFile(o: InvokeOptions): string {
   };
   mkdirSync(o.runDir, { recursive: true });
   const path = join(o.runDir, "claude-settings.json");
-  writeFileSync(path, JSON.stringify(settings, null, 2));
+  const content = JSON.stringify(settings, null, 2);
+  // 平行審查時多個 claude 同時啟動：內容沒變就不寫；要寫時先寫暫存檔再 rename，別的行程不會讀到被截斷的檔案而在沒有 deny list 下執行
+  if (existsSync(path) && readFileSync(path, "utf8") === content) return path;
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
   return path;
 }
 

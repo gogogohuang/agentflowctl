@@ -198,7 +198,7 @@ Codex 另有幾點差異：
 | `tddSplit` | `true` | 有多位 agent 時，`true` 會把同一任務的測試與實作分給不同 agent |
 | `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准 |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者核准 |
-| `reviewConcurrency` | 不限 | 同一輪審查最多幾位審查者同時執行；`1` 為一次一位 |
+| `reviewConcurrency` | 不限 | 同一輪審查最多幾位審查者同時執行；`1` 為一次一位；說明見表格下方，`doctor` 會顯示目前的設定 |
 | `planArbiter` | `true` | 計畫審查僵持，或修訂一次後仍被要求修改時是否啟用仲裁 |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |
 | `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
@@ -211,7 +211,7 @@ Codex 另有幾點差異：
 
 計畫審查會依任務規模選做法。同時符合下列條件時，每輪先做一次索引審查，再只審查有變動的任務群：任務達到 `planReviewLayers.minTasks` 個；依 description 寫的檔案路徑能分成至少兩群，而且最大一群不超過三分之二；`plan.md` 每個任務都有 `## T-<數字>` 標題。索引審查讀規格、全部任務描述、驗收條件與整體做法，人數是 `planReviewQuorum`。群數最多 `maxGroups`，也不超過任務數除以 `tasksPerGroup`；每群一位審查者，含 `high` 任務的群改由 `planReviewQuorum` 位審查。改了 `plan.md` 的整體做法時所有群都重審；某一次審查失敗時只重跑還沒完成的部分。已達門檻卻不符其他條件時，終端機會印出原因並改由審查者讀完整份規格與計畫。`"planReviewLayers": { "enabled": false }` 可以關閉，`doctor` 會顯示目前的設定。
 
-同一輪的審查者（整份計畫審查、分層計畫審查的索引與各群、程式碼審查）預設同時執行，可用 `reviewConcurrency` 限制同時數量。每位審查者在自己的臨時 git worktree 裡工作（程式碼是目前的 HEAD、`.flow/` 是複製的），所以審查者改了什麼都不會影響 run 的 worktree 或其他審查者；審查結果一完成就存進 `.agentflowctl/runs/<id>/parallel-review/`。任何時候 Ctrl-C 或被中斷，之後 `resume` 只會補跑沒完成的審查者，已完成的不重跑；中斷留下的臨時 worktree 在下次執行時自動清掉。若有審查者的額度用完，其他審查者仍會跑完並存檔，全部結束後才暫停，`resume` 時只補跑額度用完的那位。同時執行時，終端機訊息會加上 `[審查者]` 前綴。
+同一輪的審查者（整份計畫審查、分層計畫審查的索引與各群、程式碼審查）預設同時執行，可用 `reviewConcurrency` 限制同時數量。每位審查者在自己的臨時 git worktree 裡工作：看到的是 run 目前的 HEAD、`.flow/` 的複本，以及指向 run worktree 頂層 `node_modules` 的 symlink（有才建），不含其他未 commit 或被 gitignore 的檔案（例如 `dist/`）；所以審查者改了什麼都不會影響 run 的 worktree 或其他審查者。程式碼審查開始前會先把 run 的 worktree 還原成 HEAD（清掉驗證階段留下的未 commit 修改與未追蹤產物）。審查結果一完成就存進 `.agentflowctl/runs/<id>/parallel-review/`，全部審查者跑完後才依固定順序逐一套用結果與交接事項；因此即使 `reviewConcurrency` 為 `1`，同一輪的審查者也看不到彼此本輪新增的交接事項。任何時候 Ctrl-C 或被中斷，之後 `resume` 只會補跑沒完成的審查者，已完成的不重跑；中斷留下的臨時 worktree（`.agentflowctl/runs/<id>/tmp-review/`）在該 run 下次 `resume`（或 `clean`）時自動清掉。已存檔的審查只在同一輪、計畫或程式碼沒變，而且交接帳本沒有被這一輪以外的呼叫（例如修正者）動過時沿用，否則重審。若有審查者的額度用完，其他審查者仍會跑完並存檔，全部結束後才暫停，`resume` 時只補跑額度用完的那位。審查只在 `maxAgentRuns` 剩餘的次數內啟動：預算不夠整輪時只啟動預算內的審查者（結果照樣存檔），run 以 `agent_budget` 失敗，用 `resume <id> --max-agent-runs <次數>` 調高後只補跑沒跑的。同時執行時，引擎印出的訊息會加上 `[審查者]` 前綴；agent 自己的輸出（`-v` 時印出的內容、回報的疑慮）不加。
 
 審查意見的處理寫在 `.flow/plan-replies.md`，每輪覆寫，不寫進 `plan.md` 文末。下一輪索引會看到整份回應；任務群只看到自己的 `## T-<數字>` 節。
 

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-parallel-engine-"));
 execFileSync("git", ["init", "-q", "-b", "main", root]);
@@ -13,12 +13,21 @@ process.chdir(root);
 
 const { addWorktree, commitAll } = await import("./git.js");
 const { advance, resetQuotaState } = await import("./engine.js");
-const { mergeHandoff } = await import("./handoff.js");
+const { acceptHandoff, mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, logDir, runDir, worktreeDir } = await import("./paths.js");
-const { listRetries } = await import("./store.js");
+const { reviewers } = await import("./roles.js");
+const { agentRuns, listRetries } = await import("./store.js");
 const { createTempWorktree, tempWorktreesDir } = await import("./tempWorktree.js");
 
 beforeEach(() => resetQuotaState());
+
+/** 腳本讀的旗標檔：前一個測試失敗（沒跑到 clearFlag）也不能殘留到下一個測試 */
+const FLAGS = ["sleep", "tamper", "barrier"];
+afterEach(() => {
+  for (const name of readdirSync(root)) {
+    if (FLAGS.includes(name) || name.startsWith("quota-slot-")) rmSync(join(root, name), { force: true });
+  }
+});
 
 /** 審查者腳本：記錄自己在哪個 slot 啟動與結束，可睡一下、可模擬額度用完、可亂改檔案 */
 function writeReviewer(name: string): string {
@@ -113,9 +122,10 @@ describe("整份計畫審查平行", () => {
     configure(writeReviewer("reviewer.mjs"), { planReviewQuorum: 2 });
     await planReviewSetup(id);
     resetEvents();
-    setFlag("sleep", "300");
+    // 柵欄：兩位都啟動後才往下；序列執行時第一位會等到逾時，events 不會是 start start
+    setFlag("barrier", "2");
     const run = await advance(baseRun(id, "plan_review", { planWriter: "a" }));
-    clearFlag("sleep");
+    clearFlag("barrier");
     expect(run.stage).toBe("paused");
     expect(run.pausedStage).toBe("implement"); // 計畫審查全數核准，停在計畫階段的邊界
     // 兩個都開始之後才有人結束
@@ -190,6 +200,40 @@ describe("整份計畫審查平行", () => {
     expect(resumed.stage).toBe("paused");
     expect(resumed.pausedStage).toBe("implement");
     expect(events()).toContain("start slot-0"); // 損毀的被丟掉，重跑
+  });
+
+  it("計畫被改過（指紋變了）時舊存檔作廢並重跑", async () => {
+    const id = "pe-plan-fp";
+    configure(writeReviewer("reviewer.mjs"), { planReviewQuorum: 2 });
+    await planReviewSetup(id);
+    setFlag("quota-slot-1");
+    const paused = await advance(baseRun(id, "plan_review", { planWriter: "a" }));
+    clearFlag("quota-slot-1");
+    expect(paused.pausedStage).toBe("plan_review");
+    writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n改過的做法\n\n## T-1 難度\n低\n");
+
+    resetQuotaState();
+    resetEvents();
+    const resumed = await advance({ ...paused, stage: "plan_review", pausedStage: undefined, pauseReason: undefined });
+    expect(resumed.pausedStage).toBe("implement");
+    expect(events()).toContain("start slot-0"); // slot-0 雖已存檔，但審的是舊計畫，重跑
+    expect(events()).toContain("start slot-1");
+  });
+
+  it("同一輪、同一份計畫重進時，作者的交接已套用過，舊存檔作廢並重跑", async () => {
+    const id = "pe-plan-writer-stale";
+    configure(writeReviewer("reviewer.mjs"), { planReviewQuorum: 2 });
+    await planReviewSetup(id);
+    const first = await advance(baseRun(id, "plan_review", { planWriter: "a" }));
+    expect(first.pausedStage).toBe("implement");
+    // 模擬修正者只回覆交接、沒改計畫檔：round 與計畫指紋都不變，但帳本多了一個不屬於這一輪審查者的呼叫
+    const source = { stage: "plan_fix" as const, step: "plan-fix", agent: "a", callKey: `${id}:plan-fix` };
+    acceptHandoff(id, source.callKey, source, { newIssues: [], dispositions: [] }, "writer");
+
+    resetEvents();
+    const again = await advance(baseRun(id, "plan_review", { planWriter: "a" }));
+    expect(again.pausedStage).toBe("implement");
+    expect(events().filter((line) => line.startsWith("start")).sort()).toEqual(["start slot-0", "start slot-1"]);
   });
 
   it("預算不足時只啟動預算內的呼叫，run 以 agent_budget 失敗", async () => {
@@ -299,6 +343,21 @@ describe("程式碼審查平行", () => {
     expect(execFileSync("git", ["-C", worktreeDir(id), "status", "--porcelain"], { encoding: "utf8" })).toBe("");
   });
 
+  it("審查前清掉 run worktree 裡未 commit 的修改與未追蹤的產物", async () => {
+    const id = "pe-code-discard";
+    configure(writeReviewer("reviewer.mjs"));
+    await codeReviewSetup(id);
+    // 模擬驗證階段留下的產物：未追蹤的檔案，以及被 --fix 類工具改過的已追蹤檔
+    writeFileSync(join(worktreeDir(id), "coverage.txt"), "產物\n");
+    writeFileSync(join(worktreeDir(id), "feature.ts"), "export const answer = 0;\n");
+    const run = await advance(baseRun(id, "review", { lastWriter: "a", stopAfter: "review" }));
+    expect(run.stage).toBe("paused");
+    expect(existsSync(join(worktreeDir(id), "coverage.txt"))).toBe(false);
+    expect(readFileSync(join(worktreeDir(id), "feature.ts"), "utf8")).toBe("export const answer = 42;\n");
+    expect(execFileSync("git", ["-C", worktreeDir(id), "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+    expect(existsSync(join(flowDir(id), "diff.patch"))).toBe(true);
+  });
+
   it("額度用完後 resume 只補跑沒完成的審查者", async () => {
     const id = "pe-code-quota";
     configure(writeReviewer("reviewer.mjs"), { reviewQuorum: 2 });
@@ -366,5 +425,64 @@ describe("程式碼審查的分裂裁決", () => {
     expect(listRetries(id).filter((r) => r.category === "handoff_invalid")).toEqual([]);
     expect(run.attempts["review-run"]).toBeUndefined();
     expect(listRetries(id).map((r) => r.category)).toEqual(["review_changes"]);
+  });
+});
+
+/** 不中斷時的結果：之後拿來和「序列收尾中斷後 resume」比對 */
+const outcome = (run: { stage: string; failedStage?: string; failureCategory?: string; attempts: Record<string, number> }, id: string) => ({
+  stage: run.stage, failedStage: run.failedStage, failureCategory: run.failureCategory, attempts: run.attempts,
+  runs: agentRuns(id),
+  retries: listRetries(id).map((r) => `${r.key}:${r.category}`),
+  issues: readHandoff(id).issues.map((i) => `${i.summary}:${i.status}`),
+});
+
+describe("序列收尾中斷後重播", () => {
+  it("整份計畫審查：slot-0 已套用交接、run 尚未存檔時中斷，resume 不誤判核准者、不重跑，結果與不中斷時相同", async () => {
+    configure(writeSplitReviewer("split.mjs"), { planReviewQuorum: 2 });
+    const control = "pe-plan-crash-control";
+    await planReviewSetup(control);
+    const expected = outcome(await advance(baseRun(control, "plan_review", { planWriter: "a", maxAgentRuns: 3 })), control);
+
+    const id = "pe-plan-crash";
+    await planReviewSetup(id);
+    const initial = baseRun(id, "plan_review", { planWriter: "a", maxAgentRuns: 3 });
+    // slot-0 的審查紀錄路徑被目錄佔住：slot-0 的 acceptHandoff 完成後、歸檔時丟例外，模擬這個時間點的中斷
+    const first = reviewers(["a", "b", "c"], "a", 2, `${id}:plan-review:1`)[0]!;
+    const blocker = join(runDir(id), "reviews", `plan-review-1-${first}.json`);
+    mkdirSync(join(blocker, "x"), { recursive: true });
+    const crashed = await advance(initial);
+    expect(crashed.failureCategory).toBe("error");
+    expect(agentRuns(id)).toBe(2);
+    expect(readHandoff(id).issues.some((i) => i.summary === "並行新增事項")).toBe(true); // slot-0 已套用
+    rmSync(blocker, { recursive: true, force: true });
+
+    // state.json 仍停在中斷前的 plan_review
+    const resumed = await advance(initial);
+    expect(listRetries(id).filter((r) => r.category === "handoff_invalid")).toEqual([]);
+    expect(outcome(resumed, id)).toEqual(expected);
+  });
+
+  it("程式碼審查：slot-0 已套用交接、run 尚未存檔時中斷，resume 不誤判核准者、不重跑，結果與不中斷時相同", async () => {
+    configure(writeCodeSplitReviewer("code-split.mjs"), { reviewQuorum: 2 });
+    const control = "pe-code-crash-control";
+    await codeReviewSetup(control);
+    const expected = outcome(await advance(baseRun(control, "review", { lastWriter: "a", maxAgentRuns: 3 })), control);
+
+    const id = "pe-code-crash";
+    await codeReviewSetup(id);
+    const initial = baseRun(id, "review", { lastWriter: "a", maxAgentRuns: 3 });
+    // slot-0 的審查紀錄路徑被目錄佔住：slot-0 的 acceptHandoff 完成後、改名時丟例外
+    const first = reviewers(["a", "b", "c"], "a", 2, `${id}:review:0`)[0]!;
+    const blocker = join(flowDir(id), `review-${first}.json`);
+    mkdirSync(join(blocker, "x"), { recursive: true });
+    const crashed = await advance(initial);
+    expect(crashed.failureCategory).toBe("error");
+    expect(agentRuns(id)).toBe(2);
+    expect(readHandoff(id).issues.some((i) => i.summary === "並行新增程式碼事項")).toBe(true);
+    rmSync(blocker, { recursive: true, force: true });
+
+    const resumed = await advance(initial);
+    expect(listRetries(id).filter((r) => r.key === "review-run")).toEqual([]);
+    expect(outcome(resumed, id)).toEqual(expected);
   });
 });

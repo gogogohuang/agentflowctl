@@ -4,6 +4,7 @@
   "tddSplit": true,
   "reviewQuorum": 1,
   "planReviewQuorum": 1,
+  "reviewConcurrency": 2,
   "planArbiter": true,
   "planReviewLayers": { "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 },
   "tieBreak": "proceed",

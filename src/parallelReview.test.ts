@@ -8,11 +8,12 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-parallel-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
 
-const { dropCall, loadCalls, openRound, runPool, saveCall } = await import("./parallelReview.js");
+const { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid } = await import("./parallelReview.js");
 
 const call = (key: string, reviewer = "a") => ({
   key, reviewer, agent: reviewer, step: "plan-review", callKey: `ck-${key}`, summary: "ok",
   output: JSON.stringify({ verdict: "approve", items: [] }), handoffResponse: null,
+  base: { version: 1 as const, issues: [], appliedCalls: [] },
 });
 
 describe("runPool", () => {
@@ -58,6 +59,19 @@ describe("runPool", () => {
     expect(finished.sort()).toEqual([1, 2]);
   });
 
+  it("某項丟例外後，排隊中的項目仍會執行，最後丟出的是第一個例外", async () => {
+    for (const limit of [1, 2]) {
+      const started: number[] = [];
+      await expect(runPool([0, 1, 2, 3, 4], limit, async (n) => {
+        started.push(n);
+        await new Promise((r) => setTimeout(r, 5));
+        if (n === 0) throw new Error("第一個");
+        if (n === 2) throw new Error("第二個");
+      })).rejects.toThrow("第一個");
+      expect(started.sort()).toEqual([0, 1, 2, 3, 4]);
+    }
+  });
+
   it("空清單回傳空陣列", async () => {
     expect(await runPool([], 4, async () => 1)).toEqual([]);
   });
@@ -101,6 +115,22 @@ describe("審查結果存檔", () => {
     expect(readdirSync(dir).sort()).toHaveLength(1);
   });
 
+  it("寫到一半留下的 .tmp 會被刪掉", () => {
+    const dir = openRound("p-tmp", "plan-review", "1:x");
+    saveCall(dir, call("full:a"));
+    writeFileSync(join(dir, "半成品.json.tmp"), "{ \"key\":");
+    expect([...loadCalls(dir).keys()]).toEqual(["full:a"]);
+    expect(readdirSync(dir).some((f) => f.endsWith(".tmp"))).toBe(false);
+  });
+
+  it("缺少 base 的舊格式存檔視為損毀，刪掉重跑", () => {
+    const dir = openRound("p-no-base", "plan-review", "1:x");
+    const { base: _base, ...old } = call("full:a");
+    writeFileSync(join(dir, "old.json"), JSON.stringify(old));
+    expect(loadCalls(dir).size).toBe(0);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   it("dropCall 刪掉指定的結果，不存在時不出錯", () => {
     const dir = openRound("p-drop", "plan-review", "1:x");
     saveCall(dir, call("full:a"));
@@ -113,5 +143,26 @@ describe("審查結果存檔", () => {
     const dir = openRound("p-atomic", "plan-review", "1:x");
     saveCall(dir, call("full:a"));
     expect(readdirSync(dir).some((f) => f.endsWith(".tmp"))).toBe(false);
+  });
+});
+
+describe("存檔有效性", () => {
+  const ledger = (appliedCalls: string[]) => ({ version: 1 as const, issues: [], appliedCalls });
+  const stored = (key: string, applied: string[]) => ({ ...call(key), base: ledger(applied) });
+
+  it("帳本沒變，或只多了本輪已存檔審查者的呼叫（崩潰前已套用）時仍可沿用", () => {
+    const round = [stored("full:a", ["spec"]), stored("full:b", ["spec"])];
+    expect(storedCallValid(round[1]!, ledger(["spec"]), round)).toBe(true);
+    expect(storedCallValid(round[1]!, ledger(["spec", "ck-full:a"]), round)).toBe(true);
+  });
+
+  it("帳本多了本輪以外的呼叫（例如修正者）時作廢", () => {
+    const round = [stored("full:a", ["spec"]), stored("full:b", ["spec"])];
+    expect(storedCallValid(round[0]!, ledger(["spec", "ck-full:b", "plan-fix"]), round)).toBe(false);
+  });
+
+  it("重跑的呼叫看到的帳本較新，以它自己的 base 判斷", () => {
+    const round = [stored("full:a", ["spec"]), stored("full:b", ["spec", "ck-full:a"])];
+    expect(storedCallValid(round[1]!, ledger(["spec", "ck-full:a"]), round)).toBe(true);
   });
 });

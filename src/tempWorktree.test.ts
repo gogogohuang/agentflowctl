@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-temp-wt-"));
@@ -13,7 +13,7 @@ process.chdir(root);
 
 const { addWorktree } = await import("./git.js");
 const { flowDir, worktreeDir } = await import("./paths.js");
-const { cleanupTempWorktrees, createTempWorktree, tempWorktreesDir, withTempWorktree } = await import("./tempWorktree.js");
+const { cleanupTempWorktrees, createTempWorktree, removeTempWorktree, tempWorktreesDir, withTempWorktree } = await import("./tempWorktree.js");
 
 async function setupRun(id: string) {
   await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
@@ -74,5 +74,83 @@ describe("臨時 worktree", () => {
 
   it("沒有殘骸、甚至沒有 run worktree 時 cleanupTempWorktrees 不出錯", async () => {
     await expect(cleanupTempWorktrees("t-none")).resolves.toBeUndefined();
+  });
+
+  it("同一個 slot 名稱每次建立都是不同的實體路徑，basename 仍是 slot 名稱", async () => {
+    await setupRun("t-unique");
+    const a = await createTempWorktree("t-unique", "slot-0");
+    const b = await createTempWorktree("t-unique", "slot-0"); // 例如被中斷的前一個程序的 agent 還在用舊路徑
+    expect(a.dir).not.toBe(b.dir);
+    expect(basename(a.dir)).toBe("slot-0");
+    expect(basename(b.dir)).toBe("slot-0");
+    await removeTempWorktree("t-unique", a);
+    await removeTempWorktree("t-unique", b);
+    expect(listed()).not.toContain(a.dir);
+    expect(listed()).not.toContain(b.dir);
+  });
+
+  it("git 在建立途中被強制中止留下的 locked 登記（目錄還在或已不在）都能清掉，之後照常建立", async () => {
+    await setupRun("t-locked");
+    const kept = await createTempWorktree("t-locked", "slot-0");
+    const gone = await createTempWorktree("t-locked", "slot-1");
+    execFileSync("git", ["-C", root, "worktree", "lock", kept.dir]);
+    execFileSync("git", ["-C", root, "worktree", "lock", gone.dir]);
+    rmSync(gone.dir, { recursive: true, force: true });
+    expect(listed()).toMatch(/^locked/m);
+    await cleanupTempWorktrees("t-locked");
+    expect(listed()).not.toContain(kept.dir);
+    expect(listed()).not.toContain(gone.dir);
+    expect(listed()).not.toMatch(/^locked/m);
+    expect(existsSync(tempWorktreesDir("t-locked"))).toBe(false);
+    const again = await createTempWorktree("t-locked", "slot-0");
+    expect(listed()).toContain(again.dir);
+    await removeTempWorktree("t-locked", again);
+  });
+
+  it("目錄已被刪掉時 removeTempWorktree 仍會讓 git 忘掉它", async () => {
+    await setupRun("t-gone");
+    const ws = await createTempWorktree("t-gone", "slot-0");
+    rmSync(ws.dir, { recursive: true, force: true });
+    await removeTempWorktree("t-gone", ws);
+    expect(listed()).not.toContain(ws.dir);
+  });
+
+  it("複製 .flow 失敗時不留下臨時 worktree 與登記", async () => {
+    if (process.getuid?.() === 0) return; // root 讀得到權限 000 的檔案，無法模擬複製失敗
+    await setupRun("t-copy-fail");
+    const unreadable = join(flowDir("t-copy-fail"), "secret.txt");
+    writeFileSync(unreadable, "x");
+    chmodSync(unreadable, 0o000);
+    try {
+      await expect(createTempWorktree("t-copy-fail", "slot-0")).rejects.toThrow();
+    } finally {
+      chmodSync(unreadable, 0o644);
+    }
+    expect(listed()).not.toContain(tempWorktreesDir("t-copy-fail"));
+    expect(existsSync(tempWorktreesDir("t-copy-fail")) ? readdirSync(tempWorktreesDir("t-copy-fail")) : []).toEqual([]);
+  });
+
+  it("run worktree 有 node_modules 時臨時 worktree 以 symlink 讀得到，移除後原本的內容完好", async () => {
+    await setupRun("t-deps");
+    mkdirSync(join(worktreeDir("t-deps"), "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(worktreeDir("t-deps"), "node_modules", "pkg", "x.txt"), "依賴");
+    let dir = "";
+    await withTempWorktree("t-deps", "slot-0", async (ws) => {
+      dir = ws.dir;
+      expect(readFileSync(join(ws.dir, "node_modules", "pkg", "x.txt"), "utf8")).toBe("依賴");
+    });
+    expect(existsSync(dir)).toBe(false);
+    expect(readFileSync(join(worktreeDir("t-deps"), "node_modules", "pkg", "x.txt"), "utf8")).toBe("依賴");
+    // 中斷後由 cleanupTempWorktrees 收拾時也一樣不會刪到原本的 node_modules
+    await createTempWorktree("t-deps", "slot-0");
+    await cleanupTempWorktrees("t-deps");
+    expect(readFileSync(join(worktreeDir("t-deps"), "node_modules", "pkg", "x.txt"), "utf8")).toBe("依賴");
+  });
+
+  it("run worktree 沒有 node_modules 時照常建立，也不會多出 node_modules", async () => {
+    await setupRun("t-no-deps");
+    await withTempWorktree("t-no-deps", "slot-0", async (ws) => {
+      expect(existsSync(join(ws.dir, "node_modules"))).toBe(false);
+    });
   });
 });

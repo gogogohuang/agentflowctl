@@ -6,7 +6,8 @@ import { flowDir, handoffPath, runDir } from "./paths.js";
 import { HandoffLedger, HandoffResponse, HandoffSource, type HandoffIssue } from "./schemas.js";
 import { readJsonFile, type JsonResult } from "./util.js";
 
-const responsePath = (id: string, flow = flowDir(id)) => join(flow, "handoff-response.json");
+/** agent 寫交接回覆的位置；平行審查者用自己臨時 worktree 的 .flow/ */
+export const responsePath = (id: string, flow = flowDir(id)) => join(flow, "handoff-response.json");
 const receiptsDir = (id: string) => join(runDir(id), "handoff-receipts");
 const keyHash = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 16);
 const receiptPath = (id: string, key: string) => join(receiptsDir(id), `${keyHash(key)}.json`);

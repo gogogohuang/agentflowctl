@@ -1165,8 +1165,10 @@ ${APPROVE}
     const id = "f-plan-layers-parallel";
     const log = join(root, `${id}-events.log`);
     writeFileSync(log, "");
+    // 柵欄：三個呼叫都啟動後才往下；序列執行時第一個會等到逾時，log 不會是 start start start
     await layeredRun(id, `appendFileSync(${JSON.stringify(log)}, "start\\n");
-await new Promise((r) => setTimeout(r, 300));
+const until = Date.now() + 20000;
+while (Date.now() < until && readFileSync(${JSON.stringify(log)}, "utf8").split("\\n").filter((l) => l === "start").length < 3) await new Promise((r) => setTimeout(r, 20));
 appendFileSync(${JSON.stringify(log)}, "end\\n");
 ${APPROVE}`, { concurrency: 8 });
     const run = await planReviewRun(id, 3);
