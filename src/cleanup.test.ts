@@ -14,6 +14,7 @@ const { cleanRun, cleanableRuns } = await import("./cleanup.js");
 const { saveRun } = await import("./store.js");
 const { addWorktree } = await import("./git.js");
 const { runDir, worktreeDir } = await import("./paths.js");
+const { createTempWorktree } = await import("./tempWorktree.js");
 import type { Stage } from "./schemas.js";
 
 const worktrees = () => execFileSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8" });
@@ -53,6 +54,26 @@ describe("清除 worktree", () => {
     rmSync(worktreeDir("f-gone"), { recursive: true, force: true });
     expect(await cleanRun("f-gone")).toBe(true);
     expect(worktrees()).not.toContain("f-gone");
+  });
+
+  it("平行審查中斷留下的臨時 worktree（含 git 在建立途中被中止而 locked 的）一併清掉", async () => {
+    await makeRun("f-tmp", "failed");
+    const ws = await createTempWorktree("f-tmp", "slot-0");
+    execFileSync("git", ["-C", root, "worktree", "lock", ws.dir]);
+    expect(await cleanRun("f-tmp")).toBe(true);
+    expect(worktrees()).not.toContain(ws.dir);
+    expect(worktrees()).not.toMatch(/^locked/m);
+  });
+
+  it("tmp-review/ 目錄已不在、只剩 locked 登記時，clean 仍會清掉登記與 lock", async () => {
+    await makeRun("f-tmp-gone", "failed");
+    const ws = await createTempWorktree("f-tmp-gone", "slot-0");
+    execFileSync("git", ["-C", root, "worktree", "lock", ws.dir]);
+    rmSync(join(runDir("f-tmp-gone"), "tmp-review"), { recursive: true, force: true });
+    expect(worktrees()).toContain(ws.dir);
+    await cleanRun("f-tmp-gone");
+    expect(worktrees()).not.toContain(ws.dir);
+    expect(worktrees()).not.toMatch(/^locked/m);
   });
 
   it("什麼都找不到時回傳 false", async () => {

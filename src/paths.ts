@@ -24,6 +24,10 @@ export const handoffPath = (id: string) => join(runDir(id), "handoff.json");
 export const planReviewStatePath = (id: string) => join(runDir(id), "plan-review-state.json");
 /** 已交付仲裁、尚未得出裁決：暫停後 resume 直接回到仲裁。放在 worktree 外，agent 無法偽造 */
 export const planArbitrationPath = (id: string) => join(runDir(id), "plan-arbitration.json");
+/** 平行審查的臨時 worktree（每個呼叫一個）；孤兒在 advance() 開頭統一清掉 */
+export const tempWorktreesDir = (id: string) => join(runDir(id), "tmp-review");
+/** 平行審查已執行成功的呼叫存檔（依輪次與輸入指紋分目錄），resume 時沿用 */
+export const parallelReviewDir = (id: string) => join(runDir(id), "parallel-review");
 /** 每個 run 一個 git worktree，Agent 只在這裡工作，不碰你正在編輯的檔案 */
 export const worktreesDir = () => join(agentflowctlDir(), "worktrees");
 export const worktreeDir = (id: string) => join(worktreesDir(), id);

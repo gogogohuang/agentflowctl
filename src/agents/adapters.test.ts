@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, statSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ADAPTERS } from "./index.js";
 
@@ -123,5 +126,24 @@ describe("adapter 事件解析", () => {
       .toBe("run-actual-id");
     expect(() => ADAPTERS.command.invoke({ ...base, prompt: "P", command: ["agent", "--model", "{model}"] })).toThrow(/model/);
     expect(() => ADAPTERS.command.invoke({ ...base, prompt: "P", command: ["run-{model}"] })).toThrow(/model/);
+  });
+});
+
+describe("claude 權限設定檔", () => {
+  it("內容沒變時不重寫（平行審查時別的 claude 行程不會讀到被截斷的檔案）", () => {
+    const runDir = mkdtempSync(join(tmpdir(), "agentflowctl-claude-settings-"));
+    const base = { prompt: "P", cwd: "/w", extraArgs: [], runDir, projectRoot: "/p" };
+    const args = ADAPTERS.claude.invoke(base).args;
+    const path = args[args.indexOf("--settings") + 1]!;
+    expect(path).toBe(join(runDir, "claude-settings.json"));
+    const settings = JSON.parse(readFileSync(path, "utf8"));
+    expect(settings.permissions.deny).toContain("Bash(git commit:*)");
+    expect(settings.sandbox.enabled).toBe(true);
+    utimesSync(path, 1000, 1000);
+    ADAPTERS.claude.invoke(base);
+    expect(statSync(path).mtimeMs).toBe(1000 * 1000);
+    // 內容不同（另一個專案根目錄）時照常更新
+    ADAPTERS.claude.invoke({ ...base, projectRoot: "/q" });
+    expect(readFileSync(path, "utf8")).toContain("/q/.git");
   });
 });

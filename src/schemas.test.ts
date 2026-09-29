@@ -69,3 +69,20 @@ describe("RepoConfig 的 maxAttempts 與 verbose", () => {
     expect(() => RepoConfig.parse({ maxAttempts: 2 })).toThrow();
   });
 });
+
+describe("審查平行設定", () => {
+  it("沒寫時為 undefined（不限）", () => {
+    expect(RepoConfig.parse({}).reviewConcurrency).toBeUndefined();
+  });
+
+  it("接受正整數", () => {
+    expect(RepoConfig.parse({ reviewConcurrency: 1 }).reviewConcurrency).toBe(1);
+    expect(RepoConfig.parse({ reviewConcurrency: 4 }).reviewConcurrency).toBe(4);
+  });
+
+  it("拒絕 0、負數與小數", () => {
+    for (const bad of [0, -1, 1.5]) {
+      expect(RepoConfig.safeParse({ reviewConcurrency: bad }).success).toBe(false);
+    }
+  });
+});

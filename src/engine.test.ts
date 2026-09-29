@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -441,12 +441,15 @@ describe("修正階段", () => {
 const worker = join(root, "worker.mjs");
 writeFileSync(worker, `import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 const prompt = readFileSync(0, "utf8");
+// 審查者在臨時 worktree 執行、.flow/ 是複本；要讓測試看得到的副作用得寫回 run 自己的 worktree（絕對路徑）
+const tempRun = process.cwd().match(/runs\\/([^/]+)\\/tmp-review/)?.[1];
+const shared = tempRun ? ${JSON.stringify(root)} + "/.agentflowctl/worktrees/" + tempRun + "/.flow" : ".flow";
 const id = prompt.match(/"id": "(T-\\d+)"/)?.[1];
 const role = prompt.includes("你是任務審查者") ? "task-review" : prompt.includes("你是程式碼審查者") ? "review"
   : prompt.includes("你是除錯工程師") ? "fix" : prompt.includes("<red_output>") ? "code" : "tests";
-appendFileSync(".flow/steps.txt", \`\${role}\${role === "review" || role === "fix" ? "" : ":" + id}\\n\`);
-if (role === "task-review" && existsSync(".flow/fail-review-once.txt")) {
-  rmSync(".flow/fail-review-once.txt");
+appendFileSync(shared + "/steps.txt", \`\${role}\${role === "review" || role === "fix" ? "" : ":" + id}\\n\`);
+if (role === "task-review" && existsSync(shared + "/fail-review-once.txt")) {
+  rmSync(shared + "/fail-review-once.txt");
   process.exit(1);
 }
 if (role === "fix" && existsSync(".flow/fail-fix-once.txt")) {
@@ -457,9 +460,9 @@ if (role === "tests") writeFileSync(\`\${id}.test.mjs\`, \`import { ok } from ".
 if (role === "code") writeFileSync(\`\${id}.mjs\`, "export const ok = true;\\n");
 if (role === "fix") writeFileSync("fixed.txt", readFileSync(".flow/feedback.md"));
 if (role === "task-review" || role === "review") {
-  writeFileSync(\`.flow/diff-\${role}-\${id ?? "all"}.txt\`, readFileSync(".flow/diff.patch"));
-  const reject = role === "task-review" && existsSync(".flow/reject-once.txt");
-  if (reject) rmSync(".flow/reject-once.txt");
+  writeFileSync(\`\${shared}/diff-\${role}-\${id ?? "all"}.txt\`, readFileSync(".flow/diff.patch"));
+  const reject = role === "task-review" && existsSync(shared + "/reject-once.txt");
+  if (reject) rmSync(shared + "/reject-once.txt");
   writeFileSync(".flow/review.json", JSON.stringify(reject
     ? { verdict: "changes_requested", items: [{ criterion: "AC-1", status: "partial", note: "缺少邊界情況" }] }
     : { verdict: "approve", items: [] }));
@@ -726,20 +729,20 @@ function writeTasks(id: string, tasks: LayeredTask[]) {
 /** 準備一個停在 plan_review、有八個任務分成兩群的 run；body 是審查 agent 腳本在讀完 prompt 之後的內容 */
 async function layeredRun(
   id: string, body: string,
-  opts: { agents?: string[]; quorum?: number; planArbiter?: boolean; layers?: Record<string, unknown> } = {},
+  opts: { agents?: string[]; quorum?: number; planArbiter?: boolean; layers?: Record<string, unknown>; concurrency?: number } = {},
 ) {
   const agents = opts.agents ?? ["p1", "p2", "p3"];
   const script = join(root, `${id}.mjs`);
   writeFileSync(script, `import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 const prompt = readFileSync(0, "utf8");
 const kind = prompt.includes("計畫索引審查者") ? "index" : prompt.includes("計畫群審查者") ? "group" : prompt.includes("plan-arbiter.json") ? "arbiter" : "other";
-appendFileSync(".flow/seen-prompts.txt", kind + "\\n");
+appendFileSync(${JSON.stringify(join(root, `${id}-seen-prompts.txt`))}, kind + "\\n");
 const file = kind === "group" ? ".flow/plan-review-group.json" : ".flow/plan-review.json";
 ${body}
 `);
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(agents.map((name) => [name, { adapter: "command", command: ["node", script] }])),
-    cycle: agents, planReviewQuorum: opts.quorum ?? 1, planArbiter: opts.planArbiter ?? true,
+    cycle: agents, planReviewQuorum: opts.quorum ?? 1, planArbiter: opts.planArbiter ?? true, reviewConcurrency: opts.concurrency ?? 1,
     ...(opts.layers ? { planReviewLayers: opts.layers } : {}),
   }));
   await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
@@ -748,11 +751,11 @@ ${body}
   writeTasks(id, layeredTasks());
 }
 
-function planReviewRun(id: string, maxAgentRuns: number, agents = ["p1", "p2", "p3"]) {
+function planReviewRun(id: string, maxAgentRuns: number, agents = ["p1", "p2", "p3"], attempts: Record<string, number> = {}) {
   const now = new Date().toISOString();
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
-    autopilot: true, maxAgentRuns, cycle: agents, planWriter: agents[0], attempts: {},
+    autopilot: true, maxAgentRuns, cycle: agents, planWriter: agents[0], attempts,
     taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
   });
 }
@@ -770,8 +773,9 @@ const OBJECT = `if (kind === "arbiter") {
 }
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));`;
 
-const seen = (id: string) => readFileSync(join(flowDir(id), "seen-prompts.txt"), "utf8");
-const resetSeen = (id: string) => writeFileSync(join(flowDir(id), "seen-prompts.txt"), "");
+const seenFile = (id: string) => join(root, `${id}-seen-prompts.txt`);
+const seen = (id: string) => readFileSync(seenFile(id), "utf8");
+const resetSeen = (id: string) => writeFileSync(seenFile(id), "");
 const reviewState = (id: string) => JSON.parse(readFileSync(planReviewStatePath(id), "utf8"));
 
 describe("分層計畫審查", () => {
@@ -790,10 +794,10 @@ describe("分層計畫審查", () => {
 
   it("索引 prompt 帶全部任務描述、驗收條文與整體做法，並要求讀規格", async () => {
     const id = "f-plan-layers-index";
-    await layeredRun(id, `if (kind === "index") writeFileSync(".flow/index-prompt.txt", prompt);
+    await layeredRun(id, `if (kind === "index") writeFileSync(${JSON.stringify(join(root, `${id}-index-prompt.txt`))}, prompt);
 ${APPROVE}`);
     await planReviewRun(id, 3);
-    const prompt = readFileSync(join(flowDir(id), "index-prompt.txt"), "utf8");
+    const prompt = readFileSync(join(root, `${id}-index-prompt.txt`), "utf8");
     expect(prompt).toContain("T-8 行為");
     expect(prompt).toContain("改 src/b.ts");
     expect(prompt).toContain("整體做法");
@@ -805,7 +809,8 @@ ${APPROVE}`);
     await layeredRun(id, APPROVE);
     await planReviewRun(id, 3);
     resetSeen(id);
-    const run = await planReviewRun(id, 4);
+    // 存檔以輪次加指紋為鍵：第二次是真正的新一輪（第 2 輪），不會沿用第 1 輪的存檔
+    const run = await planReviewRun(id, 4, undefined, { "plan-review": 1 });
     expect(run.failureReason).toMatch(/達到上限/);
     expect(seen(id)).toBe("index\n");
   });
@@ -938,8 +943,9 @@ ${APPROVE}
 
   it("某一群格式錯誤時重跑同一輪，已成功的索引與群不重跑", async () => {
     const id = "f-plan-layers-resume";
-    await layeredRun(id, `if (kind === "group" && prompt.includes("G-2") && !existsSync(".flow/g2-failed")) {
-  writeFileSync(".flow/g2-failed", "");
+    const g2Failed = JSON.stringify(join(root, `${id}-g2-failed`)); // 旗標寫在絕對路徑：審查者的 .flow/ 在臨時 worktree，事後會被刪掉
+    await layeredRun(id, `if (kind === "group" && prompt.includes("G-2") && !existsSync(${g2Failed})) {
+  writeFileSync(${g2Failed}, "");
   writeFileSync(file, "{");
   writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 } else {
@@ -957,9 +963,10 @@ ${APPROVE}
   it("同一輪內三個不同呼叫各失敗一次，只要每次重跑都有進展就能完成這一輪", async () => {
     const id = "f-plan-layers-progress";
     // 索引、G-1、G-2 各在第一次格式錯誤；每次重跑都有一個呼叫真的成功，不該累計到重試上限
+    const failedPrefix = JSON.stringify(join(root, `${id}-failed-`)); // 旗標寫在絕對路徑：審查者的 .flow/ 在臨時 worktree，事後會被刪掉
     await layeredRun(id, `const mark = kind === "index" ? "index" : prompt.includes("任務群 G-1") ? "g1" : "g2";
-if (kind !== "other" && !existsSync(".flow/failed-" + mark)) {
-  writeFileSync(".flow/failed-" + mark, "");
+if (kind !== "other" && !existsSync(${failedPrefix} + mark)) {
+  writeFileSync(${failedPrefix} + mark, "");
   writeFileSync(file, "{");
   writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 } else {
@@ -985,7 +992,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 
   it("plan-fix 沒寫 plan-replies.md 時，下一輪不會讀到上一輪的回應", async () => {
     const id = "f-plan-replies-stale";
-    await layeredRun(id, `if (kind === "index") writeFileSync(".flow/index-prompt.txt", prompt);
+    await layeredRun(id, `if (kind === "index") writeFileSync(${JSON.stringify(join(root, `${id}-index-prompt.txt`))}, prompt);
 if (prompt.includes("計畫修訂者")) {
   writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 } else {
@@ -999,7 +1006,7 @@ ${APPROVE}
       taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
     });
     expect(existsSync(join(flowDir(id), "plan-replies.md"))).toBe(false);
-    expect(readFileSync(join(flowDir(id), "index-prompt.txt"), "utf8")).not.toContain("上一輪的舊回應");
+    expect(readFileSync(join(root, `${id}-index-prompt.txt`), "utf8")).not.toContain("上一輪的舊回應");
   });
 
   it("plan-fix 失敗時還原 plan-replies.md", async () => {
@@ -1152,5 +1159,87 @@ ${APPROVE}
     await planReviewRun(id, 4);
     expect(seen(id)).toBe("index\ngroup\ngroup\ngroup\n");
     expect(readHandoff(id).issues.filter((issue) => issue.summary === "補逾時")).toHaveLength(1);
+  });
+
+  it("索引與各群審查同時執行", async () => {
+    const id = "f-plan-layers-parallel";
+    const log = join(root, `${id}-events.log`);
+    writeFileSync(log, "");
+    // 柵欄：三個呼叫都啟動後才往下；序列執行時第一個會等到逾時，log 不會是 start start start
+    await layeredRun(id, `appendFileSync(${JSON.stringify(log)}, "start\\n");
+const until = Date.now() + 20000;
+while (Date.now() < until && readFileSync(${JSON.stringify(log)}, "utf8").split("\\n").filter((l) => l === "start").length < 3) await new Promise((r) => setTimeout(r, 20));
+appendFileSync(${JSON.stringify(log)}, "end\\n");
+${APPROVE}`, { concurrency: 8 });
+    const run = await planReviewRun(id, 3);
+    expect(run.failureReason).toMatch(/達到上限/); // 三個呼叫都成功套用，之後進 implement 時預算用完
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    expect(lines.slice(0, 3)).toEqual(["start", "start", "start"]); // 索引與兩群同時開始，之後才有人結束
+    expect(reviewState(id).reviewed.tasks["T-8"].verdict).toBe("approve");
+  });
+
+  it("一個群額度用完時其他呼叫跑完並存檔，resume 只補跑沒完成的", async () => {
+    const id = "f-plan-layers-quota";
+    const log = join(root, `${id}-calls.log`);
+    const flag = join(root, `${id}-quota`);
+    writeFileSync(log, "");
+    writeFileSync(flag, "");
+    // 索引是 slot-0，兩群依序是 slot-1、slot-2；slot-2 額度用完（三者可能是同一家 agent，見腳本內的柵欄）
+    await layeredRun(id, `const slot = process.cwd().split("/").pop();
+appendFileSync(${JSON.stringify(log)}, kind + ":" + slot + "\\n");
+if (slot === "slot-2" && existsSync(${JSON.stringify(flag)})) {
+  // 三個呼叫用同一家 agent：先等另外兩個都啟動再回報額度用完，否則還沒啟動的會因這家已額度用完而不執行
+  const until = Date.now() + 20000;
+  while (Date.now() < until && readFileSync(${JSON.stringify(log)}, "utf8").trim().split("\\n").length < 3) await new Promise((r) => setTimeout(r, 20));
+  console.error("usage limit reached");
+  process.exit(1);
+}
+${APPROVE}`, { concurrency: 8 });
+
+    const paused = await planReviewRun(id, 3);
+    expect(paused.stage).toBe("paused");
+    expect(paused.pausedStage).toBe("plan_review");
+    expect(readFileSync(log, "utf8").trim().split("\n").sort()).toEqual(["group:slot-1", "group:slot-2", "index:slot-0"]);
+
+    rmSync(flag);
+    resetQuotaState(); // 模擬 resume 時是新的程序
+    writeFileSync(log, "");
+    // 前面已用掉 3 次，這次只剩 1 次可用：剛好夠補跑 slot-2
+    const resumed = await planReviewRun(id, 4);
+    expect(readFileSync(log, "utf8").trim()).toBe("group:slot-2"); // 索引與 slot-1 沿用存檔，沒有重跑
+    expect(resumed.failureReason).toMatch(/達到上限/);
+    expect(reviewState(id).reviewed.tasks["T-1"].verdict).toBe("approve");
+    expect(reviewState(id).reviewed.tasks["T-8"].verdict).toBe("approve");
+  });
+
+  it("adaptive 選模：某一群失敗後只有那一群的重審升級模型", async () => {
+    const id = "f-plan-layers-escalate";
+    const g2Failed = JSON.stringify(join(root, `${id}-g2-failed`));
+    await layeredRun(id, `if (kind === "group" && prompt.includes("任務群 G-2") && !existsSync(${g2Failed})) {
+  writeFileSync(${g2Failed}, "");
+  writeFileSync(file, "{");
+  writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+} else {
+${APPROVE}
+}`);
+    const script = join(root, `${id}.mjs`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["p1", "p2", "p3"].map((name) => [name, {
+        adapter: "command", command: ["node", script, "{model}"], modelProbe: ["node", script, "{model}"],
+        models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }],
+      }])),
+      cycle: ["p1", "p2", "p3"], planReviewQuorum: 1, planArbiter: true, reviewConcurrency: 1,
+      modelSelection: { mode: "adaptive", stageStrength: { planReview: "low" } },
+    }));
+    const now = new Date().toISOString();
+    await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
+      autopilot: true, maxAgentRuns: 4, cycle: ["p1", "p2", "p3"], planWriter: "p1", attempts: {}, modelMode: "adaptive",
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    const models = listUsage(id).map((e) => `${e.stage}:${e.model}`);
+    expect(models.filter((m) => m === "plan-review:small")).toHaveLength(1);
+    expect(models.filter((m) => m === "plan-review-group:small")).toHaveLength(2); // G-1 與 G-2 的第一次
+    expect(models.filter((m) => m === "plan-review-group:large")).toHaveLength(1); // 只有 G-2 的重審升級
   });
 });

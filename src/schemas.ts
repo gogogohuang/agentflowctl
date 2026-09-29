@@ -176,6 +176,8 @@ export const RepoConfig = z.object({
   reviewQuorum: z.number().int().min(1).default(1),
   /** 計畫需要幾位不同的 reviewer 都核准 */
   planReviewQuorum: z.number().int().min(1).default(1),
+  /** 同一輪審查最多幾位審查者同時執行；沒寫＝不限，1＝一次一位 */
+  reviewConcurrency: z.number().int().min(1).optional(),
   /** 計畫審查僵持不下（達到重試上限或意見不再變化）時，交給第三方 agent 仲裁，而不是停下來等人 */
   planArbiter: z.boolean().default(true),
   /** 任務夠多、能依檔案分群時，計畫審查改成每輪一次索引加上只審有變動的任務群 */
