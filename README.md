@@ -80,6 +80,8 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
 | `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
 
+寫作類步驟（紅燈測試、綠燈實作、fix）完成且通過關卡後，若 `.flow/handoff-response.json` 不合格，會請同一家 agent 再呼叫一次，只補寫交接（不重做工作，也不換人代打）；補寫期間對其他檔案的變更與 commit 一律丟棄。補寫仍不合格或額度用完，才照舊還原這一步並重試。補寫呼叫記在原步驟名稱底下，`stats` 與 `logs` 會多一筆，也會計入 `--max-agent-runs` 的次數。
+
 例如失敗時，可照終端機列出的 log 編號查看原因：
 
 ```bash

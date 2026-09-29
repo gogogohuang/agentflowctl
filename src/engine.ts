@@ -90,6 +90,8 @@ export function resetQuotaState(): void {
 interface StepMode {
   kind: "review" | "write";
   reset?: () => Promise<void> | void;
+  /** 額度用完時不找代打，直接暫停；補寫交接這類必須由原 agent 做的小呼叫使用 */
+  pinned?: boolean;
   slot?: number;
   blind?: boolean;
   /** 在這個臨時 workspace 執行：agent 的 cwd 與交接檔都用它，不碰共用的 worktree；審查類額度用完不會在這裡重試，reset 是空操作 */
@@ -128,8 +130,8 @@ async function agentStep(
   let agent = planned;
   for (;;) {
     if (exhausted.has(agent)) {
-      if (mode.kind === "review") {
-        throw new QuotaPause(`${agent} 的額度已用完；${step} 是審查步驟，不由另一家代打`);
+      if (mode.kind === "review" || mode.pinned) {
+        throw new QuotaPause(`${agent} 的額度已用完；${step} ${mode.pinned ? "不由另一家代打" : "是審查步驟，不由另一家代打"}`);
       }
       const sub = availableAgent(run.cycle, agent, [...exhausted], `${run.id}:${step}:sub`);
       if (!sub) throw new QuotaPause(`所有 agent 的額度都已用完（${[...exhausted].join("、")}）`);
@@ -184,6 +186,37 @@ function finishHandoff(
   } catch (error) {
     return (error as Error).message;
   }
+}
+
+/**
+ * 寫作步驟的交接：關卡已通過，交接回覆不合格時不丟掉工作，請同一家 agent 只補寫一次。
+ * 補寫前記下 HEAD，補寫後一律 reset 回去並還原計畫檔，連補寫自行建立的 commit 也丟棄，
+ * 所以補寫無法改變已通過的關卡。補寫仍失敗（或額度用完）就回傳錯誤，由呼叫端照舊還原並重試。
+ */
+async function settleHandoff(
+  run: FlowRun, outcome: StepOutcome, base: string, restore: () => void,
+): Promise<string | undefined> {
+  const first = finishHandoff(run, outcome, "writer");
+  if (!first) return undefined;
+  const repo = worktreeDir(run.id);
+  const settled = await headCommit(repo);
+  const cleanup = async () => { await resetTo(repo, settled); restore(); };
+  info(run, `📎 交接回覆不合格，請 ${outcome.agent} 只補寫交接（不重做工作）：${first}`);
+  let repair: StepOutcome;
+  try {
+    repair = await agentStep(
+      run, outcome.agent, outcome.step,
+      renderPrompt("handoff-repair", { step: outcome.step, error: first, range: `${base}..${settled}` }),
+      { kind: "write", pinned: true, reset: cleanup },
+    );
+  } catch (error) {
+    if (error instanceof QuotaPause) return first;
+    throw error;
+  } finally {
+    await cleanup();
+  }
+  if (!repair.r.ok) return `${first}（補寫交接時 Agent 執行失敗：${repair.r.summary}）`;
+  return finishHandoff(run, repair, "writer");
 }
 
 /** 印出回覆裡的 XML 中繼資料；只供人檢視，關卡仍由程式檢查決定 */
@@ -1029,7 +1062,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。", "implement", "tests_not_red");
     }
-    const handoffError = finishHandoff(run, outcome, "writer");
+    const handoffError = await settleHandoff(run, outcome, before, () => { restorePlan(run, snap); });
     if (handoffError) {
       await resetTo(repo, before);
       return retry(run, key, handoffError, "implement", "handoff_invalid");
@@ -1082,7 +1115,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     info(run, `   ✗ 測試仍未通過${logHint(run, green.seq)}`);
     return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement", "tests_not_green");
   }
-  const handoffError = finishHandoff(run, outcome, "writer");
+  const handoffError = await settleHandoff(run, outcome, testsCommit, () => { restorePlan(run, snap); });
   if (handoffError) {
     await resetTo(repo, testsCommit);
     return retry(run, key, handoffError, "implement", "handoff_invalid");
@@ -1225,7 +1258,7 @@ async function applyFix(
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`, "tests_deleted");
   }
-  const handoffError = finishHandoff(run, outcome, "writer");
+  const handoffError = await settleHandoff(run, outcome, before, () => { restorePlan(run, snap); });
   if (handoffError) {
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外，交接回覆不合格，本次修正已還原：${handoffError}`, "handoff_invalid");
