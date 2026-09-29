@@ -37,7 +37,7 @@ const { agentRuns, listRetries, listSubstitutions, listUsage } = await import(".
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
 beforeEach(() => resetQuotaState());
 
-async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false) {
+async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false, stopAfter?: "review" | "pr") {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script, ...(adaptive ? ["{model}"] : [])],
       ...(adaptive ? { models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }], modelProbe: ["node", script, "{model}"] } : {}) }])),
@@ -61,11 +61,18 @@ async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper 
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "review" as const,
     autopilot: true, maxAgentRuns: 10, cycle: ["a", "b", "c"], lastWriter: "a", attempts: {},
     ...(adaptive ? { modelMode: "adaptive" as const } : {}),
-    taskIndex: 1, taskPhase: "tests" as const, createdAt: now, updatedAt: now,
+    taskIndex: 1, taskPhase: "tests" as const, stopAfter, createdAt: now, updatedAt: now,
   });
 }
 
 describe("審查交接關卡", () => {
+  it("完成 review 停點後暫停，resume stage 指向 pr", async () => {
+    const run = await reviewRun("f-stop-review", "close", 1, false, false, "review");
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("pr");
+    expect(run.pauseReason).toContain("review");
+  });
+
   it("審查核准卻未處理 action 時不會開 PR", async () => {
     const run = await reviewRun("f-review-open", "open");
     expect(run.stage).toBe("failed");
@@ -488,6 +495,42 @@ async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce =
 
 const steps = (id: string) => readFileSync(join(flowDir(id), "steps.txt"), "utf8").trim().split("\n");
 
+describe("計畫停點", () => {
+  it("完成 plan 停點時已過計畫審查，暫停後 resume stage 指向 implement，不停在 plan_review", async () => {
+    const id = "f-stop-plan";
+    const script = join(root, "stop-plan.mjs");
+    writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("plan-review.json")) {
+  writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
+} else {
+  writeFileSync(".flow/plan.md", "# 計畫\\n");
+  writeFileSync(".flow/tasks.json", JSON.stringify([{ id: "T-1", title: "任務", description: "完成", dependsOn: [], acceptance: ["AC-1"] }]));
+}
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+      cycle: ["a", "b"],
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "spec.md"), "# 規格\n");
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "完成" }]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan",
+      autopilot: true, maxAgentRuns: 10, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", stopAfter: "plan", createdAt: now, updatedAt: now,
+    });
+    expect(run.failureReason).toBeUndefined();
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("implement");
+    expect(run.pauseReason).toContain("plan");
+    expect(existsSync(join(flowDir(id), "tasks.ordered.json"))).toBe(true);
+  });
+});
+
 describe("任務審查與驗證", () => {
   it("完成 implement 停點後暫停，resume stage 指向 verify", async () => {
     const run = await taskFlowRun("f-stop-implement", { stopAfter: "implement" });
@@ -501,6 +544,16 @@ describe("任務審查與驗證", () => {
     expect(run.stage).toBe("paused");
     expect(run.pausedStage).toBe("review");
     expect(run.pauseReason).toContain("verify");
+  });
+
+  it("停點是 pr 時不暫停，照常完成", async () => {
+    const run = await taskFlowRun("f-stop-pr", { stopAfter: "pr" });
+    expect(run.stage).toBe("done");
+  });
+
+  it("停點在已經走過的階段時不會回頭停下（resume 後從中間階段接續）", async () => {
+    const run = await taskFlowRun("f-stop-passed", { stopAfter: "spec" });
+    expect(run.stage).toBe("done");
   });
 
   it("審查執行失敗後有有效結果，就清除執行失敗次數", async () => {
