@@ -69,9 +69,18 @@ git rev-parse -q --verify "refs/tags/$next_tag" > /dev/null && die "tag $next_ta
 
 # 7. 本機驗證（CI 發布時也會跑，先擋下可省一輪失敗的 Release）
 echo "▶ $latest_tag → ${next_tag}，先跑驗證"
-pnpm run typecheck
-pnpm test
-pnpm run build
+# 驗證輸出先存進暫存檔，通過就不顯示，失敗才印出來
+verify_log="$(mktemp)"
+trap 'rm -f "$verify_log"' EXIT
+for step in typecheck test build; do
+  if [[ "$step" == test ]]; then cmd=(pnpm test); else cmd=(pnpm run "$step"); fi
+  if "${cmd[@]}" > "$verify_log" 2>&1; then
+    echo "  ✓ $step"
+  else
+    cat "$verify_log" >&2
+    die "$step 失敗，未建立 Release"
+  fi
+done
 
 # 8. 確認
 echo
@@ -85,7 +94,7 @@ if [[ "$dry_run" == 1 ]]; then
 fi
 
 read -r -p "確定要發布 $next_tag 嗎？(y/N) " answer
-[[ "$answer" == "y" ]] || die "已取消"
+[[ "$answer" == [yY] ]] || die "已取消"
 
 # 9. 建立 Release，npm-publish.yml 會接手發布
 gh release create "$next_tag" --target main --generate-notes --title "$next_tag"
