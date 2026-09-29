@@ -73,6 +73,10 @@ export function saveCall(dir: string, call: StoredCall): void {
   renameSync(tmp, path);
 }
 
+/**
+ * 讀出這一輪已存檔的結果，並刪掉寫到一半的 .tmp 與損毀的檔案。
+ * 呼叫順序：必須在 runPool 啟動任何呼叫之前；之後才呼叫會刪到別的呼叫正在寫的 .tmp。
+ */
 export function loadCalls(dir: string): Map<string, StoredCall> {
   const calls = new Map<string, StoredCall>();
   if (!existsSync(dir)) return calls;
