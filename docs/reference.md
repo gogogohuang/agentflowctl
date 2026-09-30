@@ -438,14 +438,6 @@ agentflowctl model stage taskReview high
 | `fix` | 整體修正 | medium |
 | `review` | 整體審查 | high |
 
-計畫審查偏貴時，可以只調低這一階段，其他階段維持預設：
-
-```json
-{ "modelSelection": { "mode": "adaptive", "stageStrength": { "planReview": "medium" } } }
-```
-
-或用指令：`agentflowctl model stage planReview medium`。`planReview` 預設是 `high`，調低不一定省錢：審查變鬆可能讓問題拖到後面的階段才被發現，重試反而變多。調低前後各跑一個相近大小的需求，用 `agentflowctl insights` 比較 `planReview` 的呼叫數、用量與 `plan-review` 的重試次數，再決定要不要維持。不要只看單次 token。
-
 計畫 agent 會在 `tasks.json` 為每個 task 寫 `complexity: low|medium|high`，並在 `plan.md` 逐項記錄影響範圍、技術不確定性與失敗後果的判定依據，取三者最高等級；計畫審查 agent 會對照程式碼獨立核對。`low` 是沿用既有做法且影響侷限、容易局部驗證；`medium` 涉及多模組或介面協調、非典型邊界、相容性或狀態遷移風險；`high` 涉及跨系統契約、架構或資料模型變更、未知的關鍵技術路徑，或資料遺失、權限、難以回復的風險。檔案數、行數與驗收條件數不能單獨決定難度。這項語意判斷由 agent 審查；程式關卡檢查 `complexity` 欄位是否合法及是否存在。`adaptive` 計畫缺少此欄位時重試，舊 run 缺少時選模視為 medium。任務相關步驟的基準強度取階段強度與任務難度較高者；其他步驟取階段強度。從已分配角色的 agent 清單選足夠且最低強度的模型，同強度按清單順序；沒有足夠強度時用它最強的模型並提示。模型選擇不更改測試、實作、審查與作者修正的分工。
 
 同一步執行失敗會逐級升強度，最多到 high。審查要求修改本身不讓審查升級；修正後仍未通過才讓修正升級。計畫與整體審查小組只升級失敗的審查者，成功者下次仍從基準強度開始；分層計畫審查的任務群依群分開計算，一群失敗不會讓同一位審查者在其他群也升級。額度用完沿用原政策：審查暫停，寫入工作可由另一位有額度的 agent 代打，並從代打者自己的清單重新選模。
