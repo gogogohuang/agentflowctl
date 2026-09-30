@@ -8,7 +8,7 @@ import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
 import { flowDir, logDir, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
-import { CMD_AGENT, nextLogFile } from "./logs.js";
+import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
 import { exec } from "./proc.js";
 import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid, type StoredCall } from "./parallelReview.js";
@@ -190,24 +190,27 @@ function finishHandoff(
 
 /**
  * 寫作步驟的交接：關卡已通過，交接回覆不合格時不丟掉工作，請同一家 agent 只補寫一次。
- * 補寫前記下 HEAD，補寫後一律 reset 回去並還原計畫檔，連補寫自行建立的 commit 也丟棄，
+ * 補寫前記下 HEAD 與 files 的內容，補寫後一律 reset 回去並還原這些檔案，連補寫自行建立的 commit 也丟棄，
  * 所以補寫無法改變已通過的關卡。補寫仍失敗（或額度用完）就回傳錯誤，由呼叫端照舊還原並重試。
+ * base 是這一步開始前的 commit；沒有 commit 的步驟（規格、計畫）省略，補寫者會被告知範圍為空。
  */
 async function settleHandoff(
-  run: FlowRun, outcome: StepOutcome, base: string, restore: () => void,
+  run: FlowRun, outcome: StepOutcome, files: readonly string[], base?: string,
 ): Promise<string | undefined> {
   const first = finishHandoff(run, outcome, "writer");
   if (!first) return undefined;
   const repo = worktreeDir(run.id);
   const settled = await headCommit(repo);
-  const cleanup = async () => { await resetTo(repo, settled); restore(); };
+  const snap = snapshotPlan(run, files);
+  const cleanup = async () => { await resetTo(repo, settled); restorePlan(run, snap); };
   info(run, `📎 交接回覆不合格，請 ${outcome.agent} 只補寫交接（不重做工作）：${first}`);
   let repair: StepOutcome;
   try {
+    // pinned 不找代打，額度用完直接暫停，所以不需要 reset；善後一律交給 finally
     repair = await agentStep(
       run, outcome.agent, outcome.step,
-      renderPrompt("handoff-repair", { step: outcome.step, error: first, range: `${base}..${settled}` }),
-      { kind: "write", pinned: true, reset: cleanup },
+      renderPrompt("handoff-repair", { step: outcome.step, error: first, range: `${base ?? settled}..${settled}` }),
+      { kind: "write", pinned: true, reset: () => {} },
     );
   } catch (error) {
     if (error instanceof QuotaPause) return first;
@@ -373,7 +376,7 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
   if (!ac.ok) return retry(run, "spec", ac.error, "spec", "format_invalid");
   const ids = ac.data.map((a) => a.id);
   if (new Set(ids).size !== ids.length) return retry(run, "spec", "驗收條件 id 有重複", "spec", "format_invalid");
-  const handoffError = finishHandoff(run, outcome, "writer");
+  const handoffError = await settleHandoff(run, outcome, PLAN_FILES);
   if (handoffError) return retry(run, "spec", handoffError, "spec", "handoff_invalid");
   return succeed(run, "spec", "plan");
 }
@@ -468,7 +471,7 @@ async function planStage(run: FlowRun): Promise<FlowRun> {
   if (!r.ok) return retry(run, "plan", `Agent 執行失敗：${r.summary}`, "plan", "agent_error");
   const ordered = validatePlan(run);
   if (typeof ordered === "string") return retry(run, "plan", ordered, "plan", "format_invalid");
-  const handoffError = finishHandoff(run, outcome, "writer");
+  const handoffError = await settleHandoff(run, outcome, PLAN_FILES);
   if (handoffError) return retry(run, "plan", handoffError, "plan", "handoff_invalid");
   acceptPlan(run, ordered);
   rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
@@ -890,7 +893,7 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
     restorePlan(run, snap);
     return retry(run, "plan-fix", `${feedback}\n\n另外，修改後的計畫沒有通過格式檢查，已還原：\n${ordered}`, "plan_fix", "format_invalid");
   }
-  const handoffError = finishHandoff(run, outcome, "writer");
+  const handoffError = await settleHandoff(run, outcome, PLAN_REPLY_FILES);
   if (handoffError) {
     restorePlan(run, snap);
     // 計畫已還原，要保留原本的審查意見，否則下一次修正不知道要改什麼
@@ -1057,12 +1060,12 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, `沒有新增或修改任何符合 /${cfg.testPattern}/ 的測試檔。`, "implement", "tests_not_written");
     }
-    const red = await runCommand(target(run, `${task.id}-red`, CMD_AGENT), testCmd);
+    const red = await runCommand(target(run, redStepName(task.id), CMD_AGENT), testCmd);
     if (red.ok && !waiveRed) {
       await resetTo(repo, before);
       return retry(run, key, "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。", "implement", "tests_not_red");
     }
-    const handoffError = await settleHandoff(run, outcome, before, () => { restorePlan(run, snap); });
+    const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, before);
     if (handoffError) {
       await resetTo(repo, before);
       return retry(run, key, handoffError, "implement", "handoff_invalid");
@@ -1115,7 +1118,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     info(run, `   ✗ 測試仍未通過${logHint(run, green.seq)}`);
     return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement", "tests_not_green");
   }
-  const handoffError = await settleHandoff(run, outcome, testsCommit, () => { restorePlan(run, snap); });
+  const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, testsCommit);
   if (handoffError) {
     await resetTo(repo, testsCommit);
     return retry(run, key, handoffError, "implement", "handoff_invalid");
@@ -1258,7 +1261,7 @@ async function applyFix(
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`, "tests_deleted");
   }
-  const handoffError = await settleHandoff(run, outcome, before, () => { restorePlan(run, snap); });
+  const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, before);
   if (handoffError) {
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外，交接回覆不合格，本次修正已還原：${handoffError}`, "handoff_invalid");

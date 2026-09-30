@@ -176,6 +176,14 @@ describe("usageFindings", () => {
       retries: [],
       substitutions: 0,
     })).not.toContain("input_heavy");
+    // cache 讀取回報得比輸入還多（adapter 語意不一致）：不會算出負的輸入量
+    expect(codes({
+      total: summary({ tokens: 10000, inputTokens: 500, outputTokens: 9500, cacheReadTokens: 2000, runs: 5, reportedRuns: 5 }),
+      byStrength: {},
+      byStage: {},
+      retries: [],
+      substitutions: 0,
+    })).not.toContain("input_heavy");
     const heavy = usageFindings({
       total: summary({ tokens: 10000, inputTokens: 9500, outputTokens: 500, cacheReadTokens: 2000, runs: 5, reportedRuns: 5 }),
       byStrength: {},

@@ -122,7 +122,7 @@ export function usageFindings(input: {
     });
   }
 
-  const freshInput = total.inputTokens - total.cacheReadTokens;
+  const freshInput = Math.max(0, total.inputTokens - total.cacheReadTokens);
   const freshTotal = freshInput + total.outputTokens;
   if (freshTotal >= 5000 && freshInput / freshTotal >= 0.85) {
     out.push({

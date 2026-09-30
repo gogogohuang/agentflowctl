@@ -500,12 +500,19 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 const prompt = readFileSync(0, "utf8");
 const behavior = existsSync(".flow/repair-mode.txt") ? readFileSync(".flow/repair-mode.txt", "utf8").trim() : "repair-ok";
 const repairing = prompt.includes("交接紀錄員");
-const phase = repairing ? "repair" : prompt.includes("<red_output>") ? "code" : prompt.includes("你是除錯工程師") ? "fix" : "tests";
+const phase = repairing ? "repair" : prompt.includes("需求分析師") ? "spec" : prompt.includes("<red_output>") ? "code" : prompt.includes("你是除錯工程師") ? "fix" : "tests";
 appendFileSync(".flow/calls.txt", phase + "\\n");
 if (repairing) {
   if (behavior !== "repair-bad") writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
   if (behavior === "repair-tamper" || behavior === "repair-commit") writeFileSync("evil.ts", "export {};\\n");
   if (behavior === "repair-commit") execSync("git add -A && git -c user.name=t -c user.email=t@t commit -qm evil");
+  if (behavior === "repair-plan-tamper") writeFileSync(".flow/spec.md", "被補寫改掉");
+  process.exit(0);
+}
+if (phase === "spec") {
+  writeFileSync(".flow/spec.md", "# 規格\\n");
+  writeFileSync(".flow/acceptance.json", JSON.stringify([{ id: "AC-1", description: "匯出 answer 為 42" }]));
+  writeFileSync(".flow/handoff-response.json", "{ 壞掉的 json");
   process.exit(0);
 }
 if (phase === "fix") writeFileSync("fixed.ts", "export const fixed = true;\\n");
@@ -563,6 +570,28 @@ describe("交接補寫", () => {
     expect(existsSync(join(worktreeDir(run.id), "fixed.ts"))).toBe(true);
     expect(existsSync(join(worktreeDir(run.id), "evil.ts"))).toBe(false);
     expect(await git(worktreeDir(run.id), "log", "--format=%s")).not.toContain("evil");
+  });
+
+  it("規格的交接不合格時只補寫交接，補寫動到規格會被還原", async () => {
+    const id = "f-repair-spec";
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", repairScript] }])),
+      cycle: ["a", "b"], install: "true", test: "true", checks: [],
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "repair-mode.txt"), "repair-plan-tamper");
+    const now = new Date().toISOString();
+    // 規格與補寫共 2 次 agent，之後在計畫階段前達到上限
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "spec",
+      autopilot: true, maxAgentRuns: 2, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run).toMatchObject({ failedStage: "plan", failureCategory: "agent_budget" });
+    expect(listRetries(id).some((r) => r.category === "handoff_invalid")).toBe(false);
+    expect(calls(id)).toBe("spec\nrepair\n");
+    expect(readFileSync(join(flowDir(id), "spec.md"), "utf8")).toBe("# 規格\n");
   });
 
   it("紅燈測試與綠燈實作的交接不合格時也只補寫交接", async () => {
