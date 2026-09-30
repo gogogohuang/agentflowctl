@@ -50,6 +50,21 @@ describe("prompts", () => {
     expect(new Set(roles).size).toBe(names.length);
   });
 
+  it("規格、計畫審查、分層審查、修訂與仲裁共用同一套驗收條件標準", () => {
+    const text = (name: string) => renderPrompt(name, vars);
+    for (const name of ["plan-review", "plan-review-index"]) {
+      const t = text(name);
+      expect(t).toContain("一項非行為變更的完成結果");
+      expect(t).toContain("必須新寫或修改程式才會有的結果");
+      expect(t).toContain("需求明寫「維持不變」的行為");
+    }
+    expect(text("spec")).toContain("一項非行為變更的完成結果");
+    expect(text("spec")).toContain("需求明寫要維持不變的行為");
+    expect(text("plan-fix")).toContain("一項非行為變更的完成結果");
+    expect(text("plan-fix")).toContain("併入相關條件或刪除");
+    expect(text("plan-arbiter")).toContain("不需另寫程式就必然成立的推論");
+  });
+
   it("索引審查讀規格與全部任務描述，群審查帶相鄰任務但不讀規格，計畫要求任務標題與路徑", () => {
     const index = renderPrompt("plan-review-index", vars);
     expect(index).toContain("計畫索引審查者");
