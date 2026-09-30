@@ -193,7 +193,7 @@ Codex 另有幾點差異：
 | `agents` | `{}` | 以名稱為 key 定義 agent；每個都要有 `adapter`，可加 `model`、`extraArgs`；`command` adapter 另需 `command` 指令陣列 |
 | `cycle` | 自動偵測 | 填 agent 名稱陣列，例如 `["claude", "codex"]`；未填時使用已設定且可執行的 agent；順序不決定角色 |
 | `defaultModels` | `{}` | 依 adapter 設預設模型，例如 `{ "claude": "模型名稱" }`；個別 agent 的 `model` 優先 |
-| `modelSelection` | `balanced` | `mode` 可為 `balanced` 或 `adaptive`；`stageStrength` 可覆蓋各 LLM 階段強度 |
+| `modelSelection` | `balanced` | `mode` 可為 `balanced` 或 `adaptive`；`stageStrength` 可覆蓋各 LLM 階段強度，例如 `{ "planReview": "medium" }` 調低計畫審查（預設 `high`）；調低前後用 `agentflowctl insights` 比較該階段的呼叫數、用量與重試，見 [reference](docs/reference.md) |
 | `agents.<名稱>.models` | 無 | 自動選模時使用；每筆有 `name` 與 `strength`，建議用 `model add` 設定並實際驗證 |
 | `fixStrategy` | `"ring"` | `"ring"` 由審查者以外的 agent 修正；`"author"` 交回最後作者 |
 | `tddSplit` | `true` | 有多位 agent 時，`true` 會把同一任務的測試與實作分給不同 agent |
