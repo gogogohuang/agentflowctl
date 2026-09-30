@@ -137,7 +137,7 @@
 
 ## implement
 
-依 `tasks.ordered.json` 逐項做。紅燈與綠燈的輸入、產出不同。描述寫明不要求紅燈、但 `tdd` 不是 `false` 的任務在這裡直接失敗，不呼叫 agent。
+依 `tasks.ordered.json` 逐項做。紅燈與綠燈的輸入、產出不同。描述寫明不要求紅燈、但 `tdd` 不是 `false` 的任務仍走寫測試：prompt 要求直接寫測試，上一輪「必須失敗」的 `feedback.md` 會先刪掉，測試一開始就通過也進入綠燈。此時 `red-output.txt` 改寫成不必再為了製造失敗而改產品程式。
 
 任務略過 TDD（專案沒有測試框架，或任務的 `tdd` 為 `false`）時不做紅燈：進入實作時把當下的 HEAD 記進 `state.json` 的 `taskBase`，`testsCommit` 留空，也沒有 `red-output.txt`。實作改用 `implement-direct` prompt，成功條件是至少有一顆 commit；有測試框架時仍跑一次測試指令當回歸檢查，通過後照常進入任務審查。沒有 commit 以 `code_not_written` 重試，`feedback.md` 與綠燈用同一個 key（`<任務 id>:code`）。
 
