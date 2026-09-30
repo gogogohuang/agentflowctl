@@ -2,11 +2,18 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { footerLine, headerLine, listLogs, logMark, nextLogFile, renderLog } from "./logs.js";
+import { footerLine, headerLine, isRedStep, listLogs, logMark, nextLogFile, redStepName, renderLog } from "./logs.js";
 
 const j = (o: unknown) => JSON.stringify(o);
 const startedAt = "2026-09-26T03:00:00.000Z";
 const endedAt = "2026-09-26T03:01:00.000Z";
+
+describe("紅燈步驟名稱", () => {
+  it("redStepName 產生的名稱一定被 isRedStep 認得", () => {
+    expect(isRedStep(redStepName("T-12"))).toBe(true);
+    expect(isRedStep("T-1-green")).toBe(false);
+  });
+});
 
 describe("log 檔名", () => {
   it("序號-階段-步驟-agent，序號接在目錄裡最大的之後", () => {

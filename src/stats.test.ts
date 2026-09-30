@@ -14,14 +14,30 @@ describe("computeStats", () => {
   it("依步驟加總次數、失敗與耗時，最耗時的排前面", () => {
     const { steps } = computeStats([
       entry("T-1-tests", "claude", "00:00", "02:00"),
-      entry("T-1-red", "cmd", "02:00", "02:10"),
+      entry("T-1-red", "cmd", "02:00", "02:10", false),
       entry("T-1-tests", "codex", "03:00", "07:00", false),
-      entry("T-1-red", "cmd", "07:00", "07:20"),
+      entry("T-1-red", "cmd", "07:00", "07:20", false),
     ]);
     expect(steps).toEqual([
       { step: "T-1-tests", kind: "agent", runs: 2, failed: 1, unfinished: 0, totalMs: 360_000, maxMs: 240_000 },
       { step: "T-1-red", kind: "cmd", runs: 2, failed: 0, unfinished: 0, totalMs: 30_000, maxMs: 20_000 },
     ]);
+  });
+
+  it("紅燈指令失敗是預期結果，測試意外通過才算失敗", () => {
+    const { steps } = computeStats([
+      entry("T-1-red", "cmd", "00:00", "00:10", false),
+      entry("T-1-red", "cmd", "01:00", "01:10", false),
+      entry("T-1-red", "cmd", "02:00", "02:10", true),
+      entry("T-1-green", "cmd", "03:00", "03:10", false),
+    ]);
+    expect(steps.find((s) => s.step === "T-1-red")).toMatchObject({ runs: 3, failed: 1 });
+    expect(steps.find((s) => s.step === "T-1-green")).toMatchObject({ runs: 1, failed: 1 });
+  });
+
+  it("agent 步驟即使名稱含 red 也照一般規則", () => {
+    const { steps } = computeStats([entry("T-1-red", "claude", "00:00", "00:10", false)]);
+    expect(steps[0]).toMatchObject({ kind: "agent", failed: 1 });
   });
 
   it("分開加總 agent 與專案指令的耗時，沒有檔尾的算未完成", () => {

@@ -18,6 +18,10 @@ export const STDERR_MARK = "[stderr]";
 /** 專案指令（install、測試、checks）的 agent 欄位 */
 export const CMD_AGENT = "cmd";
 
+/** 紅燈測試指令的步驟名稱；engine 寫 log 與 stats 判斷預期失敗都用這裡，命名不會各改各的 */
+export const redStepName = (taskId: string) => `${taskId}-red`;
+export const isRedStep = (step: string) => /^T-\d+-red$/.test(step);
+
 export interface LogHeader {
   stage: string;
   step: string;

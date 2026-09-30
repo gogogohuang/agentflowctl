@@ -160,6 +160,40 @@ describe("usageFindings", () => {
       retries: [],
       substitutions: 0,
     })).toContain("input_heavy");
+    // 輸入幾乎全是 cache 讀取：不算輸入太大
+    expect(codes({
+      total: summary({ tokens: 10000, inputTokens: 9500, outputTokens: 500, cacheReadTokens: 9000, runs: 5, reportedRuns: 5 }),
+      byStrength: {},
+      byStage: {},
+      retries: [],
+      substitutions: 0,
+    })).not.toContain("input_heavy");
+    // 比例達門檻，但不含 cache 讀取的量體不足
+    expect(codes({
+      total: summary({ tokens: 10000, inputTokens: 9850, outputTokens: 150, cacheReadTokens: 9000, runs: 5, reportedRuns: 5 }),
+      byStrength: {},
+      byStage: {},
+      retries: [],
+      substitutions: 0,
+    })).not.toContain("input_heavy");
+    // cache 讀取回報得比輸入還多（adapter 語意不一致）：不會算出負的輸入量
+    expect(codes({
+      total: summary({ tokens: 10000, inputTokens: 500, outputTokens: 9500, cacheReadTokens: 2000, runs: 5, reportedRuns: 5 }),
+      byStrength: {},
+      byStage: {},
+      retries: [],
+      substitutions: 0,
+    })).not.toContain("input_heavy");
+    const heavy = usageFindings({
+      total: summary({ tokens: 10000, inputTokens: 9500, outputTokens: 500, cacheReadTokens: 2000, runs: 5, reportedRuns: 5 }),
+      byStrength: {},
+      byStage: {},
+      retries: [],
+      substitutions: 0,
+    }).find((f) => f.code === "input_heavy");
+    expect(heavy?.impactTokens).toBe(7500);
+    expect(heavy?.detail).toContain("不含 cache 讀取的輸入 7500");
+    expect(heavy?.detail).toContain("另有 cache 讀取 2000 未計入");
     expect(codes({
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
       byStrength: {},
