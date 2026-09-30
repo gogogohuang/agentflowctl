@@ -12,12 +12,13 @@ import { cleanableRuns, cleanRun } from "./cleanup.js";
 import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
-import { ModelStage, ModelStrength, StopAfterStage, TaskList, type FlowRun, type StopAfterStage as StopAfterStageType } from "./schemas.js";
+import { ModelStage, ModelStrength, OrderedTaskList, StopAfterStage, type FlowRun, type StopAfterStage as StopAfterStageType, type TaskItem } from "./schemas.js";
 import { computeInsights, failureLabel, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
 import { computeStats, formatDuration } from "./stats.js";
 import { agentRuns, getRun, listRetries, listRuns, listSubstitutions, listUsage, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
-import { padDisplay, readJsonFile } from "./util.js";
+import { confirmationLines, confirmationTasks } from "./tasks.js";
+import { padDisplay, readJsonFile, type JsonResult } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
@@ -118,6 +119,27 @@ async function resolveCycle(flag?: string): Promise<string[]> {
 
 /** status 任務清單中，進行中任務的標記 */
 const TASK_PHASE_MARK: Record<FlowRun["taskPhase"], string> = { tests: "🧪", code: "🛠️ ", review: "👀", verify: "🔍", fix: "🩹" };
+
+/**
+ * 這個 run 需要人眼確認的任務。確認清單已寫出（計畫通過首次驗證後）就用它，draft 為 false；
+ * 還沒寫出時從計畫與實作清單蒐集 kind: confirm 的任務，這些項目尚未經 validatePlan 檢查，draft 為 true。
+ * ordered 可傳入呼叫端已讀過的 tasks.ordered.json，避免重複讀檔。
+ */
+function loadConfirmationTasks(
+  id: string,
+  ordered: JsonResult<TaskItem[]> = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList),
+): { tasks: TaskItem[]; draft: boolean } {
+  const savedPath = join(flowDir(id), "confirmations.json");
+  const savedExists = existsSync(savedPath);
+  const saved = savedExists ? readJsonFile(savedPath, OrderedTaskList) : undefined;
+  const planned = readJsonFile(join(flowDir(id), "tasks.json"), OrderedTaskList);
+  const tasks = confirmationTasks(
+    saved ? (saved.ok ? saved.data : []) : undefined,
+    ordered.ok ? ordered.data : [],
+    planned.ok ? planned.data : [],
+  );
+  return { tasks, draft: !savedExists };
+}
 
 const program = new Command()
   .name("agentflowctl")
@@ -292,14 +314,27 @@ program
         console.log(`  ${r.key.padEnd(19)}  ${retryLabel(r.category)}${r.final ? "（達上限）" : `（第 ${r.attempt} 次）`}`);
       }
     }
-    const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), TaskList);
-    if (!tasks.ok) return;
-    console.log("\n任務");
-    tasks.data.forEach((t, i) => {
-      const active = i === run.taskIndex && run.stage === "implement";
-      const mark = i < run.taskIndex ? "✅" : active ? TASK_PHASE_MARK[run.taskPhase] : "⬜";
-      console.log(`  ${mark} ${t.id} ${t.title}`);
-    });
+    const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList);
+    if (tasks.ok && tasks.data.some((t) => t.kind !== "confirm")) {
+      console.log("\n任務");
+      tasks.data.forEach((t, i) => {
+        if (t.kind === "confirm") return;
+        const active = i === run.taskIndex && run.stage === "implement";
+        const mark = i < run.taskIndex ? "✅" : active ? TASK_PHASE_MARK[run.taskPhase] : "⬜";
+        console.log(`  ${mark} ${t.id} ${t.title}`);
+      });
+    }
+    const confirm = loadConfirmationTasks(id, tasks);
+    if (confirm.tasks.length) console.log(`\n${confirmationLines(confirm.tasks, confirm.draft).join("\n")}`);
+  });
+
+program
+  .command("confirmations <id>")
+  .description("只列出這個 run 需要人眼確認的任務")
+  .action((id: string) => {
+    mustGetRun(id);
+    const confirm = loadConfirmationTasks(id);
+    console.log(confirmationLines(confirm.tasks, confirm.draft).join("\n"));
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────

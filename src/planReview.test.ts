@@ -317,6 +317,7 @@ describe("摘錄與審查回應", () => {
     const plan = "## T-1 難度\n低";
     const acceptance = ac(["AC-1"]);
     expect(taskFingerprint(item, acceptance, plan)).not.toBe(taskFingerprint({ ...item, tdd: false }, acceptance, plan));
+    expect(taskFingerprint(item, acceptance, plan)).not.toBe(taskFingerprint({ ...item, kind: "confirm" }, acceptance, plan));
   });
 });
 

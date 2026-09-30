@@ -81,3 +81,34 @@ export function orderTasks(tasks: TaskItem[], acceptanceIds: Set<string>): TaskI
   }
   return ordered;
 }
+
+/**
+ * 需要人確認的任務。confirmations.json 已寫出時以它為準（空陣列代表沒有）；
+ * 還沒寫出時，從實作清單與計畫裡蒐集 kind 為 confirm 的任務。
+ */
+export function confirmationTasks(saved: TaskItem[] | undefined, ordered: TaskItem[], planned: TaskItem[]): TaskItem[] {
+  if (saved) return saved;
+  const seen = new Set<string>();
+  const out: TaskItem[] = [];
+  for (const task of [...ordered, ...planned]) {
+    if (task.kind !== "confirm" || seen.has(task.id)) continue;
+    seen.add(task.id);
+    out.push(task);
+  }
+  return out;
+}
+
+/**
+ * 只列出待人確認的任務；沒有時回一句說明。
+ * draft 代表計畫還沒通過首次驗證，清單是從未經 validatePlan 檢查的草稿蒐集來的，可能有項目最終不會定案。
+ */
+export function confirmationLines(tasks: TaskItem[], draft = false): string[] {
+  if (!tasks.length) return ["沒有需要人確認的任務"];
+  const lines = [`待你確認（不進實作）${draft ? "（計畫尚未定案，以下為草稿）" : ""}`];
+  for (const task of tasks) {
+    lines.push(`  ${task.id} ${task.title}`);
+    lines.push(`    ${task.description}`);
+    lines.push(`    驗收：${task.acceptance.join("、")}`);
+  }
+  return lines;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TaskItem } from "./schemas.js";
-import { orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { confirmationLines, confirmationTasks, orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 
 const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
   TaskItem.parse({ id, title: id, description: id, dependsOn, acceptance });
@@ -79,5 +79,36 @@ describe("TaskItem.tdd", () => {
     expect(validateTddFlag([omitted])).toContain("tdd");
     expect(validateTddFlag([waived])).toBeUndefined();
     expect(validateTddFlag([task("T-1")])).toBeUndefined();
+  });
+});
+
+describe("待人確認的任務", () => {
+  const confirm = TaskItem.parse({ id: "T-18", title: "核對畫面", description: "人眼看過首頁", acceptance: ["AC-32"], kind: "confirm" });
+  const implement = task("T-1");
+
+  it("已寫出確認清單時以它為準，空陣列就是沒有", () => {
+    expect(confirmationTasks([confirm], [implement], [])).toEqual([confirm]);
+    expect(confirmationTasks([], [confirm], [confirm])).toEqual([]);
+  });
+
+  it("還沒寫出確認清單時，從實作清單與計畫蒐集，並去掉重複", () => {
+    expect(confirmationTasks(undefined, [implement, confirm], [confirm])).toEqual([confirm]);
+    expect(confirmationTasks(undefined, [implement], [])).toEqual([]);
+  });
+
+  it("列印時只含待確認任務，沒有時說明沒有", () => {
+    const lines = confirmationLines([confirm]).join("\n");
+    expect(lines).toContain("待你確認（不進實作）");
+    expect(lines).toContain("T-18 核對畫面");
+    expect(lines).toContain("人眼看過首頁");
+    expect(lines).toContain("驗收：AC-32");
+    expect(confirmationLines([])).toEqual(["沒有需要人確認的任務"]);
+  });
+
+  it("draft 為 true 時標示計畫尚未定案", () => {
+    const lines = confirmationLines([confirm], true).join("\n");
+    expect(lines).toContain("待你確認（不進實作）");
+    expect(lines).toContain("計畫尚未定案");
+    expect(confirmationLines([confirm], false).join("\n")).not.toContain("計畫尚未定案");
   });
 });

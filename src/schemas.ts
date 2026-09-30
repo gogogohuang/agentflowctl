@@ -94,11 +94,16 @@ export const TaskItem = z.object({
   complexity: z.enum(["low", "medium", "high"]).optional(),
   /** false＝這個任務不適合先寫會失敗的測試（建置流程、設定、文件、純重構、實作前就會通過的特徵化測試等），略過紅燈直接實作；沒寫視為 true。描述寫明不要求紅燈時必須為 false */
   tdd: z.boolean().optional(),
+  /** confirm＝不進入實作佇列，另存給使用者確認；沒寫視為要實作。舊 tasks.json 沒有此欄位 */
+  kind: z.enum(["implement", "confirm"]).optional(),
 });
 export type TaskItem = z.infer<typeof TaskItem>;
 
+/** 排好的實作清單與另存的確認清單都可以是空的 */
+export const OrderedTaskList = z.array(TaskItem);
+
 /** Agent 在 plan 階段產出的 .flow/tasks.json */
-export const TaskList = z.array(TaskItem).min(1);
+export const TaskList = OrderedTaskList.min(1);
 
 /** Agent 在 review 階段產出的 .flow/review.json */
 export const ReviewResult = z.object({

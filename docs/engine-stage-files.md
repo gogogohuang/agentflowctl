@@ -45,7 +45,8 @@
 | --- | --- | --- | --- |
 | `plan.md` | 要動哪些模組、任務為什麼排成這個順序。審查與仲裁用它判斷做法能不能滿足需求；人工確認時人看的也是這份 | 計畫 agent | 計畫審查、修訂、仲裁、紅燈、綠燈 |
 | `tasks.json` | 工作項目原文：做什麼、依賴誰、負責哪些 `AC-*`。程式不採用 agent 口述的順序，而是讀這份來排序 | 計畫 agent | 計畫審查、修訂、仲裁；程式用來產生 `tasks.ordered.json` |
-| `tasks.ordered.json` | 已按相依關係排好的進度清單。implement 每次只取一項，`status` 用它畫進度。agent 不改這份 | 程式，DAG 檢查通過後寫入 | implement、`status` |
+| `tasks.ordered.json` | 已按相依關係排好的實作清單。`kind: confirm` 的任務不在這裡。implement 每次只取一項，`status` 用它畫進度。agent 不改這份 | 程式，DAG 檢查通過後寫入 | implement、`status` |
+| `confirmations.json` | 需要人眼確認的任務。不進入實作，run 不因此停下。`status` 另列「待你確認」；`confirmations` 只印這份 | 程式，從 `tasks.json` 裡 `kind: confirm` 的任務搬過來 | 使用者 |
 | `plan-review-last.txt` | 新計畫定稿時刪除，讓之後的審查從第一輪指紋重新算，不沿用舊爭議 | 程式刪除 | 下一輪 plan_review 的僵持判斷 |
 | `feedback.md` | 這一輪沒過時覆寫。通過後刪除 | 程式，`retry("plan")` | 下一輪計畫 agent |
 
@@ -139,7 +140,7 @@
 
 依 `tasks.ordered.json` 逐項做。紅燈與綠燈的輸入、產出不同。描述寫明不要求紅燈、但 `tdd` 不是 `false` 的任務仍走寫測試：prompt 要求直接寫測試，上一輪「必須失敗」的 `feedback.md` 會先刪掉，測試一開始就通過也進入綠燈。此時 `red-output.txt` 改寫成不必再為了製造失敗而改產品程式。
 
-任務略過 TDD（專案沒有測試框架，或任務的 `tdd` 為 `false`）時不做紅燈：進入實作時把當下的 HEAD 記進 `state.json` 的 `taskBase`，`testsCommit` 留空，也沒有 `red-output.txt`。實作改用 `implement-direct` prompt，成功條件是至少有一顆 commit；有測試框架時仍跑一次測試指令當回歸檢查，通過後照常進入任務審查。沒有 commit 以 `code_not_written` 重試，`feedback.md` 與綠燈用同一個 key（`<任務 id>:code`）。
+任務略過 TDD（專案沒有測試框架，或任務的 `tdd` 為 `false`）時不做紅燈：進入實作時把當下的 HEAD 記進 `state.json` 的 `taskBase`，`testsCommit` 留空，也沒有 `red-output.txt`。實作改用 `implement-direct` prompt。有檔案變更才 commit；有測試框架時跑一次測試指令當回歸檢查，通過後進入任務審查。沒有檔案變更就略過該任務，不重試。`kind: confirm` 的任務在計畫定案時已搬到 `confirmations.json`，不在這份實作清單裡。
 
 ### 紅燈輸入
 
