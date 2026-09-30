@@ -20,6 +20,7 @@ import {
   ArbiterResult,
   ConsistentReviewResult,
   RepoConfig,
+  OrderedTaskList,
   TaskItem,
   TaskList,
   type FlowRun,
@@ -301,9 +302,28 @@ function testsRedGuidance(testCmd: string, waiveRed: boolean): { roleGoal: strin
 }
 
 function loadOrderedTasks(run: FlowRun): TaskItem[] {
-  const r = readJsonFile(flowFile(run, "tasks.ordered.json"), TaskList);
+  const r = readJsonFile(flowFile(run, "tasks.ordered.json"), OrderedTaskList);
   if (!r.ok) throw new Error(r.error);
   return r.data;
+}
+
+function loadConfirmations(run: FlowRun): TaskItem[] {
+  if (!existsSync(flowFile(run, "confirmations.json"))) return [];
+  const r = readJsonFile(flowFile(run, "confirmations.json"), OrderedTaskList);
+  return r.ok ? r.data : [];
+}
+
+function rememberConfirmation(run: FlowRun, task: TaskItem): void {
+  const current = loadConfirmations(run);
+  if (current.some((item) => item.id === task.id)) return;
+  writeFileSync(flowFile(run, "confirmations.json"), JSON.stringify([...current, task], null, 2));
+}
+
+function announceConfirmations(run: FlowRun): void {
+  const confirm = loadConfirmations(run);
+  if (!confirm.length) return;
+  info(run, `👀 另有 ${confirm.length} 項需要你確認（不進實作，不會停下）：${confirm.map((t) => `${t.id} ${t.title}`).join("、")}`);
+  info(run, `   清單：${flowFile(run, "confirmations.json")}`);
 }
 
 // ───────────────────────── 各階段 ─────────────────────────
@@ -329,7 +349,7 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
 
 const PLAN_FILES = ["spec.md", "acceptance.json", "plan.md", "tasks.json"] as const;
 /** 計畫定案後（實作、修正、程式碼審查）另外依賴排好的任務順序，同樣不能被改 */
-const LOCKED_FILES = [...PLAN_FILES, "tasks.ordered.json"] as const;
+const LOCKED_FILES = [...PLAN_FILES, "tasks.ordered.json", "confirmations.json"] as const;
 /** 審查、修訂與仲裁的快照另外包含審查回應；不要併進 PLAN_FILES，定案後的階段不依賴它 */
 const PLAN_REPLY_FILES = [...PLAN_FILES, "plan-replies.md"] as const;
 
@@ -370,7 +390,10 @@ function validatePlan(run: FlowRun): TaskItem[] | string {
 }
 
 function acceptPlan(run: FlowRun, ordered: TaskItem[]): void {
-  writeFileSync(flowFile(run, "tasks.ordered.json"), JSON.stringify(ordered, null, 2));
+  const confirm = ordered.filter((t) => t.kind === "confirm");
+  const implement = ordered.filter((t) => t.kind !== "confirm");
+  writeFileSync(flowFile(run, "tasks.ordered.json"), JSON.stringify(implement, null, 2));
+  writeFileSync(flowFile(run, "confirmations.json"), JSON.stringify(confirm, null, 2));
 }
 
 function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
@@ -392,6 +415,7 @@ function planSettled(run: FlowRun, key: string): FlowRun {
   const next = run.autopilot ? "implement" : "awaiting_approval";
   const ordered = loadOrderedTasks(run);
   announceTasks(run, ordered);
+  announceConfirmations(run);
   if (!run.autopilot) {
     info(run, `✋ 計畫已通過審查，請檢視 ${flowFile(run, "plan.md")}，確認後執行 agentflowctl approve ${run.id}`);
   }
@@ -936,6 +960,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const task = tasks[run.taskIndex];
   if (!task) {
     info(run, "✅ 所有任務完成");
+    announceConfirmations(run);
     return to(run, "verify");
   }
   const cfg = loadRepoConfig();
@@ -943,6 +968,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const testRe = new RegExp(cfg.testPattern);
   const testCmd = `${cfg.install} && ${cfg.test}`;
   const progress = `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
+  if (task.kind === "confirm") {
+    rememberConfirmation(run, task);
+    const rest = tasks.filter((item) => item.id !== task.id);
+    writeFileSync(flowFile(run, "tasks.ordered.json"), JSON.stringify(rest, null, 2));
+    info(run, `👀 [${progress}] 改放到待你確認的清單，實作繼續`);
+    return run;
+  }
   const taskJson = JSON.stringify(task, null, 2);
   const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
   if (!acceptance.ok) throw new Error(acceptance.error);
@@ -1035,7 +1067,10 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     return retry(run, key, planTamperedMessage(tampered), "implement", "plan_tampered");
   }
   const codeCommit = await commitAll(repo, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
-  if (!tdd && !codeCommit) return retry(run, key, "沒有任何檔案變更，這個任務必須完成實作。", "implement", "code_not_written");
+  if (!tdd && !codeCommit) {
+    info(run, `⏭️  [${progress}] 沒有檔案變更，略過這個任務`);
+    return finishTask(succeed(run, key, "implement"));
+  }
   const touched = tdd ? (await changedFiles(repo, testsCommit, await headCommit(repo))).filter((f) => testRe.test(f)) : [];
   if (touched.length) {
     await resetTo(repo, testsCommit);
@@ -1087,6 +1122,18 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
   };
 }
 
+/** 這個任務結束，下一個從寫測試開始 */
+function finishTask(run: FlowRun): FlowRun {
+  return {
+    ...run,
+    taskIndex: run.taskIndex + 1,
+    taskPhase: "tests",
+    taskBase: undefined,
+    testsCommit: undefined,
+    lastTestsAuthor: undefined,
+  };
+}
+
 // ── 任務驗證：通過才進入下一個任務 ──
 async function taskVerifyStep(run: FlowRun, task: TaskItem, progress: string): Promise<FlowRun> {
   const key = `${task.id}:verify`;
@@ -1094,14 +1141,7 @@ async function taskVerifyStep(run: FlowRun, task: TaskItem, progress: string): P
   const report = await runChecks(run, `${task.id}-`);
   if (report) return { ...retry(run, key, report, "implement", "checks_failed"), taskPhase: "fix", fixSource: "verify" };
   info(run, `✅ [${progress}] 完成`);
-  return {
-    ...succeed(run, key, "implement"),
-    taskIndex: run.taskIndex + 1,
-    taskPhase: "tests",
-    taskBase: undefined,
-    testsCommit: undefined,
-    lastTestsAuthor: undefined,
-  };
+  return finishTask(succeed(run, key, "implement"));
 }
 
 // ── 任務修正：修完重新審查、驗證 ──

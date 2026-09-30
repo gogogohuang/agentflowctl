@@ -301,7 +301,9 @@ if (existsSync(\`.flow/tamper-\${phase}.txt\`)) {
   rmSync(\`.flow/tamper-\${phase}.txt\`);
   writeFileSync(".flow/acceptance.json", "[]");
 }
-if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
+const noop = phase === "direct" && existsSync(".flow/noop-direct.txt");
+if (noop) rmSync(".flow/noop-direct.txt");
+else if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
 else writeFileSync("feature.mjs", "export const answer = 42;\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
@@ -309,7 +311,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 async function implementRun(
   id: string,
   acceptance: unknown,
-  { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs", description = "匯出 answer" }: { maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null; description?: string } = {},
+  { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs", description = "匯出 answer", noop, kind }: { maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null; description?: string; noop?: boolean; kind?: "confirm" } = {},
 ) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
@@ -320,8 +322,9 @@ async function implementRun(
   mkdirSync(flowDir(id), { recursive: true });
   writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
-    { id: "T-1", title: "回傳答案", description, dependsOn: [], acceptance: ["AC-2"], ...(tdd === undefined ? {} : { tdd }) },
+    { id: "T-1", title: "回傳答案", description, dependsOn: [], acceptance: ["AC-2"], ...(tdd === undefined ? {} : { tdd }), ...(kind ? { kind } : {}) },
   ]));
+  if (noop) writeFileSync(join(flowDir(id), "noop-direct.txt"), "");
   if (tamper) writeFileSync(join(flowDir(id), `tamper-${tamper}.txt`), "");
   const now = new Date().toISOString();
   // 紅燈、綠燈各執行一次 agent（加上重試次數）後就達到上限而停在任務審查前，只檢查紅綠燈的結果
@@ -423,6 +426,25 @@ describe("略過 TDD", () => {
     expect(prompt).toContain("一開始就通過");
     expect(prompt).not.toContain("因為功能尚未實作而**失敗**");
     expect(existsSync(join(flowDir(id), "feedback-tests.txt"))).toBe(false);
+  });
+
+  it("不走 TDD 且沒有檔案變更時略過任務，不以未實作重試", async () => {
+    const run = await implementRun("f-no-commit-skip", acceptance, { maxAgentRuns: 1, tdd: false, noop: true });
+    expect(run.failureCategory).toBe("agent_budget");
+    expect(run.taskIndex).toBe(1);
+    expect(agentRuns(run.id)).toBe(1);
+    expect(listRetries(run.id).map((item) => item.category)).not.toContain("code_not_written");
+    expect(existsSync(join(worktreeDir(run.id), "feature.mjs"))).toBe(false);
+  });
+
+  it("kind 為 confirm 時從實作清單拿掉、另存給使用者，不停下", async () => {
+    const run = await implementRun("f-confirm-task", acceptance, { maxAgentRuns: 1, kind: "confirm" });
+    expect(run.stage).not.toBe("awaiting_approval");
+    expect(run.failedStage).toBe("review");
+    expect(JSON.parse(readFileSync(join(flowDir(run.id), "tasks.ordered.json"), "utf8"))).toEqual([]);
+    const confirm = JSON.parse(readFileSync(join(flowDir(run.id), "confirmations.json"), "utf8"));
+    expect(confirm.map((t: { id: string }) => t.id)).toEqual(["T-1"]);
+    expect(agentRuns(run.id)).toBe(1);
   });
 
   it("有測試框架且沒標 tdd:false 時仍走紅綠燈", async () => {

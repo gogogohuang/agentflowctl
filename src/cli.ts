@@ -12,7 +12,7 @@ import { cleanableRuns, cleanRun } from "./cleanup.js";
 import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
-import { ModelStage, ModelStrength, StopAfterStage, TaskList, type FlowRun, type StopAfterStage as StopAfterStageType } from "./schemas.js";
+import { ModelStage, ModelStrength, OrderedTaskList, StopAfterStage, type FlowRun, type StopAfterStage as StopAfterStageType } from "./schemas.js";
 import { computeInsights, failureLabel, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
 import { computeStats, formatDuration } from "./stats.js";
@@ -292,14 +292,20 @@ program
         console.log(`  ${r.key.padEnd(19)}  ${retryLabel(r.category)}${r.final ? "（達上限）" : `（第 ${r.attempt} 次）`}`);
       }
     }
-    const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), TaskList);
-    if (!tasks.ok) return;
-    console.log("\n任務");
-    tasks.data.forEach((t, i) => {
-      const active = i === run.taskIndex && run.stage === "implement";
-      const mark = i < run.taskIndex ? "✅" : active ? TASK_PHASE_MARK[run.taskPhase] : "⬜";
-      console.log(`  ${mark} ${t.id} ${t.title}`);
-    });
+    const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList);
+    if (tasks.ok && tasks.data.length) {
+      console.log("\n任務");
+      tasks.data.forEach((t, i) => {
+        const active = i === run.taskIndex && run.stage === "implement";
+        const mark = i < run.taskIndex ? "✅" : active ? TASK_PHASE_MARK[run.taskPhase] : "⬜";
+        console.log(`  ${mark} ${t.id} ${t.title}`);
+      });
+    }
+    const confirm = readJsonFile(join(flowDir(id), "confirmations.json"), OrderedTaskList);
+    if (confirm.ok && confirm.data.length) {
+      console.log("\n待你確認（不進實作）");
+      for (const t of confirm.data) console.log(`  ${t.id} ${t.title}`);
+    }
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────

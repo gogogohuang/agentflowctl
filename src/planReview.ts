@@ -214,6 +214,7 @@ export function taskFingerprint(task: TaskItem, acceptance: AcceptanceItem[], pl
     dependsOn: task.dependsOn,
     acceptance: task.acceptance.map((id) => ({ id, description: byId.get(id) ?? "" })),
     tdd: task.tdd ?? null,
+    kind: task.kind ?? null,
     evidence: extractPlanEvidence(planMd, [task.id]),
   });
 }

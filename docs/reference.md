@@ -237,7 +237,7 @@ stderr：
 | `arbitration_revise` | 仲裁要求修訂 | 兩家雙盲仲裁都不核准，退回 plan_fix（不計入重試上限） |
 | `plan_tampered` | 改動已鎖定的計畫檔 | `planTamperedMessage` |
 | `tests_not_written` | 未寫測試 | 無 commit、或沒改測試檔 |
-| `code_not_written` | 未實作 | 略過 TDD 的任務，實作階段沒有任何 commit |
+| `code_not_written` | 未實作 | 舊版：略過 TDD 的實作沒有 commit 時重試。現在沒有檔案變更會略過該任務，不再寫入這個分類 |
 | `tests_not_red` | 紅燈測試未失敗 | 實作前測試就全過 |
 | `tests_modified` | 實作改了測試 | 綠燈階段動到測試檔 |
 | `tests_not_green` | 測試仍未通過 | 實作後測試失敗 |
@@ -354,11 +354,15 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 略過 TDD 的任務：
 
 - 不做紅燈；進入實作時記下當下的 HEAD 作為任務起點（`taskBase`），實作用 `prompts/implement-direct.md`，沒有 `red-output.txt`。
-- 實作必須產生至少一個 commit，否則以 `code_not_written` 重試。
-- 有測試框架時仍會跑 `test` 指令，確認既有測試沒被破壞；沒有測試框架時不跑。實作階段不檢查有沒有動到測試檔。
-- 之後照常：任務審查、驗證（`checks`）、任務修正。
+- 有檔案變更才 commit，接著跑既有測試（有測試框架時）並進入任務審查。沒有檔案變更就略過這個任務，不重試、也不要求硬做出一個 commit。
+- 有測試框架時，有變更的實作仍會跑 `test` 指令，確認既有測試沒被破壞；沒有測試框架時不跑。實作階段不檢查有沒有動到測試檔。
+- 有變更時之後照常：任務審查、驗證（`checks`）、任務修正。
 
 `run` 印出任務清單時，略過 TDD 的任務會顯示「略過 TDD」取代測試 agent。
+
+### 需要人確認的任務
+
+任務可以標 `"kind": "confirm"`（沒寫視為要實作）。這類事項程式無法用檔案或指令判定，例如要人眼看過的結果。計畫定案時會從 `tasks.ordered.json` 拿掉，寫進 `.flow/confirmations.json`。實作不會做到它們，run 也不會因此停下。`status <id>` 在任務清單下面另列「待你確認」。若進行中的舊清單裡還留著這種任務，執行到它時同樣搬過去，然後繼續下一個實作任務。
 
 ### 用指令管理 agent
 
