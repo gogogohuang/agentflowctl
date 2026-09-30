@@ -89,14 +89,20 @@ git log --oneline "$latest_tag..HEAD"
 echo
 
 if [[ "$dry_run" == 1 ]]; then
-  echo "✅ dry-run 完成：檢查與驗證都通過，將建立 ${next_tag}（未建立 Release）"
+  echo "✅ dry-run 完成：檢查與驗證都通過，將把 package.json 更新為 $next 並建立 ${next_tag}（未實際變更）"
   exit 0
 fi
 
 read -r -p "確定要發布 $next_tag 嗎？(y/N) " answer
 [[ "$answer" == [yY] ]] || die "已取消"
 
-# 9. 建立 Release，npm-publish.yml 會接手發布
+# 9. 更新 package.json 的 version 並 commit、push
+npm pkg set version="$next"
+git add package.json
+git commit -m "$next"
+git push origin main
+
+# 10. 建立 Release，npm-publish.yml 會接手發布
 gh release create "$next_tag" --target main --generate-notes --title "$next_tag"
 
 echo

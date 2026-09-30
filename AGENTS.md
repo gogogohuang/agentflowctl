@@ -17,7 +17,7 @@ pnpm dev doctor                           # 用 tsx 直接跑 src/cli.ts
 pnpm release patch --dry-run              # 本機發版（限 main）；patch|minor|major|x.y.z，去掉 --dry-run 才會建立 GitHub Release
 ```
 
-CI（`.github/workflows/ci.yml`）在 ubuntu／macos × Node 22／24 跑 typecheck、test、build。發布是在 GitHub 建 Release 時自動做的：版本號取自 tag，`package.json` 的 version 不需要手動改。
+CI（`.github/workflows/ci.yml`）在 ubuntu／macos × Node 22／24 跑 typecheck、test、build。發版由 `scripts/release.sh`（`pnpm release`）處理：它會把 `package.json` 的 version 更新、commit、push 到 `main`，再建立 GitHub Release；npm 發布則由 Release 觸發的 `npm-publish.yml` 接手，`package.json` 的 version 不需要手動改。
 
 測試檔 `src/**/*.test.ts` 與原始碼放在一起，tsconfig 會把它們排除在 build 之外。`git.test.ts` 會建立真的 git repo。
 
