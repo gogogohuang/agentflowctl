@@ -1,6 +1,6 @@
 import { addAgent, setAgent, setCycle, type Edit, type RawConfig } from "./agentConfig.js";
-import { missingModelsMessage } from "./modelSelection.js";
-import { setModelMode } from "./modelConfig.js";
+import { addModel, setModelMode } from "./modelConfig.js";
+import { ModelStrength } from "./schemas.js";
 import { ADAPTERS, type AdapterName } from "./agents/index.js";
 
 /**
@@ -35,6 +35,56 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
   const changes: string[] = [];
   const chosen: string[] = [];
   const existing = () => Object.keys((cfg.agents ?? {}) as object);
+
+  const hasModels = (c: RawConfig, name: string) => !!(c.agents as Record<string, { models?: unknown[] }>)[name]?.models?.length;
+
+  /** 問模型模式：balanced 不用登記模型；adaptive 逐一登記缺 models 的 agent，只寫設定、不送請求驗證 */
+  async function chooseModelMode(start: RawConfig, notes: string[]): Promise<RawConfig> {
+    let next = start;
+    const stored = ((next.modelSelection ?? {}) as { mode?: string }).mode;
+    for (;;) {
+      const mode = (await ask("模型模式（balanced＝沿用各 agent 的 model，adaptive＝依階段自動選模）", stored ?? "balanced")).toLowerCase();
+      if (mode !== "balanced" && mode !== "adaptive") {
+        log("  請輸入 balanced 或 adaptive");
+        continue;
+      }
+      if (mode === "balanced") {
+        if (stored === "adaptive") {
+          next = setModelMode(next, "balanced");
+          notes.push("modelSelection.mode → balanced");
+        }
+        return next;
+      }
+      let tried = next;
+      const lacking = (next.cycle as string[]).filter((n) => !hasModels(next, n));
+      const empty: string[] = [];
+      for (const name of lacking) {
+        log(`${name} 沒有登記模型，adaptive 只看 models，請登記可用的模型與強度`);
+        for (;;) {
+          const line = (await ask(`  ${name} 模型（名稱 強度 low|medium|high，強度省略為 medium，Enter 結束）`)).trim();
+          if (!line) break;
+          const [model, strength = "medium", ...extra] = line.split(/\s+/);
+          if (extra.length || !ModelStrength.safeParse(strength).success) {
+            log("  格式是「名稱 強度」，強度只能是 low、medium 或 high");
+            continue;
+          }
+          try {
+            tried = addModel(tried, name, model!, strength as "low" | "medium" | "high");
+            notes.push(`${name} 模型 ${model}（${strength}）`);
+          } catch (e) {
+            log(`  ${(e as Error).message}`);
+          }
+        }
+        if (!hasModels(tried, name)) empty.push(name);
+      }
+      if (empty.length) {
+        log(`⚠️  ${empty.join("、")} 沒有登記任何模型，無法使用 adaptive；請重新選擇模式`);
+        continue;
+      }
+      log("已寫入模型設定但未驗證；寫入後可執行 agentflowctl model check 確認帳號能否呼叫");
+      return setModelMode(tried, "adaptive");
+    }
+  }
 
   const configured = Object.entries(deps.configured ?? {});
   if (configured.length) {
@@ -93,16 +143,7 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
     }
   }
 
-  // adaptive 只看 models；精靈只會寫 model，參與的 agent 缺 models 時 run 會直接失敗
-  const defs = (cfg.agents ?? {}) as Record<string, { models?: unknown[] }>;
-  const lacking = (cfg.cycle as string[]).filter((n) => !defs[n]?.models?.length);
-  if (lacking.length && ((cfg.modelSelection ?? {}) as { mode?: string }).mode === "adaptive") {
-    log(`\n⚠️  ${missingModelsMessage(lacking)}`);
-    if (await confirm("改回 balanced 模式？（選 n 則維持 adaptive，請之後自行登記 models）", true)) {
-      cfg = setModelMode(cfg, "balanced");
-      changes.push("modelSelection.mode → balanced");
-    }
-  }
+  cfg = await chooseModelMode(cfg, changes);
 
   const agents = cfg.agents as Record<string, { adapter: string; model?: string }>;
   log("\n即將寫入：");

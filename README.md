@@ -20,7 +20,7 @@ npx agentflowctl doctor
 npx agentflowctl run --req "登入表單加入驗證與錯誤訊息"
 ```
 
-`agent setup` 會找出本機可用的 Claude Code、Codex、Gemini CLI，讓你選擇要加入哪些 agent，並寫入專案根目錄的 `flow.config.json`。`doctor` 會檢查設定與 CLI 是否可執行。agentflowctl 沒有預設 agent，因此第一次使用要先完成設定。
+`agent setup` 會找出本機可用的 Claude Code、Codex、Gemini CLI，讓你選擇要加入哪些 agent，接著選模型模式（預設 `balanced`），最後寫入專案根目錄的 `flow.config.json`。`doctor` 會檢查設定與 CLI 是否可執行。agentflowctl 沒有預設 agent，因此第一次使用要先完成設定。
 
 若要使用現成的需求文件，改用：
 
@@ -133,7 +133,7 @@ agentflowctl agent cycle claude,codex
 
 `agent add` 的 `--adapter` 可填 `claude`、`codex`、`gemini` 或 `command`。`--model` 指定個別 agent 的模型；`--extra-arg=--參數` 可重複使用，傳給該 CLI。使用 `command` adapter 時，把指令寫在 `--` 後，例如 `agentflowctl agent add aider --adapter command -- aider --message {prompt}`。`agent remove <名稱>` 會移除設定與參與名單；`agent cycle` 不帶名單則顯示目前參與者。
 
-`model add/set/remove` 只修改指定 agent 的模型清單；`model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`agent setup` 遇到同名 agent 會先詢問是否覆寫。目前是 adaptive 模式、但參與的 agent 沒有 `models` 時，`agent setup` 會提醒並詢問是否改回 balanced；`run` 遇到同樣情況會列出所有缺 `models` 的 agent，並附上 `model add` 與 `model mode balanced` 兩種修法。
+`model add/set/remove` 只修改指定 agent 的模型清單；`model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`agent setup` 遇到同名 agent 會先詢問是否覆寫。`agent setup` 最後會問模型模式：預設 `balanced`（設定裡已是 adaptive 時預設沿用 adaptive）；選 `adaptive` 時會逐一詢問缺 `models` 的參與 agent，輸入「名稱 強度」（強度省略為 medium，Enter 結束），任何一個 agent 沒登記模型就回到模式選擇。精靈只寫入設定、不送請求驗證，寫入後可執行 `model check`。`run` 遇到同樣情況會列出所有缺 `models` 的 agent，並附上 `model add` 與 `model mode balanced` 兩種修法。
 
 ### 依階段與任務難度選模型
 
