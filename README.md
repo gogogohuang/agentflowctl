@@ -121,7 +121,7 @@ agentflowctl resume f-xxxx --max-attempts 8
 
 ### Agent 設定
 
-`agent setup` 可互動選擇已安裝的 CLI。也可以用指令新增或修改；這些指令會寫入 `flow.config.json`：
+`agent setup` 可互動選擇已安裝的 CLI 與模型模式。也可以用指令新增或修改；這些指令會寫入 `flow.config.json`：
 
 ```bash
 agentflowctl agent add claude --adapter claude
@@ -133,7 +133,7 @@ agentflowctl agent cycle claude,codex
 
 `agent add` 的 `--adapter` 可填 `claude`、`codex`、`gemini` 或 `command`。`--model` 指定個別 agent 的模型；`--extra-arg=--參數` 可重複使用，傳給該 CLI。使用 `command` adapter 時，把指令寫在 `--` 後，例如 `agentflowctl agent add aider --adapter command -- aider --message {prompt}`。`agent remove <名稱>` 會移除設定與參與名單；`agent cycle` 不帶名單則顯示目前參與者。
 
-`model add/set/remove` 只修改指定 agent 的模型清單；`model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`agent setup` 遇到同名 agent 會先詢問是否覆寫。`agent setup` 最後會問模型模式：預設 `balanced`（設定裡已是 adaptive 時預設沿用 adaptive）；選 `adaptive` 時會逐一詢問缺 `models` 的參與 agent，輸入「名稱 強度」（強度省略為 medium，Enter 結束），任何一個 agent 沒登記模型就回到模式選擇。精靈只寫入設定、不送請求驗證，寫入後可執行 `model check`。`run` 遇到同樣情況會列出所有缺 `models` 的 agent，並附上 `model add` 與 `model mode balanced` 兩種修法。
+`model add/set/remove` 只修改指定 agent 的模型清單；`model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`agent setup` 遇到同名 agent 會先詢問是否覆寫。`agent setup` 最後會問模型模式：預設 `balanced`（設定裡已是 adaptive 時預設沿用 adaptive）；選 `adaptive` 時會逐一詢問缺 `models` 的參與 agent，輸入「名稱 強度」（強度省略為 medium，Enter 結束），任何一個 agent 沒登記模型就回到模式選擇。精靈只寫入設定、不送請求驗證，寫入後可執行 `model check`。若 adaptive 模式下參與的 agent 缺 `models`，`run` 會列出所有缺 `models` 的 agent，並附上 `model add` 與 `model mode balanced` 兩種修法。
 
 ### 依階段與任務難度選模型
 
