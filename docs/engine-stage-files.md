@@ -46,7 +46,7 @@
 | `plan.md` | 要動哪些模組、任務為什麼排成這個順序。審查與仲裁用它判斷做法能不能滿足需求；人工確認時人看的也是這份 | 計畫 agent | 計畫審查、修訂、仲裁、紅燈、綠燈 |
 | `tasks.json` | 工作項目原文：做什麼、依賴誰、負責哪些 `AC-*`。程式不採用 agent 口述的順序，而是讀這份來排序 | 計畫 agent | 計畫審查、修訂、仲裁；程式用來產生 `tasks.ordered.json` |
 | `tasks.ordered.json` | 已按相依關係排好的實作清單。`kind: confirm` 的任務不在這裡。implement 每次只取一項，`status` 用它畫進度。agent 不改這份 | 程式，DAG 檢查通過後寫入 | implement、`status` |
-| `confirmations.json` | 需要人眼確認的任務。不進入實作，run 不因此停下。`status` 另列「待你確認」 | 程式，從 `tasks.json` 裡 `kind: confirm` 的任務搬過來 | 使用者 |
+| `confirmations.json` | 需要人眼確認的任務。不進入實作，run 不因此停下。`status` 另列「待你確認」；`confirmations` 只印這份 | 程式，從 `tasks.json` 裡 `kind: confirm` 的任務搬過來 | 使用者 |
 | `plan-review-last.txt` | 新計畫定稿時刪除，讓之後的審查從第一輪指紋重新算，不沿用舊爭議 | 程式刪除 | 下一輪 plan_review 的僵持判斷 |
 | `feedback.md` | 這一輪沒過時覆寫。通過後刪除 | 程式，`retry("plan")` | 下一輪計畫 agent |
 

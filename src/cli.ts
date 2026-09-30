@@ -17,6 +17,7 @@ import { computeInsights, failureLabel, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
 import { computeStats, formatDuration } from "./stats.js";
 import { agentRuns, getRun, listRetries, listRuns, listSubstitutions, listUsage, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
+import { confirmationLines, confirmationTasks } from "./tasks.js";
 import { padDisplay, readJsonFile } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
@@ -118,6 +119,19 @@ async function resolveCycle(flag?: string): Promise<string[]> {
 
 /** status 任務清單中，進行中任務的標記 */
 const TASK_PHASE_MARK: Record<FlowRun["taskPhase"], string> = { tests: "🧪", code: "🛠️ ", review: "👀", verify: "🔍", fix: "🩹" };
+
+/** 這個 run 需要人眼確認的任務。確認清單已寫出就用它；否則從計畫與實作清單蒐集 */
+function loadConfirmationTasks(id: string): ReturnType<typeof confirmationTasks> {
+  const savedPath = join(flowDir(id), "confirmations.json");
+  const saved = existsSync(savedPath) ? readJsonFile(savedPath, OrderedTaskList) : undefined;
+  const ordered = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList);
+  const planned = readJsonFile(join(flowDir(id), "tasks.json"), OrderedTaskList);
+  return confirmationTasks(
+    saved ? (saved.ok ? saved.data : []) : undefined,
+    ordered.ok ? ordered.data : [],
+    planned.ok ? planned.data : [],
+  );
+}
 
 const program = new Command()
   .name("agentflowctl")
@@ -293,19 +307,25 @@ program
       }
     }
     const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList);
-    if (tasks.ok && tasks.data.length) {
+    if (tasks.ok && tasks.data.some((t) => t.kind !== "confirm")) {
       console.log("\n任務");
       tasks.data.forEach((t, i) => {
+        if (t.kind === "confirm") return;
         const active = i === run.taskIndex && run.stage === "implement";
         const mark = i < run.taskIndex ? "✅" : active ? TASK_PHASE_MARK[run.taskPhase] : "⬜";
         console.log(`  ${mark} ${t.id} ${t.title}`);
       });
     }
-    const confirm = readJsonFile(join(flowDir(id), "confirmations.json"), OrderedTaskList);
-    if (confirm.ok && confirm.data.length) {
-      console.log("\n待你確認（不進實作）");
-      for (const t of confirm.data) console.log(`  ${t.id} ${t.title}`);
-    }
+    const confirm = loadConfirmationTasks(id);
+    if (confirm.length) console.log(`\n${confirmationLines(confirm).join("\n")}`);
+  });
+
+program
+  .command("confirmations <id>")
+  .description("只列出這個 run 需要人眼確認的任務")
+  .action((id: string) => {
+    mustGetRun(id);
+    console.log(confirmationLines(loadConfirmationTasks(id)).join("\n"));
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────

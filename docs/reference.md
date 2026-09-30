@@ -103,7 +103,8 @@ agentflowctl run --req "..." --manual-plan   # 計畫通過 AI 審查後，仍�
 agentflowctl run --req "..." --stop-after plan   # 完成計畫審查後暫停，檢視產出再 resume
 
 agentflowctl approve f-xxxx        # 搭配 --manual-plan
-agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、各 agent 用量、代打紀錄、重試紀錄
+agentflowctl status f-xxxx         # 階段、上一步結果、未結交接事項、下一步指令、任務進度、待你確認、各 agent 用量、代打紀錄、重試紀錄
+agentflowctl confirmations f-xxxx  # 只列出需要人眼確認的任務
 agentflowctl insights              # 所有 run 的結果、失敗原因、用量、模型×步驟、步驟失敗、重試原因與建議
 agentflowctl list
 agentflowctl logs f-xxxx           # 列出每一份 log 的編號、結果、階段、步驟、agent
@@ -126,7 +127,7 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 | `--stop-after <階段>` | 完成 `spec`、`plan`、`implement`、`verify` 或 `review` 後進入 `paused`，用 `resume` 接續；`pr` 照常完成。與 `--manual-plan` 互斥，`resume` 不能更改停點 |
 | `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可在 `flow.config.json` 設 `"verbose": true` |
 
-`status` 會列出任務。進行中的任務會標出目前的步驟：🧪 寫測試、🛠️ 寫實作、👀 任務審查、🔍 任務驗證、🩹 任務修正。
+`status` 會列出任務，並把需要人眼確認的項目放在另一個「待你確認」區塊。進行中的實作任務會標出目前的步驟：🧪 寫測試、🛠️ 寫實作、👀 任務審查、🔍 任務驗證、🩹 任務修正。`confirmations <id>` 只印「待你確認」，沒有時會說明沒有。
 
 ### 清除 worktree
 
@@ -362,7 +363,7 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 
 ### 需要人確認的任務
 
-任務可以標 `"kind": "confirm"`（沒寫視為要實作）。這類事項程式無法用檔案或指令判定，例如要人眼看過的結果。計畫定案時會從 `tasks.ordered.json` 拿掉，寫進 `.flow/confirmations.json`。實作不會做到它們，run 也不會因此停下。`status <id>` 在任務清單下面另列「待你確認」。若進行中的舊清單裡還留著這種任務，執行到它時同樣搬過去，然後繼續下一個實作任務。
+任務可以標 `"kind": "confirm"`（沒寫視為要實作）。這類事項程式無法用檔案或指令判定，例如要人眼看過的結果。計畫定案時會從 `tasks.ordered.json` 拿掉，寫進 `.flow/confirmations.json`。實作不會做到它們，run 也不會因此停下。`status <id>` 在「任務」區塊之外另列「待你確認」。`confirmations <id>` 只列出這個區塊。若進行中的舊清單裡還留著這種任務，執行到它時同樣搬過去，然後繼續下一個實作任務。
 
 ### 用指令管理 agent
 
