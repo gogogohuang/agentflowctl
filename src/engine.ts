@@ -50,7 +50,7 @@ import {
   type PlanReviewRound,
   type PlanReviewState,
 } from "./planReview.js";
-import { orderTasks, taskAcceptance, validateTaskComplexity } from "./tasks.js";
+import { orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
@@ -342,6 +342,8 @@ function validatePlan(run: FlowRun): TaskItem[] | string {
   if (!tasks.ok) return tasks.error;
   const complexityError = validateTaskComplexity(tasks.data, run.modelMode ?? "balanced");
   if (complexityError) return complexityError;
+  const tddError = validateTddFlag(tasks.data);
+  if (tddError) return tddError;
   return orderTasks(tasks.data, new Set(ids));
 }
 
@@ -923,6 +925,11 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
   if (!acceptance.ok) throw new Error(acceptance.error);
   const acceptanceJson = JSON.stringify(taskAcceptance(task, acceptance.data), null, 2);
+  const tddError = validateTddFlag([task]);
+  if (tddError) {
+    info(run, `⚠️  ${tddError}`);
+    return { ...run, stage: "failed", failedStage: "implement", failureCategory: "error", failureReason: tddError };
+  }
   if (run.taskPhase === "review") return taskReviewStep(run, task, progress, taskJson, acceptanceJson);
   if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
   if (run.taskPhase === "fix") return taskFixStep(run, task, progress);
