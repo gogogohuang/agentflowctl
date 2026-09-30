@@ -98,10 +98,13 @@ export function confirmationTasks(saved: TaskItem[] | undefined, ordered: TaskIt
   return out;
 }
 
-/** 只列出待人確認的任務；沒有時回一句說明 */
-export function confirmationLines(tasks: TaskItem[]): string[] {
+/**
+ * 只列出待人確認的任務；沒有時回一句說明。
+ * draft 代表計畫還沒通過首次驗證，清單是從未經 validatePlan 檢查的草稿蒐集來的，可能有項目最終不會定案。
+ */
+export function confirmationLines(tasks: TaskItem[], draft = false): string[] {
   if (!tasks.length) return ["沒有需要人確認的任務"];
-  const lines = ["待你確認"];
+  const lines = [`待你確認（不進實作）${draft ? "（計畫尚未定案，以下為草稿）" : ""}`];
   for (const task of tasks) {
     lines.push(`  ${task.id} ${task.title}`);
     lines.push(`    ${task.description}`);

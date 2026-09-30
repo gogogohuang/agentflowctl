@@ -98,10 +98,17 @@ describe("待人確認的任務", () => {
 
   it("列印時只含待確認任務，沒有時說明沒有", () => {
     const lines = confirmationLines([confirm]).join("\n");
-    expect(lines).toContain("待你確認");
+    expect(lines).toContain("待你確認（不進實作）");
     expect(lines).toContain("T-18 核對畫面");
     expect(lines).toContain("人眼看過首頁");
     expect(lines).toContain("驗收：AC-32");
     expect(confirmationLines([])).toEqual(["沒有需要人確認的任務"]);
+  });
+
+  it("draft 為 true 時標示計畫尚未定案", () => {
+    const lines = confirmationLines([confirm], true).join("\n");
+    expect(lines).toContain("待你確認（不進實作）");
+    expect(lines).toContain("計畫尚未定案");
+    expect(confirmationLines([confirm], false).join("\n")).not.toContain("計畫尚未定案");
   });
 });
