@@ -42,3 +42,10 @@ CI（`.github/workflows/ci.yml`）在 ubuntu／macos × Node 22／24 跑 typeche
 - 各家 CLI 的參數與事件格式變動很快。改 adapter 時，要在 `agents/adapters.test.ts` 用實際的 JSON 行補測試。
 - 新增 run 狀態欄位要改 `schemas.ts` 的 `FlowRun`。新欄位要設成 optional，進行中 run 的舊 `state.json` 才讀得進來。
 - 關卡判斷要以程式能檢查的事實為準（檔案、diff、測試結果），不要改成依賴 agent 回覆的內容。
+
+<!-- devlog-tracker:rules:begin -->
+## devlog-tracker 沉澱的規範
+
+- 新增的數量上限或格式檢查放在程式邏輯（如 `orderTasks`），不放進 zod schema，否則進行中 run 的舊 `.flow/` 檔讀不進來。
+- PR 描述要如實寫出與舊版不同的行為、既有測試的調整、未做的手動演練與延後項目；合併 PR 由使用者決定，不自行 merge。
+<!-- devlog-tracker:rules:end -->
