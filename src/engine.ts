@@ -50,7 +50,7 @@ import {
   type PlanReviewRound,
   type PlanReviewState,
 } from "./planReview.js";
-import { orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { descriptionWaivesRed, orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
@@ -276,6 +276,28 @@ function hasTestFramework(): boolean {
 /** 這個任務要不要走紅綠燈：沒有測試框架一律不走，其餘依 planner 標記（沒標視為要走） */
 function taskUsesTdd(task: TaskItem, framework: boolean): boolean {
   return framework && task.tdd !== false;
+}
+
+/** 已定案的任務寫明不要求紅燈：仍寫測試，但通過也算完成紅燈階段。 */
+function testsRedGuidance(testCmd: string, waiveRed: boolean): { roleGoal: string; redGuidance: string; verifyNote: string } {
+  if (!waiveRed) {
+    return {
+      roleGoal: "你的測試要精準描述任務要新增的行為，並且在功能實作前確實失敗；之後會由另一位工程師實作到通過，而且對方不能修改你的測試。",
+      redGuidance: [
+        "3. 測試必須驗證這個任務要新增的行為，並且因為功能尚未實作而**失敗**。",
+        `4. 可以先執行本任務相關的測試，確認失敗原因是斷言或找不到尚未實作的模組，而不是語法錯誤或測試本身寫錯。外部流程會再執行 \`${testCmd}\` 驗證紅燈，不需要自行重跑全套測試。`,
+      ].join("\n"),
+      verifyNote: "驗證測試是否失敗",
+    };
+  }
+  return {
+    roleGoal: "這個任務不要求紅燈。請直接寫出鎖定既有行為的測試；測試一開始就通過是預期結果，不要停下來，也不要為了製造失敗而改產品程式。",
+    redGuidance: [
+      "3. 這個任務的描述已寫明不要求紅燈。請寫出鎖定既有行為的測試；測試一開始就通過是預期結果，不要為了製造失敗而改產品程式，也不要停下來不寫。",
+      `4. 可以先執行本任務相關的測試，確認它們能跑完。外部流程會再執行 \`${testCmd}\`，通過即可，不需要自行重跑全套測試。`,
+    ].join("\n"),
+    verifyNote: "確認測試能跑完。這個任務不要求測試失敗",
+  };
 }
 
 function loadOrderedTasks(run: FlowRun): TaskItem[] {
@@ -925,11 +947,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
   if (!acceptance.ok) throw new Error(acceptance.error);
   const acceptanceJson = JSON.stringify(taskAcceptance(task, acceptance.data), null, 2);
-  const tddError = validateTddFlag([task]);
-  if (tddError) {
-    info(run, `⚠️  ${tddError}`);
-    return { ...run, stage: "failed", failedStage: "implement", failureCategory: "error", failureReason: tddError };
-  }
+  const waiveRed = task.tdd !== false && descriptionWaivesRed(task.description);
   if (run.taskPhase === "review") return taskReviewStep(run, task, progress, taskJson, acceptanceJson);
   if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
   if (run.taskPhase === "fix") return taskFixStep(run, task, progress);
@@ -947,11 +965,14 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (run.taskPhase === "tests") {
     const key = `${task.id}:tests`;
     info(run, `🧪 [${progress}] 撰寫測試（${agents.tests}）`);
+    if (waiveRed && existsSync(flowFile(run, "feedback.md")) && readFileSync(flowFile(run, "feedback.md"), "utf8").includes("請撰寫會因功能尚未實作而失敗的測試")) {
+      rmSync(flowFile(run, "feedback.md"));
+    }
     const before = await headCommit(repo);
     const snap = snapshotPlan(run, LOCKED_FILES);
     const outcome = await agentStep(
       run, agents.tests, `${task.id}-tests`,
-      renderPrompt("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd }),
+      renderPrompt("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd, ...testsRedGuidance(testCmd, waiveRed) }),
       { kind: "write", reset: async () => { await resetTo(repo, before); restorePlan(run, snap); } },
     );
     const { r, agent: testsAuthor } = outcome;
@@ -972,7 +993,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       return retry(run, key, `沒有新增或修改任何符合 /${cfg.testPattern}/ 的測試檔。`, "implement", "tests_not_written");
     }
     const red = await runCommand(target(run, `${task.id}-red`, CMD_AGENT), testCmd);
-    if (red.ok) {
+    if (red.ok && !waiveRed) {
       await resetTo(repo, before);
       return retry(run, key, "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。", "implement", "tests_not_red");
     }
@@ -981,8 +1002,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, handoffError, "implement", "handoff_invalid");
     }
-    writeFileSync(flowFile(run, "red-output.txt"), red.output);
-    info(run, `🔴 [${progress}] 測試如預期失敗`);
+    writeFileSync(
+      flowFile(run, "red-output.txt"),
+      waiveRed && red.ok
+        ? "此任務不要求紅燈，測試在既有實作下已經通過。不要為了製造失敗而修改產品程式；若沒有其他必須的實作，保持現況即可。"
+        : red.output,
+    );
+    info(run, waiveRed && red.ok ? `✅ [${progress}] 測試已寫好（此任務不要求紅燈）` : `🔴 [${progress}] 測試如預期失敗`);
     return { ...succeed(run, key, "implement"), taskPhase: "code", taskBase: before, testsCommit: commit, lastTestsAuthor: testsAuthor };
   }
 

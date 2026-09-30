@@ -25,6 +25,9 @@ const vars = {
   neighbors: "（沒有跨群的直接相依）",
   evidence: "",
   replies: "",
+  roleGoal: "你的測試要精準描述任務要新增的行為，並且在功能實作前確實失敗。",
+  redGuidance: "3. 測試必須因為功能尚未實作而失敗。",
+  verifyNote: "驗證測試是否失敗",
 };
 
 describe("prompts", () => {

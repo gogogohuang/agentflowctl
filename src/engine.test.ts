@@ -391,14 +391,38 @@ describe("略過 TDD", () => {
     expect(existsSync(join(flowDir(run.id), "prompt-direct.txt"))).toBe(true);
   });
 
-  it("描述寫明不要求紅燈但 tdd 不是 false 時，不呼叫 agent 並失敗", async () => {
-    const run = await implementRun("f-impl-tdd-conflict", [{ id: "AC-2", description: "匯出 answer 為 42" }], {
-      description: "特徵化測試，不要求紅燈", tdd: true, maxAgentRuns: 5,
+  it("描述寫明不要求紅燈時仍撰寫測試，一開始就通過也進入綠燈", async () => {
+    const id = "f-waive-red-writes-tests";
+    const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
+      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    writeFileSync(join(wt, "feature.mjs"), "export const answer = 42;\n");
+    await commitAll(wt, "feat: 既有實作");
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
+    writeFileSync(join(flowDir(id), "feedback.md"), "測試在功能尚未實作前就全部通過。請撰寫會因功能尚未實作而失敗的測試。\n");
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "特徵化", description: "特徵化測試，不要求紅燈", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+      autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
     });
-    expect(run.stage).toBe("failed");
-    expect(run.failedStage).toBe("implement");
-    expect(run.failureReason).toContain("tdd");
-    expect(agentRuns(run.id)).toBe(0);
+    expect(run.taskPhase).toBe("code");
+    expect(run.failureReason ?? "").not.toMatch(/tdd 不是 false/);
+    expect(agentRuns(id)).toBe(1);
+    expect(existsSync(join(wt, "feature.test.mjs"))).toBe(true);
+    expect(listRetries(id).map((item) => item.category)).not.toContain("tests_not_red");
+    const prompt = readFileSync(join(flowDir(id), "prompt-tests.txt"), "utf8");
+    expect(prompt).toContain("一開始就通過");
+    expect(prompt).not.toContain("因為功能尚未實作而**失敗**");
+    expect(existsSync(join(flowDir(id), "feedback-tests.txt"))).toBe(false);
   });
 
   it("有測試框架且沒標 tdd:false 時仍走紅綠燈", async () => {

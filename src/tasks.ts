@@ -3,12 +3,16 @@ import type { AcceptanceItem, TaskItem } from "./schemas.js";
 /** 一個任務最多做兩件事：對應的驗收條件超過這個數量就要再拆 */
 export const MAX_TASK_ACCEPTANCE = 2;
 
-/** 描述已明確放棄紅燈。沒寫 tdd:false 時，實作階段仍會要求測試先失敗。 */
+/** 描述已明確放棄紅燈。新計畫必須把 tdd 標成 false；已定案的任務則仍寫測試，但不要求先失敗。 */
 const RED_WAIVED = /不要求紅燈|不必紅燈|不需紅燈|無需紅燈|不用紅燈|略過紅燈|略過紅綠燈/;
+
+export function descriptionWaivesRed(description: string): boolean {
+  return RED_WAIVED.test(description);
+}
 
 /** 描述與 tdd 矛盾時退回計畫：寫明不要求紅燈就必須標 false。 */
 export function validateTddFlag(tasks: TaskItem[]): string | undefined {
-  const conflicts = tasks.filter((task) => task.tdd !== false && RED_WAIVED.test(task.description));
+  const conflicts = tasks.filter((task) => task.tdd !== false && descriptionWaivesRed(task.description));
   if (!conflicts.length) return undefined;
   return conflicts
     .map((task) => `${task.id} 的描述寫明不要求紅燈，但 tdd 不是 false。這種任務在實作前就會通過，請改成 "tdd": false。`)
