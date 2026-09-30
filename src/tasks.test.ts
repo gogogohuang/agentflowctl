@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TaskItem } from "./schemas.js";
-import { orderTasks, taskAcceptance, validateTaskComplexity } from "./tasks.js";
+import { orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 
 const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
   TaskItem.parse({ id, title: id, description: id, dependsOn, acceptance });
@@ -68,5 +68,16 @@ describe("TaskItem.tdd", () => {
     expect(TaskItem.parse(base).tdd).toBeUndefined();
     expect(TaskItem.parse({ ...base, tdd: false }).tdd).toBe(false);
     expect(TaskItem.safeParse({ ...base, tdd: "no" }).success).toBe(false);
+  });
+
+  it("描述寫明不要求紅燈時，tdd 必須是 false", () => {
+    const description = "擴充 scripts/check-bundle-size.test.ts。此為特徵化測試，可能一開始即通過，不要求紅燈。";
+    const conflict = TaskItem.parse({ id: "T-12", title: "空 chunks", description, acceptance: ["AC-1"], tdd: true });
+    const omitted = TaskItem.parse({ id: "T-12", title: "空 chunks", description, acceptance: ["AC-1"] });
+    const waived = TaskItem.parse({ id: "T-12", title: "空 chunks", description, acceptance: ["AC-1"], tdd: false });
+    expect(validateTddFlag([conflict])).toContain("T-12");
+    expect(validateTddFlag([omitted])).toContain("tdd");
+    expect(validateTddFlag([waived])).toBeUndefined();
+    expect(validateTddFlag([task("T-1")])).toBeUndefined();
   });
 });

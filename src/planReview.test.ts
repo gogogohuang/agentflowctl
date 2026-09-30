@@ -311,6 +311,13 @@ describe("摘錄與審查回應", () => {
     expect(print).not.toContain("AC-9");
     expect(print).not.toContain("別的任務");
   });
+
+  it("指紋含 tdd，只改標記會讓該任務重審", () => {
+    const item = task({ id: "T-1", acceptance: ["AC-1"], description: "改 src/a.ts" });
+    const plan = "## T-1 難度\n低";
+    const acceptance = ac(["AC-1"]);
+    expect(taskFingerprint(item, acceptance, plan)).not.toBe(taskFingerprint({ ...item, tdd: false }, acceptance, plan));
+  });
 });
 
 describe("審查狀態與本輪進度", () => {

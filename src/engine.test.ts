@@ -309,7 +309,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 async function implementRun(
   id: string,
   acceptance: unknown,
-  { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs" }: { maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null } = {},
+  { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs", description = "匯出 answer" }: { maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null; description?: string } = {},
 ) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
@@ -320,7 +320,7 @@ async function implementRun(
   mkdirSync(flowDir(id), { recursive: true });
   writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
-    { id: "T-1", title: "回傳答案", description: "匯出 answer", dependsOn: [], acceptance: ["AC-2"], ...(tdd === undefined ? {} : { tdd }) },
+    { id: "T-1", title: "回傳答案", description, dependsOn: [], acceptance: ["AC-2"], ...(tdd === undefined ? {} : { tdd }) },
   ]));
   if (tamper) writeFileSync(join(flowDir(id), `tamper-${tamper}.txt`), "");
   const now = new Date().toISOString();
@@ -389,6 +389,16 @@ describe("略過 TDD", () => {
     expect(agentRuns(run.id)).toBe(1);
     expect(existsSync(join(worktreeDir(run.id), "feature.test.mjs"))).toBe(false);
     expect(existsSync(join(flowDir(run.id), "prompt-direct.txt"))).toBe(true);
+  });
+
+  it("描述寫明不要求紅燈但 tdd 不是 false 時，不呼叫 agent 並失敗", async () => {
+    const run = await implementRun("f-impl-tdd-conflict", [{ id: "AC-2", description: "匯出 answer 為 42" }], {
+      description: "特徵化測試，不要求紅燈", tdd: true, maxAgentRuns: 5,
+    });
+    expect(run.stage).toBe("failed");
+    expect(run.failedStage).toBe("implement");
+    expect(run.failureReason).toContain("tdd");
+    expect(agentRuns(run.id)).toBe(0);
   });
 
   it("有測試框架且沒標 tdd:false 時仍走紅綠燈", async () => {
