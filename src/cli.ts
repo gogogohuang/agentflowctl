@@ -11,7 +11,7 @@ import { addWorktree, git } from "./git.js";
 import { cleanableRuns, cleanRun } from "./cleanup.js";
 import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
-import { confirmationsPath, flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
+import { confirmationsPath, flowDir, laneId, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, OrderedTaskList, StopAfterStage, type FlowRun, type StopAfterStage as StopAfterStageType, type TaskItem } from "./schemas.js";
 import { computeInsights, failureLabel, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
@@ -161,7 +161,7 @@ program
   .option("--req <text>", "需求描述")
   .option("--req-file <file>", "從檔案讀取需求")
   .option("--base <branch>", "基底分支（預設為目前的分支）")
-  .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns）")
+  .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設：計畫定案前取 maxAgentRuns，定案後改為已執行次數加上任務數 × agentRunsPerTask；指定後不再改算）")
   .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 flow.config.json 的 maxAttempts，未設定為 5）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
   .option("--stop-after <stage>", "完成公開階段後暫停：spec、plan、implement、verify、review 或 pr")
@@ -196,6 +196,7 @@ program
       stopAfter,
       autopilot: !opts.manualPlan,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
+      maxAgentRunsExplicit: opts.maxAgentRuns ? true : undefined,
       maxAttempts: opts.maxAttempts ? positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) : undefined,
       cycle,
       attempts: {},
@@ -229,7 +230,7 @@ program
   .action(async (id: string, opts: { maxAgentRuns?: string; maxAttempts?: string }) => {
     let run = mustGetRun(id);
     if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
-    if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns) };
+    if (opts.maxAgentRuns) run = { ...run, maxAgentRuns: Number(opts.maxAgentRuns), maxAgentRunsExplicit: true };
     if (opts.maxAttempts) run = { ...run, maxAttempts: positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) };
     if (run.stage === "paused") {
       run = { ...run, stage: run.pausedStage ?? "spec", pausedStage: undefined, pauseReason: undefined };
@@ -319,11 +320,15 @@ program
     const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList);
     if (tasks.ok && tasks.data.some((t) => t.kind !== "confirm")) {
       console.log("\n任務");
+      const merged = new Set(run.doneTasks ?? []);
       tasks.data.forEach((t, i) => {
         if (t.kind === "confirm") return;
-        const active = i === run.taskIndex && run.stage === "implement";
-        const mark = i < run.taskIndex ? "✅" : active ? TASK_PHASE_MARK[run.taskPhase] : "⬜";
-        console.log(`  ${mark} ${t.id} ${t.title}`);
+        // 平行執行中的任務各有自己的車道狀態；順序執行時看 taskIndex
+        const lane = getRun(laneId(run.id, t.id));
+        const active = lane ? lane.stage === "implement" : i === run.taskIndex && run.stage === "implement";
+        const phase = lane?.taskPhase ?? run.taskPhase;
+        const mark = i < run.taskIndex || merged.has(t.id) ? "✅" : active ? TASK_PHASE_MARK[phase] : lane?.stage === "paused" ? "⏸️ " : "⬜";
+        console.log(`  ${mark} ${t.id} ${t.title}${lane && !merged.has(t.id) ? "（平行）" : ""}`);
       });
     }
     const confirm = loadConfirmationTasks(id, tasks);
@@ -585,10 +590,12 @@ async function doctor(): Promise<void> {
   } catch (e) {
     console.log(`\n${(e as Error).message}`);
   }
-  console.log(`\n單一 run 的 agent 執行上限：${cfg.maxAgentRuns} 次`);
+  console.log(`\n單一 run 的 agent 執行上限：計畫定案前 ${cfg.maxAgentRuns} 次；定案後為已執行次數加上任務數 × ${cfg.agentRunsPerTask}`);
   console.log(`修正策略：${cfg.fixStrategy}　測試與實作分開：${cfg.tddSplit ? "是" : "否"}`);
   console.log(`程式碼審查人數：${cfg.reviewQuorum}　計畫審查人數：${cfg.planReviewQuorum}　計畫仲裁：${cfg.planArbiter ? "開啟" : "關閉"}`);
   console.log(`同一輪審查者同時執行上限：${cfg.reviewConcurrency ?? "不限"}`);
+  console.log(`同一次驗證的檢查同時執行上限：${cfg.checksConcurrency ?? "不限"}`);
+  console.log(`沒有相依關係的任務同時執行上限：${cfg.taskConcurrency ?? "不限"}`);
   const layers = cfg.planReviewLayers;
   console.log(`計畫分層審查：${layers.enabled ? `任務達 ${layers.minTasks} 個時開啟，最多 ${layers.maxGroups} 群，每群平均至少 ${layers.tasksPerGroup} 個任務` : "關閉"}`);
 }

@@ -26,7 +26,14 @@ describe("log 檔名", () => {
   });
 
   it("不存在的目錄從 001 開始", () => {
-    expect(basename(nextLogFile("/nonexistent/agentflowctl", "spec", "spec", "codex"))).toBe("001-spec-spec-codex.log");
+    const dir = join(mkdtempSync(join(tmpdir(), "agentflowctl-logs-")), "not-yet");
+    expect(basename(nextLogFile(dir, "spec", "spec", "codex"))).toBe("001-spec-spec-codex.log");
+  });
+
+  it("取號時就占住檔案，連續（平行）取號不會拿到同一個序號", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "agentflowctl-logs-")), "logs");
+    const names = [nextLogFile(dir, "implement", "T-1-tests", "a"), nextLogFile(dir, "implement", "T-2-tests", "b")].map((f) => basename(f));
+    expect(names).toEqual(["001-implement-T-1-tests-a.log", "002-implement-T-2-tests-b.log"]);
   });
 });
 

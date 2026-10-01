@@ -55,6 +55,22 @@ export async function resetTo(repo: string, commit: string): Promise<void> {
   await git(repo, "clean", "-fd");
 }
 
+/** 把分支併進目前所在的分支（保留合併 commit）；衝突時還原並回傳衝突的檔案，不留下半套合併 */
+export async function mergeBranch(repo: string, branch: string, message: string): Promise<{ ok: true; commit: string } | { ok: false; conflicts: string[] }> {
+  const r = await exec("git", [...SAFE, ...AUTHOR, "-C", repo, "merge", "--no-ff", "-m", message, branch]);
+  if (r.code === 0) return { ok: true, commit: await headCommit(repo) };
+  const conflicts = (await git(repo, "diff", "--name-only", "--diff-filter=U").catch(() => "")).split("\n").filter(Boolean);
+  await exec("git", [...SAFE, "-C", repo, "merge", "--abort"]);
+  if (!conflicts.length) throw new Error(`git merge ${branch} 失敗：${(r.stderr || r.stdout).trim()}`);
+  return { ok: false, conflicts };
+}
+
+/** 分支是否已經在目前的歷史裡（已合併過） */
+export async function isMerged(repo: string, branch: string): Promise<boolean> {
+  const r = await exec("git", [...SAFE, "-C", repo, "merge-base", "--is-ancestor", branch, "HEAD"]);
+  return r.code === 0;
+}
+
 export const discardChanges = (repo: string) => resetTo(repo, "HEAD");
 
 export async function changedFiles(repo: string, from: string, to: string, filter?: "D"): Promise<string[]> {

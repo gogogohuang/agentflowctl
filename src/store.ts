@@ -1,12 +1,12 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stageOfStep } from "./modelSelection.js";
-import { agentflowctlDir, runDir } from "./paths.js";
+import { agentflowctlDir, runDir, sharedRunDir } from "./paths.js";
 import { FlowRun } from "./schemas.js";
 
 const statePath = (id: string) => join(runDir(id), "state.json");
 /** 檔名沿用舊版的 costs.jsonl，進行中的 run 升級後執行次數不會歸零 */
-const usagePath = (id: string) => join(runDir(id), "costs.jsonl");
+const usagePath = (id: string) => join(sharedRunDir(id), "costs.jsonl");
 
 /** 先寫暫存檔再 rename，確保 state.json 不會因中斷而只寫一半 */
 function writeAtomic(path: string, content: string): void {
@@ -54,7 +54,7 @@ export interface UsageEntry {
 }
 
 export function addUsage(id: string, entry: UsageEntry): void {
-  mkdirSync(runDir(id), { recursive: true });
+  mkdirSync(sharedRunDir(id), { recursive: true });
   appendFileSync(usagePath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 
@@ -151,10 +151,10 @@ export interface Substitution {
   note?: string;
 }
 
-const subPath = (id: string) => join(runDir(id), "substitutions.jsonl");
+const subPath = (id: string) => join(sharedRunDir(id), "substitutions.jsonl");
 
 export function addSubstitution(id: string, s: Substitution): void {
-  mkdirSync(runDir(id), { recursive: true });
+  mkdirSync(sharedRunDir(id), { recursive: true });
   appendFileSync(subPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...s })}\n`);
 }
 
@@ -165,7 +165,7 @@ export function listSubstitutions(id: string): (Substitution & { at: string })[]
 export const RetryCategories = [
   "agent_error", "missing_artifact", "format_invalid", "handoff_invalid", "open_handoff",
   "review_changes", "arbitration_revise", "plan_tampered", "tests_not_written", "code_not_written", "tests_not_red", "tests_modified",
-  "tests_not_green", "tests_deleted", "out_of_scope", "checks_failed",
+  "tests_not_green", "tests_deleted", "out_of_scope", "checks_failed", "merge_conflict",
 ] as const;
 export type RetryCategory = (typeof RetryCategories)[number];
 
@@ -178,7 +178,7 @@ export interface RetryEntry {
   final: boolean;
 }
 
-const retryPath = (id: string) => join(runDir(id), "retries.jsonl");
+const retryPath = (id: string) => join(sharedRunDir(id), "retries.jsonl");
 
 /**
  * savedAt 是目前 state.json 的 updatedAt。上一筆同 key、同 attempt 的紀錄若晚於它，
@@ -189,7 +189,7 @@ export function addRetry(id: string, entry: RetryEntry, savedAt?: string): void 
     const last = listRetries(id).filter((r) => r.key === entry.key).at(-1);
     if (last && last.attempt === entry.attempt && last.at > savedAt) return;
   }
-  mkdirSync(runDir(id), { recursive: true });
+  mkdirSync(sharedRunDir(id), { recursive: true });
   appendFileSync(retryPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 

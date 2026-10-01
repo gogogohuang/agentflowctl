@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { flowDir, handoffPath, runDir } from "./paths.js";
+import { flowDir, handoffPath, sharedRunDir } from "./paths.js";
 import { HandoffLedger, HandoffResponse, HandoffSource, type HandoffIssue } from "./schemas.js";
 import { readJsonFile, type JsonResult } from "./util.js";
 
 /** agent 寫交接回覆的位置；平行審查者用自己臨時 worktree 的 .flow/ */
 export const responsePath = (id: string, flow = flowDir(id)) => join(flow, "handoff-response.json");
-const receiptsDir = (id: string) => join(runDir(id), "handoff-receipts");
+const receiptsDir = (id: string) => join(sharedRunDir(id), "handoff-receipts");
 const keyHash = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 16);
 const receiptPath = (id: string, key: string) => join(receiptsDir(id), `${keyHash(key)}.json`);
 const Receipt = z.object({ callKey: z.string(), source: HandoffSource, response: HandoffResponse, role: z.enum(["writer", "reviewer"]) });

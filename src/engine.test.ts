@@ -31,7 +31,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({
 const { addWorktree, commitAll, git } = await import("./git.js");
 const { advance, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
-const { confirmationsPath, flowDir, logDir, planReviewStatePath, worktreeDir } = await import("./paths.js");
+const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
 const { agentRuns, listRetries, listSubstitutions, listUsage } = await import("./store.js");
 
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
@@ -494,7 +494,7 @@ describe("略過 TDD", () => {
     const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }, { id: "AC-3", description: "後面任務" }];
     writeFileSync(join(root, "flow.config.json"), JSON.stringify({
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
-      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [], taskConcurrency: 1,
     }));
     const wt = worktreeDir(id);
     await addWorktree(root, wt, "main", `flow/${id}`);
@@ -773,7 +773,7 @@ async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce =
   failReviewOnce?: boolean; failFixOnce?: boolean; stopAfter?: "spec" | "plan" | "implement" | "verify" | "review" | "pr" } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", worker] }])),
-    cycle: ["a", "b"], install: "true", test: "for f in T-*.test.mjs; do node $f || exit 1; done",
+    cycle: ["a", "b"], install: "true", taskConcurrency: 1, test: "for f in T-*.test.mjs; do node $f || exit 1; done",
     checks: [{ name: "check", cmd: check }],
   }));
   await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
@@ -795,6 +795,175 @@ async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce =
 }
 
 const steps = (id: string) => readFileSync(join(flowDir(id), "steps.txt"), "utf8").trim().split("\n");
+
+// 平行任務：每個沒有相依關係的任務各在自己的 worktree 跑完整個任務流程，完成後合併回 run 的分支
+const laneWorker = join(root, "lane-worker.mjs");
+const laneLog = join(root, "lane-log.txt");
+const laneBarrier = join(root, "lane-barrier");
+writeFileSync(laneWorker, `import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+const id = prompt.match(/"id": "(T-\\d+)"/)?.[1];
+const role = prompt.includes("你是任務審查者") ? "task-review" : prompt.includes("你是程式碼審查者") ? "review"
+  : prompt.includes("你是除錯工程師") ? "fix" : prompt.includes("<red_output>") ? "code" : "tests";
+const cfg = existsSync(${JSON.stringify(join(root, "lane-config.json"))}) ? JSON.parse(readFileSync(${JSON.stringify(join(root, "lane-config.json"))}, "utf8")) : {};
+appendFileSync(${JSON.stringify(laneLog)}, role + ":" + id + "\\n");
+if (role === "tests" && cfg.barrier?.includes(id)) {
+  // 要同時跑的任務都開始了才繼續：依序執行的話會一直等到逾時而失敗
+  mkdirSync(${JSON.stringify(laneBarrier)}, { recursive: true });
+  writeFileSync(${JSON.stringify(laneBarrier)} + "/" + id, "");
+  const t = Date.now();
+  while (!cfg.barrier.every((x) => existsSync(${JSON.stringify(laneBarrier)} + "/" + x))) {
+    if (Date.now() - t > 8000) process.exit(1);
+  }
+}
+if (cfg.quota?.includes(id) && role === "tests") {
+  console.error("You've hit your usage limit. Try again later.");
+  process.exit(1);
+}
+if (cfg.alwaysFail?.includes(id) && (role === "tests" || role === "code")) process.exit(1);
+if (role === "tests") writeFileSync(id + ".test.mjs", "import { ok } from \\"./" + id + ".mjs\\";\\nif (!ok) process.exit(1);\\n");
+if (role === "code") {
+  writeFileSync(id + ".mjs", "export const ok = true;\\n");
+  if (cfg.shared?.includes(id)) appendFileSync("shared.txt", id + "\\n");
+}
+if (role === "task-review" || role === "review") writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+
+async function laneFlowRun(id: string, deps: Record<string, string[]>, opts: { config?: object; maxAgentRuns?: number; taskConcurrency?: number; maxAttempts?: number } = {}) {
+  rmSync(laneBarrier, { recursive: true, force: true });
+  rmSync(laneLog, { force: true });
+  writeFileSync(join(root, "lane-config.json"), JSON.stringify(opts.config ?? {}));
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", laneWorker] }])),
+    cycle: ["a", "b"], install: "true", test: "for f in T-*.test.mjs; do node $f || exit 1; done",
+    checks: [], ...(opts.taskConcurrency ? { taskConcurrency: opts.taskConcurrency } : {}),
+  }));
+  await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+  mkdirSync(flowDir(id), { recursive: true });
+  const ids = Object.keys(deps);
+  writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(ids.map((t, i) => ({ id: `AC-${i + 1}`, description: `${t} 完成` }))));
+  writeFileSync(join(flowDir(id), "spec.md"), "# 規格\n");
+  writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify(ids.map((t, i) => (
+    { id: t, title: `任務 ${t}`, description: `完成 ${t}`, dependsOn: deps[t], acceptance: [`AC-${i + 1}`] }
+  ))));
+  const now = new Date().toISOString();
+  return advance({
+    id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+    autopilot: true, maxAgentRuns: opts.maxAgentRuns ?? 60, maxAttempts: opts.maxAttempts, cycle: ["a", "b"], attempts: {},
+    taskIndex: 0, taskPhase: "tests", stopAfter: "implement", createdAt: now, updatedAt: now,
+  });
+}
+const laneSteps = () => readFileSync(laneLog, "utf8").trim().split("\n");
+
+describe("平行任務", () => {
+  it("沒有相依的任務同時跑，合併後才解鎖下游，最後都在 run 的分支上", async () => {
+    const id = "f-lanes";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [], "T-3": ["T-1", "T-2"] }, { config: { barrier: ["T-1", "T-2"] } });
+    expect(run.failureReason).toBeUndefined();
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("verify");
+    expect([...(run.doneTasks ?? [])].sort()).toEqual(["T-1", "T-2", "T-3"]);
+    expect(run.taskIndex).toBe(3);
+    const wt = worktreeDir(id);
+    for (const t of ["T-1", "T-2", "T-3"]) expect(existsSync(join(wt, `${t}.mjs`))).toBe(true);
+    const log = await git(wt, "log", "--format=%s");
+    expect(log).toContain("merge(T-1)");
+    expect(log).toContain("merge(T-2)");
+    // T-3 要等 T-1、T-2 都合併後才開始
+    const steps = laneSteps();
+    const firstT3 = steps.indexOf("tests:T-3");
+    expect(steps.indexOf("code:T-1")).toBeLessThan(firstT3);
+    expect(steps.indexOf("code:T-2")).toBeLessThan(firstT3);
+    // 合併後車道的 worktree 與分支都清掉；node_modules 之類的東西不會被 commit
+    expect(existsSync(worktreeDir(`${id}+T-1`))).toBe(false);
+    expect((await git(root, "branch", "--list", `flow/${id}+*`))).toBe("");
+    expect(agentRuns(id)).toBeGreaterThanOrEqual(9);
+  });
+
+  it("log 序號不重複，所有車道的 log 都記在 run 底下", async () => {
+    const id = "f-lanes-logs";
+    await laneFlowRun(id, { "T-1": [], "T-2": [] });
+    const names = readdirSync(logDir(id));
+    const seqs = names.map((n) => n.slice(0, 3));
+    expect(new Set(seqs).size).toBe(seqs.length);
+    expect(names.some((n) => n.includes("T-1-tests"))).toBe(true);
+    expect(names.some((n) => n.includes("T-2-tests"))).toBe(true);
+  });
+
+  it("taskConcurrency 為 1 時一個一個做，不建立車道", async () => {
+    const id = "f-lanes-off";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { taskConcurrency: 1 });
+    expect(run.stage).toBe("paused");
+    expect(run.doneTasks).toBeUndefined();
+    expect(existsSync(join(runDir(id), "lanes"))).toBe(false);
+    expect(laneSteps().filter((s) => s.startsWith("tests:"))).toEqual(["tests:T-1", "tests:T-2"]);
+  });
+
+  it("只有相依鏈時照舊一個一個做", async () => {
+    const id = "f-lanes-chain";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": ["T-1"] });
+    expect(run.stage).toBe("paused");
+    expect(run.doneTasks).toBeUndefined();
+    expect(existsSync(join(runDir(id), "lanes"))).toBe(false);
+  });
+
+  it("兩個任務改到同一個檔案而衝突時，後合併的從最新的分支重做", async () => {
+    const id = "f-lanes-conflict";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { config: { barrier: ["T-1", "T-2"], shared: ["T-1", "T-2"] } });
+    expect(run.failureReason).toBeUndefined();
+    expect([...(run.doneTasks ?? [])].sort()).toEqual(["T-1", "T-2"]);
+    expect(readFileSync(join(worktreeDir(id), "shared.txt"), "utf8").split("\n").filter(Boolean).sort()).toEqual(["T-1", "T-2"]);
+    expect(listRetries(id).some((r) => r.category === "merge_conflict")).toBe(true);
+  });
+
+  it("有車道失敗時 run 失敗並指出是哪個任務，已完成的任務仍合併", async () => {
+    const id = "f-lanes-fail";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { config: { alwaysFail: ["T-2"] }, maxAttempts: 3 });
+    expect(run.stage).toBe("failed");
+    expect(run.failureReason).toMatch(/^T-2：/);
+    expect(run.failureCategory).toBe("retry_limit");
+    expect(run.doneTasks).toEqual(["T-1"]);
+    expect(existsSync(join(worktreeDir(id), "T-1.mjs"))).toBe(true);
+  });
+
+  it("失敗後 resume：失敗的車道從頭重來，已合併的任務不再重做", async () => {
+    const id = "f-lanes-resume";
+    const failed = await laneFlowRun(id, { "T-1": [], "T-2": [], "T-3": ["T-1", "T-2"] }, { config: { alwaysFail: ["T-2"] }, maxAttempts: 3 });
+    expect(failed.stage).toBe("failed");
+    writeFileSync(join(root, "lane-config.json"), JSON.stringify({}));
+    rmSync(laneLog, { force: true });
+    const resumed = await advance({ ...failed, stage: failed.failedStage!, attempts: {}, failedStage: undefined, failureReason: undefined, failureCategory: undefined });
+    expect(resumed.failureReason).toBeUndefined();
+    expect([...(resumed.doneTasks ?? [])].sort()).toEqual(["T-1", "T-2", "T-3"]);
+    expect(laneSteps()).not.toContain("tests:T-1");
+    for (const t of ["T-1", "T-2", "T-3"]) expect(existsSync(join(worktreeDir(id), `${t}.mjs`))).toBe(true);
+  });
+
+  it("有車道額度用完時 run 暫停，resume 後接續，已合併的任務不重做", async () => {
+    const id = "f-lanes-quota";
+    const paused = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { config: { quota: ["T-2"] } });
+    expect(paused.stage).toBe("paused");
+    expect(paused.pausedStage).toBe("implement");
+    expect(paused.pauseReason).toContain("額度");
+    // 額度是 agent 層級的：用同一家 agent 的其他車道也無法繼續，所以不斷言 T-1 是否已經合併
+    const mergedBefore = new Set(paused.doneTasks ?? []);
+    writeFileSync(join(root, "lane-config.json"), JSON.stringify({}));
+    rmSync(laneLog, { force: true });
+    resetQuotaState();
+    const resumed = await advance({ ...paused, stage: paused.pausedStage!, pausedStage: undefined, pauseReason: undefined });
+    expect(resumed.failureReason).toBeUndefined();
+    expect([...(resumed.doneTasks ?? [])].sort()).toEqual(["T-1", "T-2"]);
+    for (const t of mergedBefore) expect(laneSteps()).not.toContain(`tests:${t}`);
+  });
+
+  it("agent 次數用完時失敗並標示 agent_budget", async () => {
+    const id = "f-lanes-budget";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { maxAgentRuns: 2, config: {} });
+    expect(run.stage).toBe("failed");
+    expect(run.failureCategory).toBe("agent_budget");
+  });
+});
 
 describe("計畫停點", () => {
   it("完成 plan 停點時已過計畫審查，暫停後 resume stage 指向 implement，不停在 plan_review", async () => {
@@ -829,6 +998,56 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
     expect(run.pausedStage).toBe("implement");
     expect(run.pauseReason).toContain("plan");
     expect(existsSync(join(flowDir(id), "tasks.ordered.json"))).toBe(true);
+  });
+
+  async function planSettledRun(id: string, extra: { maxAgentRuns: number; maxAgentRunsExplicit?: boolean }, config: object = {}) {
+    const script = join(root, `${id}.mjs`);
+    writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("plan-review.json")) {
+  writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
+} else {
+  writeFileSync(".flow/plan.md", "# 計畫\\n");
+  writeFileSync(".flow/tasks.json", JSON.stringify([1, 2, 3].map((n) => ({ id: "T-" + n, title: "任務", description: "完成", dependsOn: [], acceptance: ["AC-1"] }))));
+}
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+      cycle: ["a", "b"],
+      ...config,
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "spec.md"), "# 規格\n");
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "完成" }]));
+    const now = new Date().toISOString();
+    return advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan",
+      autopilot: true, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", stopAfter: "plan", createdAt: now, updatedAt: now, ...extra,
+    });
+  }
+
+  it("計畫定案後，agent 次數上限改為已執行次數加上任務數乘以 20", async () => {
+    const id = "f-budget-per-task";
+    const run = await planSettledRun(id, { maxAgentRuns: 10 });
+    expect(run.failureReason).toBeUndefined();
+    expect(run.stage).toBe("paused");
+    expect(run.maxAgentRuns).toBe(agentRuns(id) + 3 * 20);
+  });
+
+  it("agentRunsPerTask 可以調整每個任務的倍數", async () => {
+    const id = "f-budget-per-task-cfg";
+    const run = await planSettledRun(id, { maxAgentRuns: 10 }, { agentRunsPerTask: 5 });
+    expect(run.maxAgentRuns).toBe(agentRuns(id) + 3 * 5);
+  });
+
+  it("明確指定過上限（--max-agent-runs）就不改算", async () => {
+    const id = "f-budget-explicit";
+    const run = await planSettledRun(id, { maxAgentRuns: 10, maxAgentRunsExplicit: true });
+    expect(run.stage).toBe("paused");
+    expect(run.maxAgentRuns).toBe(10);
   });
 });
 
@@ -1053,7 +1272,7 @@ function planReviewRun(id: string, maxAgentRuns: number, agents = ["p1", "p2", "
   const now = new Date().toISOString();
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan_review",
-    autopilot: true, maxAgentRuns, cycle: agents, planWriter: agents[0], attempts,
+    autopilot: true, maxAgentRuns, maxAgentRunsExplicit: true, cycle: agents, planWriter: agents[0], attempts,
     taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
   });
 }
@@ -1578,13 +1797,47 @@ describe("lint 與型別檢查只在最後驗證", () => {
   it("最後驗證跑全部，lint 只收到整支分支改過的程式檔", async () => {
     const run = await checkRun("f-chk-final", { "src/a.ts": "export {};\n", "docs/readme.md": "# x\n", ".flow/x.ts": "x\n" });
     expect(await runChecks(run)).toBeUndefined();
-    expect(calls("f-chk-final")).toEqual(["typecheck:", "lint:src/a.ts", "test:"]);
+    expect(calls("f-chk-final").sort()).toEqual(["lint:src/a.ts", "test:", "typecheck:"]);
   });
 
   it("整支分支沒有可檢查的檔案時略過 lint", async () => {
     const run = await checkRun("f-chk-none", { "docs/readme.md": "# x\n" });
     expect(await runChecks(run)).toBeUndefined();
-    expect(calls("f-chk-none")).toEqual(["typecheck:", "test:"]);
+    expect(calls("f-chk-none").sort()).toEqual(["test:", "typecheck:"]);
+  });
+
+  async function concurrentRun(id: string, extra: object = {}) {
+    // 每個檢查先宣告自己開始，再等另一個也開始；依序執行時會互相等到逾時而失敗
+    const waitFor = (self: string, other: string) =>
+      `node -e "const fs=require('fs');fs.writeFileSync('${self}.started','');const t=Date.now();while(!fs.existsSync('${other}.started')){if(Date.now()-t>3000)process.exit(1)}"`;
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: { a: { adapter: "command", command: ["node", script] } }, cycle: ["a"], install: "true",
+      checks: [{ name: "one", cmd: waitFor("one", "two") }, { name: "two", cmd: waitFor("two", "one") }],
+      ...extra,
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    const now = new Date().toISOString();
+    return {
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "x", stage: "implement" as const,
+      autopilot: true, maxAgentRuns: 10, cycle: ["a"], attempts: {}, taskIndex: 0, taskPhase: "verify" as const, createdAt: now, updatedAt: now,
+    };
+  }
+
+  it("同一次驗證的檢查預設同時執行，verify.json 與 log 序號仍照設定順序、各自獨立", async () => {
+    const run = await concurrentRun("f-chk-parallel");
+    expect(await runChecks(run)).toBeUndefined();
+    const results = JSON.parse(readFileSync(join(flowDir(run.id), "verify.json"), "utf8")) as { name: string }[];
+    expect(results.map((r) => r.name)).toEqual(["install", "one", "two"].filter((n) => n !== "install"));
+    const logs = readdirSync(logDir(run.id)).filter((f) => /-(one|two)-/.test(f));
+    expect(logs).toHaveLength(2);
+    expect(new Set(logs.map((f) => f.slice(0, 3))).size).toBe(2);
+  });
+
+  it("checksConcurrency 為 1 時一次只跑一個檢查", async () => {
+    const run = await concurrentRun("f-chk-serial", { checksConcurrency: 1 });
+    const report = await runChecks(run);
+    expect(report).toContain("one 失敗");
   });
 
   it("withFiles：npm run 用 -- 轉給 script，檔名加引號", () => {
