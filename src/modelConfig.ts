@@ -4,7 +4,7 @@ import type { RawConfig } from "./agentConfig.js";
 
 type RawAgent = Record<string, unknown>;
 const agentsOf = (cfg: RawConfig): Record<string, RawAgent> => ({ ...((cfg.agents ?? {}) as Record<string, RawAgent>) });
-const modelsOf = (agent: RawAgent): Array<{ name: string; strength: Strength }> => [...((agent.models ?? []) as Array<{ name: string; strength: Strength }>)];
+const modelsOf = (agent: RawAgent): Array<{ name: string; strength: Strength; effort?: string }> => [...((agent.models ?? []) as Array<{ name: string; strength: Strength; effort?: string }>)];
 
 function withAgent(cfg: RawConfig, agent: string, edit: (def: RawAgent) => RawAgent): RawConfig {
   const agents = agentsOf(cfg);
@@ -15,23 +15,30 @@ function withAgent(cfg: RawConfig, agent: string, edit: (def: RawAgent) => RawAg
   return next;
 }
 
-export function addModel(cfg: RawConfig, agent: string, name: string, strength: Strength): RawConfig {
+export function addModel(cfg: RawConfig, agent: string, name: string, strength: Strength, effort?: string): RawConfig {
   ModelStrength.parse(strength);
   if (!name.trim()) throw new Error("模型名稱不可為空");
   if (name !== name.trim()) throw new Error("模型名稱前後不可有空白");
   return withAgent(cfg, agent, (def) => {
     const models = modelsOf(def);
     if (models.some((m) => m.name === name)) throw new Error(`agent ${agent} 的模型名稱 ${name} 重複`);
-    return { ...def, models: [...models, { name, strength }] };
+    return { ...def, models: [...models, { name, strength, ...(effort !== undefined && { effort }) }] };
   });
 }
 
-export function setModelStrength(cfg: RawConfig, agent: string, name: string, strength: Strength): RawConfig {
-  ModelStrength.parse(strength);
+/** strength 與 effort 至少改一個；effort 傳 null 表示清除 */
+export function setModelStrength(cfg: RawConfig, agent: string, name: string, strength?: Strength, effort?: string | null): RawConfig {
+  if (strength === undefined && effort === undefined) throw new Error("沒有要修改的欄位（--strength 或 --effort）");
+  if (strength !== undefined) ModelStrength.parse(strength);
   return withAgent(cfg, agent, (def) => {
     const models = modelsOf(def);
     if (!models.some((m) => m.name === name)) throw new Error(`agent ${agent} 沒有模型 ${name}`);
-    return { ...def, models: models.map((m) => m.name === name ? { ...m, strength } : m) };
+    return { ...def, models: models.map((m) => {
+      if (m.name !== name) return m;
+      const { effort: oldEffort, ...rest } = m;
+      const nextEffort = effort === undefined ? oldEffort : effort === null ? undefined : effort;
+      return { ...rest, ...(strength !== undefined && { strength }), ...(nextEffort !== undefined && { effort: nextEffort }) };
+    }) };
   });
 }
 

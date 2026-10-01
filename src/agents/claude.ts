@@ -31,9 +31,9 @@ function settingsFile(o: InvokeOptions): string {
 
 export const claude: Adapter = {
   probe: () => ({ cmd: "claude", args: ["--version"] }),
-  invokeModelProbe: (model) => ({
+  invokeModelProbe: (model, _cwd, effort) => ({
     cmd: "claude",
-    args: ["-p", "只回答 OK", "--model", model, "--output-format", "stream-json", "--verbose",
+    args: ["-p", "只回答 OK", "--model", model, ...(effort ? ["--effort", effort] : []), "--output-format", "stream-json", "--verbose",
       "--tools", "", "--strict-mcp-config", "--disable-slash-commands"],
   }),
   invoke: (o) => ({
@@ -44,6 +44,7 @@ export const claude: Adapter = {
       "--permission-mode", "acceptEdits",
       "--settings", settingsFile(o),
       ...(o.model ? ["--model", o.model] : []),
+      ...(o.effort ? ["--effort", o.effort] : []),
       ...o.extraArgs,
     ],
   }),

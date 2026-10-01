@@ -104,16 +104,16 @@ async function resolveCycle(flag?: string): Promise<string[]> {
   const wanted = flag ? flag.split(",").map((s) => s.trim()).filter(Boolean) : cfg.cycle;
   if (wanted) {
     for (const name of wanted) {
-      if (!(await probeAgent(resolveAgent(cfg, name)))) throw new Error(`找不到可執行的 agent：${name}（可用 agentflowctl doctor 檢查）`);
+      if (!(await probeAgent(resolveAgent(cfg, name)))) throw new Error(`找不到可執行的 agent：${name}（可用 agentflowctl config doctor 檢查）`);
     }
     return wanted;
   }
   // 沒有內建 agent：只從 agents 裡定義的挑出已安裝的
   const defined = Object.keys(cfg.agents);
-  if (!defined.length) throw new Error("還沒有設定任何 agent，請先用 agentflowctl agent setup 互動設定，或用 agent add <name> --adapter <adapter> 新增");
+  if (!defined.length) throw new Error("還沒有設定任何 agent，請先用 agentflowctl config agent setup 互動設定，或用 config agent add <name> --adapter <adapter> 新增");
   const found: string[] = [];
   for (const name of defined) if (await probeAgent(resolveAgent(cfg, name))) found.push(name);
-  if (!found.length) throw new Error(`設定的 agent（${defined.join("、")}）都沒有偵測到已安裝的 CLI，可用 agentflowctl doctor 檢查`);
+  if (!found.length) throw new Error(`設定的 agent（${defined.join("、")}）都沒有偵測到已安裝的 CLI，可用 agentflowctl config doctor 檢查`);
   return found;
 }
 
@@ -148,7 +148,7 @@ const program = new Command()
   .hook("preAction", (cmd) => {
     if (cmd.opts().verbose) config.verbose = true;
     else {
-      // doctor、agent setup 等可能在沒有專案或設定壞掉時執行；這裡讀不到就維持安靜，指令本身會回報設定錯誤
+      // doctor、config agent setup 等可能在沒有專案或設定壞掉時執行；這裡讀不到就維持安靜，指令本身會回報設定錯誤
       try { config.verbose = loadRepoConfig().verbose; } catch { /* 維持預設 */ }
     }
   });
@@ -363,7 +363,8 @@ function applyEdit(edit: (cfg: Record<string, unknown>) => Edit, done: string): 
   }
 }
 
-const agent = program.command("agent").description("管理 agent 與 adapter 設定（寫入 flow.config.json）");
+const configCmd = program.command("config").description("設定：agent、模型、選模策略與環境檢查（寫入 flow.config.json）");
+const agent = configCmd.command("agent").description("管理 agent 與 adapter 設定");
 
 agent
   .command("list")
@@ -372,7 +373,7 @@ agent
     const cfg = loadRepoConfig();
     const cycle = await resolveCycle().catch(() => cfg.cycle ?? []);
     const names = Object.keys(cfg.agents);
-    if (!names.length) console.log("還沒有設定任何 agent，請用 agent setup 互動設定，或用 agent add <name> --adapter <adapter> 新增");
+    if (!names.length) console.log("還沒有設定任何 agent，請用 config agent setup 互動設定，或用 config agent add <name> --adapter <adapter> 新增");
     for (const name of names) {
       const def = resolveAgent(cfg, name);
       const ok = await probeAgent(def);
@@ -380,6 +381,7 @@ agent
       const detail = [
         `adapter=${def.adapter}`,
         def.model && `model=${def.model}`,
+        def.effort && `effort=${def.effort}`,
         def.extraArgs.length && `extraArgs=${def.extraArgs.join(" ")}`,
         def.command && `command=${def.command.join(" ")}`,
       ].filter(Boolean);
@@ -394,12 +396,13 @@ agent
   .description("新增 agent；command adapter 的指令寫在 -- 後面")
   .requiredOption("--adapter <adapter>", "claude、codex、gemini 或 command")
   .option("--model <model>", "模型名稱")
+  .option("--effort <effort>", "推理強度，只有 claude 與 codex 支援，例如 low、medium、high")
   .option("--extra-arg <arg>", "額外參數，可重複；以 - 開頭時寫成 --extra-arg=--sandbox", collect)
   .option("--model-probe-arg <arg>", "自訂 command 的模型探測命令參數，可重複", collect)
-  .action((name: string, command: string[], opts: { adapter: string; model?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
+  .action((name: string, command: string[], opts: { adapter: string; model?: string; effort?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
     applyEdit(
-      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
-      `已新增 ${name}；要讓它參與請用 agent cycle`,
+      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, effort: opts.effort, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
+      `已新增 ${name}；要讓它參與請用 config agent cycle`,
     );
   });
 
@@ -408,11 +411,12 @@ agent
   .description("修改 agent；更換 adapter 時會清掉舊 adapter 的 model、extraArgs、command")
   .option("--adapter <adapter>", "claude、codex、gemini 或 command")
   .option("--model <model>", "模型名稱")
+  .option("--effort <effort>", "推理強度，只有 claude 與 codex 支援，例如 low、medium、high")
   .option("--extra-arg <arg>", "額外參數，可重複，會整個取代原本的設定", collect)
   .option("--model-probe-arg <arg>", "自訂 command 的模型探測命令參數，可重複，會整個取代", collect)
-  .action((name: string, command: string[], opts: { adapter?: string; model?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
+  .action((name: string, command: string[], opts: { adapter?: string; model?: string; effort?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
     applyEdit(
-      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
+      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, effort: opts.effort, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
       `已更新 ${name}`,
     );
   });
@@ -435,7 +439,7 @@ agent
     applyEdit((cfg) => setCycle(cfg, list), `參與的 agent 設為 ${list.join("、")}`);
     const cfg = loadRepoConfig();
     for (const n of list) {
-      if (!(await probeAgent(resolveAgent(cfg, n)))) console.log(`⚠️  ${n} 目前找不到可執行的 CLI，run 會失敗，請先安裝或用 agent set 修正`);
+      if (!(await probeAgent(resolveAgent(cfg, n)))) console.log(`⚠️  ${n} 目前找不到可執行的 CLI，run 會失敗，請先安裝或用 config agent set 修正`);
     }
   });
 
@@ -443,7 +447,7 @@ agent
   .command("setup")
   .description("互動式設定：偵測本機已安裝的 agent CLI，逐一選擇要不要加入並設定參與的 agent")
   .action(async () => {
-    if (!stdin.isTTY) throw new Error("agent setup 需要互動式終端機，請改用 agent add");
+    if (!stdin.isTTY) throw new Error("config agent setup 需要互動式終端機，請改用 config agent add");
     const detected: Detected = {};
     for (const a of SETUP_ADAPTERS) detected[a] = await probeAgent({ adapter: a, extraArgs: [] });
     let configured: Record<string, boolean> | undefined;
@@ -468,31 +472,36 @@ agent
     await doctor();
   });
 
-// ───────────── 模型清單與各階段強度 ─────────────
+// ───────────── 模型清單（config agent model）與選模策略（config selection） ─────────────
 
-const model = program.command("model").description("設定模型強度並檢查目前帳號能否呼叫模型");
+const model = agent.command("model").description("管理某個 agent 的模型清單與強度，並檢查目前帳號能否呼叫模型");
+const selection = configCmd.command("selection").description("選模策略：模型模式與各階段的最低強度");
 
 model.command("add <agent> <name>")
   .requiredOption("--strength <strength>", "low、medium 或 high")
-  .action(async (agent: string, name: string, opts: { strength: string }) => {
+  .option("--effort <effort>", "這個模型呼叫時的推理強度，只有 claude 與 codex 支援")
+  .action(async (agent: string, name: string, opts: { strength: string; effort?: string }) => {
     const strength = parseStrength(opts.strength);
     const before = readRawConfig(configPath());
     const cfg = loadRepoConfig();
     const def = cfg.agents[agent];
     if (!def) throw new Error(`未定義的 agent：${agent}`);
-    const next = addModel(before, agent, name, strength);
+    const next = addModel(before, agent, name, strength, opts.effort);
     console.log("模型檢查會送出最短請求，可能耗用少量 token。");
-    const checked = await probeModel(def, name);
+    const checked = await probeModel(def, name, undefined, opts.effort);
     if (checked.status !== "ok") throw new Error(`${agent} 的模型 ${name} 未加入：${checked.reason}`);
     writeRawConfig(configPath(), next);
-    console.log(`✅ 已新增 ${agent} 的模型 ${name}（${strength}）${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}；探測可能耗用少量 token`);
+    console.log(`✅ 已新增 ${agent} 的模型 ${name}（${strength}${opts.effort ? `，effort ${opts.effort}` : ""}）${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}；探測可能耗用少量 token`);
   });
 
 model.command("set <agent> <name>")
-  .requiredOption("--strength <strength>", "low、medium 或 high")
-  .action((agent: string, name: string, opts: { strength: string }) => {
-    writeRawConfig(configPath(), setModelStrength(readRawConfig(configPath()), agent, name, parseStrength(opts.strength)));
-    console.log(`✅ 已將 ${agent} 的模型 ${name} 強度設為 ${opts.strength}；此指令不重驗可用性`);
+  .option("--strength <strength>", "low、medium 或 high")
+  .option("--effort <effort>", "推理強度；填 none 清除")
+  .action((agent: string, name: string, opts: { strength?: string; effort?: string }) => {
+    const effort = opts.effort === "none" ? null : opts.effort;
+    writeRawConfig(configPath(), setModelStrength(readRawConfig(configPath()), agent, name, opts.strength === undefined ? undefined : parseStrength(opts.strength), effort));
+    const changed = [opts.strength !== undefined && `強度設為 ${opts.strength}`, opts.effort !== undefined && (effort === null ? "已清除 effort" : `effort 設為 ${opts.effort}`)].filter(Boolean).join("、");
+    console.log(`✅ 已將 ${agent} 的模型 ${name} ${changed}；此指令不重驗可用性`);
   });
 
 model.command("remove <agent> <name>").action((agent: string, name: string) => {
@@ -507,10 +516,10 @@ model.command("list [agent]").action((agent?: string) => {
     const def = cfg.agents[name];
     if (!def) throw new Error(`未定義的 agent：${name}`);
     console.log(`${name}（${def.adapter}）`);
-    for (const item of def.models ?? []) console.log(`  ${item.name}  ${item.strength}`);
+    for (const item of def.models ?? []) console.log(`  ${item.name}  ${item.strength}${item.effort ? `  effort=${item.effort}` : ""}`);
     if (!def.models?.length) console.log("  尚未設定模型");
   }
-  console.log("清單只顯示設定內容；要確認當前帳號是否可用，請執行 model check。");
+  console.log("清單只顯示設定內容；要確認當前帳號是否可用，請執行 config agent model check。");
 });
 
 model.command("check [agent]").action(async (agent?: string) => {
@@ -521,7 +530,7 @@ model.command("check [agent]").action(async (agent?: string) => {
     const def = cfg.agents[name];
     if (!def) throw new Error(`未定義的 agent：${name}`);
     for (const item of def.models ?? []) {
-      const checked = await probeModel(def, item.name);
+      const checked = await probeModel(def, item.name, undefined, item.effort);
       const at = new Date().toISOString();
       const mark = checked.status === "ok" ? "✅" : checked.status === "unverifiable" ? "⚪" : "❌";
       const result = checked.status === "ok" ? `可呼叫${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}` : checked.reason;
@@ -530,14 +539,14 @@ model.command("check [agent]").action(async (agent?: string) => {
   }
 });
 
-model.command("mode [mode]").action((mode?: string) => {
+selection.command("mode [mode]").action((mode?: string) => {
   if (!mode) return console.log(`模型模式：${loadRepoConfig().modelSelection.mode}`);
   if (mode !== "balanced" && mode !== "adaptive") throw new Error(`未知的模型模式：${mode}`);
   writeRawConfig(configPath(), setModelMode(readRawConfig(configPath()), mode));
   console.log(`✅ 模型模式已設為 ${mode}`);
 });
 
-model.command("stage [stage] [strength]").action((stage?: string, strength?: string) => {
+selection.command("stage [stage] [strength]").action((stage?: string, strength?: string) => {
   if (!stage || !strength) {
     const all = effectiveStageStrengths(loadRepoConfig());
     const stages = stage ? [parseModelStage(stage)] : (Object.keys(all) as Array<keyof typeof all>);
@@ -552,7 +561,7 @@ model.command("stage [stage] [strength]").action((stage?: string, strength?: str
 async function doctor(): Promise<void> {
   const cfg = loadRepoConfig();
   const names = Object.keys(cfg.agents);
-  if (!names.length) console.log("還沒有設定任何 agent，請用 agent setup 互動設定，或用 agent add <name> --adapter <adapter> 新增");
+  if (!names.length) console.log("還沒有設定任何 agent，請用 config agent setup 互動設定，或用 config agent add <name> --adapter <adapter> 新增");
   for (const name of names) {
     const def = resolveAgent(cfg, name);
     const ok = await probeAgent(def);
@@ -571,7 +580,7 @@ async function doctor(): Promise<void> {
   console.log(`計畫分層審查：${layers.enabled ? `任務達 ${layers.minTasks} 個時開啟，最多 ${layers.maxGroups} 群，每群平均至少 ${layers.tasksPerGroup} 個任務` : "關閉"}`);
 }
 
-program.command("doctor").description("檢查可用的 agent CLI 與目前參與的 agent").action(doctor);
+configCmd.command("doctor").description("檢查可用的 agent CLI 與目前參與的 agent").action(doctor);
 
 program
   .command("list")
@@ -730,7 +739,7 @@ program
       const task = u?.topTask && u.topTask.tasks >= 2 ? `  最耗任務 ${u.topTask.task}（${(u.topTask.share * 100).toFixed(0)}%）` : "";
       console.log(`  ${r.id}  ${r.stage.padEnd(17)}  重試 ${String(r.retries).padStart(3)} 次${tokens}${task}${cat}`);
     }
-    console.log("\n建議對應可改的 prompt、model stage 或關卡；各分組是同一批呼叫的不同切片，不要跨組相加。單一 run 用 agentflowctl status <id>、stats <id> 與 logs <id>");
+    console.log("\n建議對應可改的 prompt、config selection stage 或關卡；各分組是同一批呼叫的不同切片，不要跨組相加。單一 run 用 agentflowctl status <id>、stats <id> 與 logs <id>");
   });
 
 program.parseAsync().catch((err: unknown) => {

@@ -139,22 +139,33 @@ export type ModelStrength = z.infer<typeof ModelStrength>;
 export const ModelStage = z.enum(["spec", "plan", "planReview", "planFix", "planArbiter", "taskTests", "taskCode", "taskReview", "taskFix", "fix", "review"]);
 export type ModelStage = z.infer<typeof ModelStage>;
 
-export const ModelEntry = z.object({ name: z.string().trim().min(1), strength: ModelStrength });
+/** 推理強度（effort）；各 CLI 接受的值不同且變動快，這裡只確保非空，值是否可用交給 CLI 與 config agent model check */
+export const Effort = z.string().trim().min(1);
+
+export const ModelEntry = z.object({ name: z.string().trim().min(1), strength: ModelStrength, effort: Effort.optional() });
 
 export const AgentDef = z.object({
   adapter: z.enum(["claude", "codex", "gemini", "command"]),
   model: z.string().optional(),
+  /** 沒有指定 effort 的 balanced 呼叫沿用這個；只有 claude 與 codex 支援 */
+  effort: Effort.optional(),
   models: z.array(ModelEntry).optional(),
   extraArgs: z.array(z.string()).default([]),
   /** 只有 command adapter 使用，`{prompt}` 會被替換成 prompt */
   command: z.array(z.string()).optional(),
   modelProbe: z.array(z.string()).optional(),
+}).superRefine((def, ctx) => {
+  if (def.adapter === "claude" || def.adapter === "codex") return;
+  if (def.effort !== undefined) ctx.addIssue({ code: "custom", path: ["effort"], message: `${def.adapter} adapter 不支援 effort，只有 claude 與 codex 可以設定` });
+  def.models?.forEach((m, i) => {
+    if (m.effort !== undefined) ctx.addIssue({ code: "custom", path: ["models", i, "effort"], message: `${def.adapter} adapter 不支援 effort，只有 claude 與 codex 可以設定` });
+  });
 });
 export type AgentDef = z.infer<typeof AgentDef>;
 
 /** 目標專案可選的 flow.config.json，預設值對應 Vite + TypeScript + Vitest 專案 */
 export const RepoConfig = z.object({
-  /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 agent add） */
+  /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 config agent add） */
   agents: z.record(z.string(), AgentDef).default({}),
   /** 各 CLI adapter 的預設模型；agent 自己指定 model 時優先使用個別設定 */
   defaultModels: z.strictObject({

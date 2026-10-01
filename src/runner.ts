@@ -69,7 +69,7 @@ export function formatToolLine(agent: string, tool: { name: string; detail?: str
 /** 取出 flow.config.json 裡定義的 agent；沒有內建 agent */
 export function resolveAgent(cfg: RepoConfig, name: string): AgentDef {
   const def = cfg.agents[name];
-  if (!def) throw new Error(`未定義的 agent：${name}（請先用 agent add ${name} --adapter <adapter> 新增）`);
+  if (!def) throw new Error(`未定義的 agent：${name}（請先用 config agent add ${name} --adapter <adapter> 新增）`);
   const defaultModel = def.adapter === "command" ? undefined : cfg.defaultModels[def.adapter];
   return { ...def, model: def.model ?? defaultModel };
 }
@@ -96,12 +96,13 @@ export async function runAgent(
     prompt,
     cwd: t.cwd,
     model: def.model,
+    effort: def.effort,
     extraArgs: def.extraArgs,
     runDir: runDir(t.runId),
     projectRoot: projectRoot(),
     command: def.command,
   });
-  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: name, adapter: def.adapter, model: def.model, strength: t.strength, targetStrength: t.targetStrength, startedAt: new Date().toISOString() }));
+  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: name, adapter: def.adapter, model: def.model, effort: def.effort, strength: t.strength, targetStrength: t.targetStrength, startedAt: new Date().toISOString() }));
 
   let done: { ok: boolean; summary?: string } | undefined;
   let lastText = "";
