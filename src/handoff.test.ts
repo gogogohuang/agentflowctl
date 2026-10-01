@@ -9,7 +9,7 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-handoff-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
 const { flowDir, handoffPath } = await import("./paths.js");
-const { readHandoff, previewHandoff, mergeHandoff, openActions, prepareHandoff, validateHandoffResponse, acceptHandoff, recoverHandoff, reviewHandoffGate } = await import("./handoff.js");
+const { readHandoff, previewHandoff, mergeHandoff, openActions, prepareHandoff, validateHandoffResponse, acceptHandoff, recoverHandoff, reviewHandoffGate, isDuplicateIssue } = await import("./handoff.js");
 
 const source = { stage: "implement" as const, step: "T-1-code", agent: "codex", callKey: "f-a:implement:T-1:code:0:codex" };
 const issue = { kind: "action" as const, summary: "測試未涵蓋逾時", evidence: "src/api.test.ts:20", targetStage: "code" as const };
@@ -21,7 +21,7 @@ describe("交接紀錄", () => {
     expect(mergeHandoff("f-a", source.callKey, source, empty, "writer").issues).toEqual([]);
   });
 
-  it("依呼叫識別碼產生穩定 ID，重播不重複，另一輪仍會新增", () => {
+  it("依呼叫識別碼產生穩定 ID，重播不重複，另一輪的不同事項仍會新增", () => {
     const response = { newIssues: [issue], dispositions: [] };
     const first = mergeHandoff("f-b", source.callKey, source, response, "writer");
     const again = mergeHandoff("f-b", source.callKey, source, response, "writer");
@@ -30,8 +30,50 @@ describe("交接紀錄", () => {
     expect(first.issues[0]?.id).toBeTruthy();
     expect(openActions(first, "code")).toHaveLength(1);
     const nextKey = `${source.callKey}:round2`;
-    const next = mergeHandoff("f-b", nextKey, { ...source, callKey: nextKey }, response, "writer");
+    const other = { ...issue, summary: "沒有處理空陣列", evidence: "src/list.ts:8" };
+    const next = mergeHandoff("f-b", nextKey, { ...source, callKey: nextKey }, { newIssues: [other], dispositions: [] }, "writer");
     expect(next.issues).toHaveLength(2);
+  });
+
+  it("不同輪重複回報同一件事時併進原事項並累計次數", () => {
+    const first = mergeHandoff("f-dup", source.callKey, source, { newIssues: [issue], dispositions: [] }, "writer");
+    const key2 = `${source.callKey}:round2`;
+    const next = mergeHandoff("f-dup", key2, { ...source, callKey: key2 }, { newIssues: [issue], dispositions: [] }, "writer");
+    expect(next.issues).toHaveLength(1);
+    expect(next.issues[0]).toMatchObject({ id: first.issues[0]!.id, repeats: 1, status: "open" });
+    expect(next.issues[0]?.source.callKey).toBe(source.callKey);
+  });
+
+  it("措辭不同但指向同一檔案與條件的事項視為重複，同檔案的不同問題則不併", () => {
+    const a = { kind: "action" as const, targetStage: "plan" as const,
+      summary: "AC-8 要求移除 getContentWrapContainer.ts 及其測試，與本階段禁止刪除任何 test/spec 檔案的限制衝突。",
+      evidence: "src/pages/driver_mileage/utils/getContentWrapContainer.ts 與 getContentWrapContainer.test.ts 仍存在；直接刪除後者違反本階段 constraints。" };
+    const b = { ...a,
+      summary: "AC-8 要求移除 getContentWrapContainer.ts 及其測試，但本階段硬性限制禁止刪除測試檔，兩者互相衝突。",
+      evidence: ".flow/acceptance.json AC-8；現有 src/pages/driver_mileage/utils/getContentWrapContainer.test.ts 受『不可刪除測試檔』限制。" };
+    expect(isDuplicateIssue(a, b)).toBe(true);
+    const sameFileOtherProblem = { ...a, summary: "getContentWrapContainer.ts 在 SSR 時 document 未定義會丟錯", evidence: "src/pages/driver_mileage/utils/getContentWrapContainer.ts:5" };
+    expect(isDuplicateIssue(a, sameFileOtherProblem)).toBe(false);
+  });
+
+  it("種類不同、已提議修正或已結案的事項不被併入", () => {
+    const info = { ...issue, kind: "info" as const };
+    expect(isDuplicateIssue(issue, info)).toBe(false);
+    const created = mergeHandoff("f-st", source.callKey, source, { newIssues: [issue], dispositions: [] }, "writer");
+    const id = created.issues[0]!.id;
+    const key2 = `${source.callKey}:r2`;
+    const proposed = mergeHandoff("f-st", key2, { ...source, callKey: key2 },
+      { newIssues: [], dispositions: [{ id, status: "proposed_resolved", reason: "補了", evidence: "abc" }] }, "writer");
+    const key3 = `${source.callKey}:r3`;
+    const again = mergeHandoff("f-st", key3, { ...source, callKey: key3 }, { newIssues: [issue], dispositions: [] }, "reviewer");
+    expect(proposed.issues[0]?.status).toBe("proposed_resolved");
+    expect(again.issues).toHaveLength(2);
+  });
+
+  it("同一個回覆內重複的事項也只留一筆", () => {
+    const next = mergeHandoff("f-same", source.callKey, source, { newIssues: [issue, issue], dispositions: [] }, "writer");
+    expect(next.issues).toHaveLength(1);
+    expect(next.issues[0]?.repeats).toBe(1);
   });
 
   it("作者只可提議已修正，由審查者附證據結案", () => {

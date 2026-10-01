@@ -29,7 +29,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({
 }));
 
 const { addWorktree, commitAll, git } = await import("./git.js");
-const { advance, resetQuotaState } = await import("./engine.js");
+const { advance, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { flowDir, logDir, planReviewStatePath, worktreeDir } = await import("./paths.js");
 const { agentRuns, listRetries, listSubstitutions, listUsage } = await import("./store.js");
@@ -1539,5 +1539,56 @@ ${APPROVE}
     expect(models.filter((m) => m === "plan-review:small")).toHaveLength(1);
     expect(models.filter((m) => m === "plan-review-group:small")).toHaveLength(2); // G-1 與 G-2 的第一次
     expect(models.filter((m) => m === "plan-review-group:large")).toHaveLength(1); // 只有 G-2 的重審升級
+  });
+});
+
+describe("lint 與型別檢查只在最後驗證", () => {
+  const record = (name: string) => `node -e "require('fs').appendFileSync('calls.log', '${name}:' + process.argv.slice(1).join(',') + '\\n')"`;
+  async function checkRun(id: string, files: Record<string, string>) {
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: { a: { adapter: "command", command: ["node", script] } }, cycle: ["a"], install: "true",
+      checks: [
+        { name: "typecheck", cmd: record("typecheck"), finalOnly: true },
+        { name: "lint", cmd: record("lint"), finalOnly: true, changedOnly: true },
+        { name: "test", cmd: record("test") },
+      ],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(join(wt, name, ".."), { recursive: true });
+      writeFileSync(join(wt, name), content);
+    }
+    await commitAll(wt, "feat: 測試 [a]");
+    mkdirSync(flowDir(id), { recursive: true });
+    const now = new Date().toISOString();
+    return {
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "x", stage: "implement" as const,
+      autopilot: true, maxAgentRuns: 10, cycle: ["a"], attempts: {}, taskIndex: 0, taskPhase: "verify" as const, createdAt: now, updatedAt: now,
+    };
+  }
+  const calls = (id: string) => readFileSync(join(worktreeDir(id), "calls.log"), "utf8").trim().split("\n");
+
+  it("任務驗證只跑沒有標 finalOnly 的檢查", async () => {
+    const run = await checkRun("f-chk-task", { "src/a.ts": "export {};\n" });
+    expect(await runChecks(run, "T-1-", "task")).toBeUndefined();
+    expect(calls("f-chk-task")).toEqual(["test:"]);
+  });
+
+  it("最後驗證跑全部，lint 只收到整支分支改過的程式檔", async () => {
+    const run = await checkRun("f-chk-final", { "src/a.ts": "export {};\n", "docs/readme.md": "# x\n", ".flow/x.ts": "x\n" });
+    expect(await runChecks(run)).toBeUndefined();
+    expect(calls("f-chk-final")).toEqual(["typecheck:", "lint:src/a.ts", "test:"]);
+  });
+
+  it("整支分支沒有可檢查的檔案時略過 lint", async () => {
+    const run = await checkRun("f-chk-none", { "docs/readme.md": "# x\n" });
+    expect(await runChecks(run)).toBeUndefined();
+    expect(calls("f-chk-none")).toEqual(["typecheck:", "test:"]);
+  });
+
+  it("withFiles：npm run 用 -- 轉給 script，檔名加引號", () => {
+    expect(withFiles("pnpm run lint", ["src/a.ts"])).toBe("pnpm run lint 'src/a.ts'");
+    expect(withFiles("npm run lint", ["a b.ts", "it's.ts"])).toBe("npm run lint -- 'a b.ts' 'it'\\''s.ts'");
   });
 });
