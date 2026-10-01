@@ -233,7 +233,7 @@ export const RepoConfig = z.object({
     }))
     .default([
       { name: "typecheck", cmd: "npx tsc --noEmit" },
-      { name: "lint", cmd: "npx eslint ." },
+      { name: "lint", cmd: "npx eslint --ignore-pattern '.flow/**' --ignore-pattern '.agentflowctl/**' ." },
       { name: "test", cmd: "npx vitest run" },
       { name: "build", cmd: "npx vite build" },
     ]),
