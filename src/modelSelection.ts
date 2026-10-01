@@ -136,7 +136,14 @@ export function validateAdaptiveConfig(cfg: RepoConfig, cycle: string[]): void {
     if (def.adapter === "command") {
       if (!def.command?.some((arg) => arg.includes("{model}"))) throw new Error(`agent ${name} 的 command 缺少 {model}`);
       if (!def.modelProbe?.length || !def.modelProbe.some((arg) => arg.includes("{model}"))) throw new Error(`agent ${name} 的 modelProbe 缺少 {model}`);
-    } else if (def.extraArgs.some((arg) => arg === "--model" || arg === "-m" || arg.startsWith("--model=") || arg === "--effort" || arg.startsWith("--effort="))) {
+    } else if (def.extraArgs.some((arg, index) => {
+      if (arg === "--model" || arg === "-m" || arg.startsWith("--model=") || arg === "--effort" || arg.startsWith("--effort=")) return true;
+      if (def.adapter !== "codex") return false;
+      const override = arg === "-c" || arg === "--config" ? def.extraArgs[index + 1]
+        : arg.startsWith("--config=") ? arg.slice("--config=".length)
+        : arg.startsWith("-c") ? arg.slice(2).replace(/^=/, "") : undefined;
+      return override !== undefined && /^\s*model_reasoning_effort\s*=/.test(override);
+    })) {
       throw new Error(`agent ${name} 的 extraArgs 與 adaptive 模型參數衝突`);
     }
   }

@@ -151,7 +151,7 @@ agentflowctl config agent cycle claude,codex
 
 `config agent add` 的 `--adapter` 可填 `claude`、`codex`、`gemini` 或 `command`。`--model` 指定個別 agent 的模型；`--extra-arg=--參數` 可重複使用，傳給該 CLI。使用 `command` adapter 時，把指令寫在 `--` 後，例如 `agentflowctl config agent add aider --adapter command -- aider --message {prompt}`。`config agent remove <名稱>` 會移除設定與參與名單；`config agent cycle` 不帶名單則顯示目前參與者。
 
-`config agent model add/set/remove` 只修改指定 agent 的模型清單；`config agent model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `config agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`config agent setup` 遇到同名 agent 會先詢問是否覆寫。Claude Code 與 Codex 在問完 `model` 後會再問 `effort`（Enter 不指定）。`config agent setup` 最後會問模型模式：預設 `balanced`（設定裡已是 adaptive 時預設沿用 adaptive）；選 `adaptive` 時會逐一詢問缺 `models` 的參與 agent，輸入「名稱 強度 effort」（強度省略為 medium，effort 可省略，Enter 結束），任何一個 agent 沒登記模型就回到模式選擇。精靈只寫入設定、不送請求驗證，寫入後可執行 `config agent model check`。若 adaptive 模式下參與的 agent 缺 `models`，`run` 會列出所有缺 `models` 的 agent，並附上 `config agent model add` 與 `config selection mode balanced` 兩種修法。
+`config agent model add/set/remove` 只修改指定 agent 的模型清單；`config agent model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `config agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`config agent setup` 遇到同名 agent 會先詢問是否覆寫。Claude Code 與 Codex 在問完 `model` 後會再問 `effort`（Enter 不指定）。每個 agent 設定後，都可先逐行登記可選模型、強度與 effort（Enter 略過或結束）；即使最後選 balanced 也會保留清單，選 adaptive 時不再詢問已有模型清單的 agent。`config agent setup` 最後會問模型模式：預設 `balanced`（設定裡已是 adaptive 時預設沿用 adaptive）；選 `adaptive` 時會逐一詢問缺 `models` 的參與 agent，輸入「名稱 強度 effort」（強度省略為 medium，effort 可省略，Enter 結束），任何一個 agent 沒登記模型就回到模式選擇。精靈只寫入設定、不送請求驗證，寫入後可執行 `config agent model check`。若 adaptive 模式下參與的 agent 缺 `models`，`run` 會列出所有缺 `models` 的 agent，並附上 `config agent model add` 與 `config selection mode balanced` 兩種修法。
 
 ### 依階段與任務難度選模型
 
@@ -184,7 +184,7 @@ agentflowctl config agent model add claude MODEL_NAME --strength high --effort h
 agentflowctl config agent model set claude MODEL_NAME --effort low     # 只改 effort；--effort none 清除
 ```
 
-Claude Code 以 `--effort <值>` 傳入，Codex 以 `-c model_reasoning_effort="<值>"` 傳入，放在 `extraArgs` 之前。可用的值由各 CLI 決定（例如 Claude Code 的 `low`、`medium`、`high`、`xhigh`、`max`），agentflowctl 只檢查非空，`config agent model add` 與 `config agent model check` 會連同 effort 一起送出探測請求，值不合法時會失敗。`adaptive` 模式下 `extraArgs` 不可再放 `--effort`。終端機每次呼叫會在模型名稱後顯示 `（effort …）`，log 檔頭也會記錄；`config agent list` 與 `config agent model list` 會列出設定的 effort。
+Claude Code 以 `--effort <值>` 傳入，Codex 以 `-c model_reasoning_effort="<值>"` 傳入，放在 `extraArgs` 之前。可用的值由各 CLI 決定（例如 Claude Code 的 `low`、`medium`、`high`、`xhigh`、`max`），agentflowctl 只檢查非空，`config agent model add` 與 `config agent model check` 會連同 effort 一起送出探測請求，值不合法時會失敗。`adaptive` 模式下 `extraArgs` 不可再放 `--effort`，Codex 也不可透過 `-c` 或 `--config` 設定 `model_reasoning_effort`（包含參數合併形式），避免覆寫選定的 effort；其他 config 參數仍可使用。終端機每次呼叫會在模型名稱後顯示 `（effort …）`，log 檔頭也會記錄；`config agent list` 與 `config agent model list` 會列出設定的 effort。
 
 #### 模型驗證
 
