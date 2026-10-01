@@ -16,6 +16,20 @@ describe("模型設定編輯", () => {
     expect(() => addModel(cfg, "a", " middle ", "high")).toThrow(/空白/);
   });
 
+  it("新增與修改 effort；null 清除，沒給任何欄位則拒絕", () => {
+    const cfg = addModel(base(), "a", "middle", "medium", "high");
+    const models = () => (cfg2.agents as Record<string, { models: Array<{ name: string; strength: string; effort?: string }> }>).a!.models;
+    expect(((cfg.agents as Record<string, { models: unknown[] }>).a?.models)[1]).toEqual({ name: "middle", strength: "medium", effort: "high" });
+    let cfg2 = setModelStrength(cfg, "a", "middle", undefined, "low");
+    expect(models()[1]).toEqual({ name: "middle", strength: "medium", effort: "low" });
+    cfg2 = setModelStrength(cfg2, "a", "middle", "high");
+    expect(models()[1]).toEqual({ name: "middle", strength: "high", effort: "low" });
+    cfg2 = setModelStrength(cfg2, "a", "middle", undefined, null);
+    expect(models()[1]).toEqual({ name: "middle", strength: "high" });
+    expect(() => setModelStrength(cfg, "a", "middle")).toThrow(/沒有要修改/);
+    expect(() => addModel(base(), "b", "x", "low", "high")).toThrow(/不支援 effort/);
+  });
+
   it("修改強度不改名稱，移除最後一個參與模型時拒絕", () => {
     const cfg = setModelStrength(base(), "a", "small", "medium");
     expect(((cfg.agents as Record<string, { models: Array<{ strength: string }> }>).a?.models[0]?.strength)).toBe("medium");

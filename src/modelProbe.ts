@@ -20,7 +20,7 @@ export function probeFailureReason(message: string): string {
 }
 
 /** 在獨立暫存目錄對指定模型送出最短請求；停用工具或限制成唯讀，工具事件一律不通過。 */
-export async function probeModel(def: AgentDef, model: string, timeoutMs = 30000): Promise<ModelProbeResult> {
+export async function probeModel(def: AgentDef, model: string, timeoutMs = 30000, effort?: string): Promise<ModelProbeResult> {
   const dir = mkdtempSync(join(tmpdir(), "agentflowctl-model-"));
   try {
     const adapter = ADAPTERS[def.adapter];
@@ -33,7 +33,7 @@ export async function probeModel(def: AgentDef, model: string, timeoutMs = 30000
       inv = { cmd: cmd!.replaceAll("{model}", model), args: rest.map((arg) => arg.replaceAll("{model}", model)) };
     } else {
       if (!adapter.invokeModelProbe) return { status: "unverifiable", reason: `${def.adapter} CLI 無法安全停用工具，因此不能驗證模型` };
-      inv = adapter.invokeModelProbe(model, dir);
+      inv = adapter.invokeModelProbe(model, dir, effort ?? def.effort);
     }
     const events: AgentEvent[] = [];
     const parseLine = adapter.parseModelProbe ?? adapter.parse;

@@ -107,7 +107,7 @@ export function usageFindings(input: {
   if (total.tokens > 0 && high && high.tokens / total.tokens >= 0.4) {
     out.push({
       code: "high_strength_share", impactTokens: high.tokens, title: FINDING_LABEL.high_strength_share,
-      detail: `high 佔已回報 token 的 ${pct(high.tokens, total.tokens)}，呼叫 ${high.runs} 次。合計 token 不是主指標；可查 model stage 與任務 complexity。`,
+      detail: `high 佔已回報 token 的 ${pct(high.tokens, total.tokens)}，呼叫 ${high.runs} 次。合計 token 不是主指標；可查 config selection stage 與任務 complexity。`,
     });
   }
 

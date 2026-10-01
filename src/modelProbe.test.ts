@@ -23,6 +23,10 @@ describe("模型即時探測", () => {
     expect(codex?.args).toContain("hooks");
     expect(codex?.args).toContain("model-x");
     expect(codex?.input).toBe("只回答 OK，不要呼叫任何工具。");
+    expect(claude?.args).not.toContain("--effort");
+    expect(codex?.args.join(" ")).not.toContain("model_reasoning_effort");
+    expect(ADAPTERS.claude.invokeModelProbe?.("model-x", dir, "high").args).toEqual(expect.arrayContaining(["--effort", "high"]));
+    expect(ADAPTERS.codex.invokeModelProbe?.("model-x", dir, "high").args).toEqual(expect.arrayContaining(["-c", 'model_reasoning_effort="high"']));
     expect(readFileSync(join(dir, ".gemini", "settings.json"), "utf8")).toContain('"enabled":false');
     rmSync(dir, { recursive: true, force: true });
   });

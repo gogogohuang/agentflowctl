@@ -4,7 +4,7 @@ import { ModelStrength } from "./schemas.js";
 import { ADAPTERS, type AdapterName } from "./agents/index.js";
 
 /**
- * `agentflowctl agent setup` 的互動精靈。
+ * `agentflowctl config agent setup` 的互動精靈。
  * 問答與偵測結果由外部注入，這裡只負責流程；所有修改都在記憶體裡完成，確認後才交給呼叫端寫入。
  */
 /** 不需自訂指令就能加入的 adapter；新增 adapter 時會自動出現在精靈裡 */
@@ -38,6 +38,28 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
 
   const hasModels = (c: RawConfig, name: string) => !!(c.agents as Record<string, { models?: unknown[] }>)[name]?.models?.length;
 
+  /** 逐行登記某個 agent 的模型（名稱 [強度] [effort]），空行結束；只寫設定、不送請求驗證 */
+  async function registerModels(start: RawConfig, name: string, notes: string[], prompt: string): Promise<RawConfig> {
+    let next = start;
+    for (;;) {
+      const line = (await ask(prompt)).trim();
+      if (!line) return next;
+      const [model, strength = "medium", effort, ...extra] = line.split(/\s+/);
+      if (extra.length || !ModelStrength.safeParse(strength).success) {
+        log("  格式是「名稱 強度 effort」（後兩項可省略），強度只能是 low、medium 或 high");
+        continue;
+      }
+      try {
+        next = addModel(next, name, model!, strength as "low" | "medium" | "high", effort);
+        notes.push(`${name} 模型 ${model}（${strength}${effort ? `，effort ${effort}` : ""}）`);
+      } catch (e) {
+        log(`  ${(e as Error).message}`);
+      }
+    }
+  }
+
+  const MODEL_FORMAT = "名稱 [強度 low|medium|high] [effort]，強度省略為 medium，effort 僅限 Claude Code 與 Codex，Enter 結束";
+
   /** 問模型模式：balanced 不用登記模型；adaptive 逐一登記缺 models 的 agent，只寫設定、不送請求驗證 */
   async function chooseModelMode(start: RawConfig, notes: string[]): Promise<RawConfig> {
     let next = start;
@@ -60,28 +82,14 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
       const empty: string[] = [];
       for (const name of lacking) {
         log(`${name} 沒有登記模型，adaptive 只看 models，請登記可用的模型與強度`);
-        for (;;) {
-          const line = (await ask(`  ${name} 模型（名稱 強度 low|medium|high，強度省略為 medium，Enter 結束）`)).trim();
-          if (!line) break;
-          const [model, strength = "medium", ...extra] = line.split(/\s+/);
-          if (extra.length || !ModelStrength.safeParse(strength).success) {
-            log("  格式是「名稱 強度」，強度只能是 low、medium 或 high");
-            continue;
-          }
-          try {
-            tried = addModel(tried, name, model!, strength as "low" | "medium" | "high");
-            notes.push(`${name} 模型 ${model}（${strength}）`);
-          } catch (e) {
-            log(`  ${(e as Error).message}`);
-          }
-        }
+        tried = await registerModels(tried, name, notes, `  ${name} 模型（${MODEL_FORMAT}）`);
         if (!hasModels(tried, name)) empty.push(name);
       }
       if (empty.length) {
         log(`⚠️  ${empty.join("、")} 沒有登記任何模型，無法使用 adaptive；請重新選擇模式`);
         continue;
       }
-      log("已寫入模型設定但未驗證；寫入後可執行 agentflowctl model check 確認帳號能否呼叫");
+      log("已寫入模型設定但未驗證；寫入後可執行 agentflowctl config agent model check 確認帳號能否呼叫");
       return setModelMode(tried, "adaptive");
     }
   }
@@ -97,10 +105,10 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
 
   const installed = Object.keys(detected).filter((a) => detected[a]);
   const missing = Object.keys(detected).filter((a) => !detected[a]);
-  if (missing.length) log(`沒有偵測到：${missing.join("、")}（安裝後可重跑 agent setup）`);
+  if (missing.length) log(`沒有偵測到：${missing.join("、")}（安裝後可重跑 config agent setup）`);
   if (!installed.length) {
     log("沒有偵測到可加入的 agent CLI，設定沒有變更");
-    log("需要自訂指令的 CLI 請改用 agent add <name> --adapter command -- <指令>");
+    log("需要自訂指令的 CLI 請改用 config agent add <name> --adapter command -- <指令>");
     return null;
   }
 
@@ -122,9 +130,11 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
       continue;
     }
     const model = (await ask("  model（Enter 不指定）")) || undefined;
-    const edit = isNew ? addAgent(cfg, name, { adapter, model }) : setAgent(cfg, name, { adapter, model });
+    const effort = adapter === "claude" || adapter === "codex" ? (await ask("  effort（推理強度，例如 low、medium、high；Enter 不指定）")).trim() || undefined : undefined;
+    const edit = isNew ? addAgent(cfg, name, { adapter, model, effort }) : setAgent(cfg, name, { adapter, model, effort });
     cfg = edit.cfg;
     changes.push(...edit.changes);
+    cfg = await registerModels(cfg, name, changes, `  ${name} 可選模型與強度，adaptive 選模用（${MODEL_FORMAT.replace("Enter 結束", "Enter 略過")}）`);
     chosen.push(name);
   }
 
@@ -145,11 +155,11 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
 
   cfg = await chooseModelMode(cfg, changes);
 
-  const agents = cfg.agents as Record<string, { adapter: string; model?: string }>;
+  const agents = cfg.agents as Record<string, { adapter: string; model?: string; effort?: string }>;
   log("\n即將寫入：");
-  for (const name of chosen) log(`  ${name.padEnd(14)} adapter=${agents[name]!.adapter}${agents[name]!.model ? ` model=${agents[name]!.model}` : ""}`);
+  for (const name of chosen) log(`  ${name.padEnd(14)} adapter=${agents[name]!.adapter}${agents[name]!.model ? ` model=${agents[name]!.model}` : ""}${agents[name]!.effort ? ` effort=${agents[name]!.effort}` : ""}`);
   log(`  參與的 agent：${(cfg.cycle as string[]).join("、")}`);
-  log("  需要自訂指令的 CLI 請改用 agent add <name> --adapter command -- <指令>");
+  log("  需要自訂指令的 CLI 請改用 config agent add <name> --adapter command -- <指令>");
   if (!(await confirm("寫入 flow.config.json？", true))) {
     log("已取消，設定沒有變更");
     return null;

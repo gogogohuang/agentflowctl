@@ -3,7 +3,7 @@ import { z } from "zod";
 import { AgentDef, RepoConfig } from "./schemas.js";
 
 /**
- * `agentflowctl agent` 指令的設定編輯。
+ * `agentflowctl config agent` 指令的設定編輯。
  * 直接操作 flow.config.json 的原始物件（不套預設值），寫回時只多出使用者指定的欄位。
  */
 export type RawConfig = Record<string, unknown>;
@@ -12,6 +12,7 @@ type RawAgent = Record<string, unknown>;
 export interface AgentPatch {
   adapter?: string;
   model?: string;
+  effort?: string;
   extraArgs?: string[];
   command?: string[];
   modelProbe?: string[];
@@ -24,7 +25,7 @@ export interface Edit {
 }
 
 /** 這些欄位的意義取決於 adapter，換 adapter 時要清掉 */
-const ADAPTER_FIELDS = ["model", "models", "modelProbe", "extraArgs", "command"] as const;
+const ADAPTER_FIELDS = ["model", "effort", "models", "modelProbe", "extraArgs", "command"] as const;
 
 const agentsOf = (cfg: RawConfig) => ({ ...((cfg.agents ?? {}) as Record<string, RawAgent>) });
 const isDefined = (cfg: RawConfig, name: string) => name in agentsOf(cfg);
@@ -44,7 +45,7 @@ function buildAgent(base: RawAgent, patch: AgentPatch): RawAgent {
 
 export function addAgent(cfg: RawConfig, name: string, def: AgentPatch & { adapter: string }): Edit {
   if (!/^[\w-]+$/.test(name)) throw new Error(`agent 名稱只能用英數字、底線與連字號：${name}`);
-  if (isDefined(cfg, name)) throw new Error(`agent ${name} 已存在，要修改請用 agent set`);
+  if (isDefined(cfg, name)) throw new Error(`agent ${name} 已存在，要修改請用 config agent set`);
   const { adapter, ...patch } = def;
   return { cfg: { ...cfg, agents: { ...agentsOf(cfg), [name]: buildAgent({ adapter }, patch) } }, changes: [] };
 }
@@ -52,7 +53,7 @@ export function addAgent(cfg: RawConfig, name: string, def: AgentPatch & { adapt
 export function setAgent(cfg: RawConfig, name: string, patch: AgentPatch): Edit {
   if (!isDefined(cfg, name)) throw new Error(`未定義的 agent：${name}`);
   if (Object.values(patch).every((v) => v === undefined)) {
-    throw new Error("沒有要修改的欄位（--adapter、--model、--model-probe-arg、--extra-arg 或 -- <command>）");
+    throw new Error("沒有要修改的欄位（--adapter、--model、--effort、--model-probe-arg、--extra-arg 或 -- <command>）");
   }
   const agents = agentsOf(cfg);
   const base: RawAgent = { ...agents[name] };
@@ -91,7 +92,7 @@ export function setCycle(cfg: RawConfig, names: string[]): Edit {
   const dup = names.find((n, i) => names.indexOf(n) !== i);
   if (dup) throw new Error(`參與的 agent 裡 ${dup} 重複了`);
   const missing = names.filter((n) => !isDefined(cfg, n));
-  if (missing.length) throw new Error(`未定義的 agent：${missing.join("、")}（先用 agent add 新增）`);
+  if (missing.length) throw new Error(`未定義的 agent：${missing.join("、")}（先用 config agent add 新增）`);
   return { cfg: { ...cfg, cycle: names }, changes: [] };
 }
 

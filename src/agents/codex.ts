@@ -47,10 +47,11 @@ function parse(line: string): AgentEvent[] {
 export const codex: Adapter = {
   probe: () => ({ cmd: "codex", args: ["--version"] }),
   // Codex 沒有 --tools 空清單；停用可執行工具，剩餘檔案工具由唯讀沙箱限制。
-  invokeModelProbe: (model, cwd) => ({
+  invokeModelProbe: (model, cwd, effort) => ({
     cmd: "codex",
     args: ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
       "--ignore-user-config", "--ignore-rules", "--strict-config", "-C", cwd, "-m", model,
+      ...(effort ? ["-c", `model_reasoning_effort=${JSON.stringify(effort)}`] : []),
       "-c", 'approval_policy="never"', "-c", 'web_search="disabled"', "-c", "mcp_servers={}",
       "-c", "project_doc_max_bytes=0",
       "-c", "tools.experimental_request_user_input.enabled=false", "-c", "tools.update_plan.enabled=false",
@@ -74,7 +75,8 @@ export const codex: Adapter = {
     /patch rejected|tools::router.*error=/i.test(stderr) ? `模型檢查期間嘗試呼叫工具：${stderr.trim()}` : undefined,
   invoke: (o) => ({
     cmd: "codex",
-    args: ["exec", "--json", "--sandbox", "workspace-write", "-C", o.cwd, ...(o.model ? ["-m", o.model] : []), ...o.extraArgs, "-"],
+    args: ["exec", "--json", "--sandbox", "workspace-write", "-C", o.cwd, ...(o.model ? ["-m", o.model] : []),
+      ...(o.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(o.effort)}`] : []), ...o.extraArgs, "-"],
     input: o.prompt,
   }),
   parse,
