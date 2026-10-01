@@ -53,6 +53,7 @@ import {
 } from "./planReview.js";
 import { descriptionWaivesRed, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
+import { violatingTestChanges } from "./testGuard.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
 
@@ -1127,7 +1128,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     info(run, `⏭️  [${progress}] 沒有檔案變更，略過這個任務`);
     return finishTask(succeed(run, key, "implement"));
   }
-  const touched = tdd ? (await changedFiles(repo, testsCommit, await headCommit(repo))).filter((f) => testRe.test(f)) : [];
+  const touched = tdd
+    ? violatingTestChanges(
+        await changedFiles(repo, testsCommit, await headCommit(repo)),
+        await changedFiles(repo, testsCommit, await headCommit(repo), "D"),
+        testRe,
+      )
+    : [];
   if (touched.length) {
     await resetTo(repo, testsCommit);
     return retry(run, key, `實作階段不可修改測試檔，已還原你的變更：${touched.join(", ")}`, "implement", "tests_modified");
