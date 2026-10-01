@@ -21,6 +21,7 @@ import { confirmationLines, confirmationTasks } from "./tasks.js";
 import { padDisplay, readJsonFile, type JsonResult } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
+import { dumpRun } from "./dump.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 import { addModel, removeModel, setModelMode, setModelStrength, setStageStrength } from "./modelConfig.js";
@@ -335,6 +336,17 @@ program
     mustGetRun(id);
     const confirm = loadConfirmationTasks(id);
     console.log(confirmationLines(confirm.tasks, confirm.draft).join("\n"));
+  });
+
+// 除錯用，不列在 --help 也不寫進 README
+program
+  .command("dump <id> [outDir]", { hidden: true })
+  .description("把單一 run 的除錯資料打包到目錄")
+  .action(async (id: string, outDir?: string) => {
+    mustGetRun(id);
+    const dest = outDir ?? join(projectRoot(), ".agentflowctl", "dumps", `${id}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+    await dumpRun(id, dest);
+    console.log(`✅ 已輸出到 ${dest}`);
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────
