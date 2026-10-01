@@ -1201,7 +1201,7 @@ function finishTask(run: FlowRun): FlowRun {
 async function taskVerifyStep(run: FlowRun, task: TaskItem, progress: string): Promise<FlowRun> {
   const key = `${task.id}:verify`;
   info(run, `🔍 [${progress}] 執行驗證`);
-  const report = await runChecks(run, `${task.id}-`);
+  const report = await runChecks(run, `${task.id}-`, "task");
   if (report) return { ...retry(run, key, report, "implement", "checks_failed"), taskPhase: "fix", fixSource: "verify" };
   info(run, `✅ [${progress}] 完成`);
   return finishTask(succeed(run, key, "implement"));
@@ -1225,8 +1225,29 @@ async function taskFixStep(run: FlowRun, task: TaskItem, progress: string, tasks
   return { ...succeed(run, `${task.id}:fix`, "implement"), taskPhase: "review", lastWriter: result.agent };
 }
 
+/** 可交給 lint 的檔案類型 */
+const CHECKABLE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
+
+const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+
+/** 把檔案清單接在指令後面；npm run 要用 -- 才會轉給 script */
+export function withFiles(cmd: string, files: readonly string[]): string {
+  return `${cmd}${/^npm run /.test(cmd) ? " --" : ""} ${files.map(shellQuote).join(" ")}`;
+}
+
+/** 整支分支（相對基底分支的分歧點）改過、目前還在的檔案；算不出來就回傳 undefined，改檢查整個專案 */
+async function branchChangedFiles(run: FlowRun): Promise<string[] | undefined> {
+  const repo = worktreeDir(run.id);
+  try {
+    const base = (await git(repo, "merge-base", run.baseBranch, "HEAD")).trim();
+    return await changedFiles(repo, base, "HEAD");
+  } catch {
+    return undefined;
+  }
+}
+
 /** 執行 install 與所有 checks，結果寫入 verify.json；有失敗時回傳給修正者的報告 */
-async function runChecks(run: FlowRun, stepPrefix = ""): Promise<string | undefined> {
+export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "final" = "final"): Promise<string | undefined> {
   const cfg = loadRepoConfig();
   const results: { name: string; ok: boolean; output: string }[] = [];
   const install = await runCommand(target(run, `${stepPrefix}install`, CMD_AGENT), cfg.install);
@@ -1234,8 +1255,19 @@ async function runChecks(run: FlowRun, stepPrefix = ""): Promise<string | undefi
     info(run, `   ✗ install${logHint(run, install.seq)}`);
     results.push({ name: "install", ok: false, output: tail(install.output) });
   } else {
+    const changed = scope === "final" && cfg.checks.some((c) => c.changedOnly) ? await branchChangedFiles(run) : undefined;
     for (const check of cfg.checks) {
-      const r = await runCommand(target(run, `${stepPrefix}${check.name}`, CMD_AGENT), check.cmd);
+      if (scope === "task" && check.finalOnly) continue;
+      let cmd = check.cmd;
+      if (check.changedOnly && changed) {
+        const files = changed.filter((f) => CHECKABLE_FILE.test(f) && !f.startsWith(".flow/") && existsSync(join(worktreeDir(run.id), f)));
+        if (!files.length) {
+          info(run, `   - ${check.name}（整支分支沒有可檢查的修改檔案，略過）`);
+          continue;
+        }
+        cmd = withFiles(cmd, files);
+      }
+      const r = await runCommand(target(run, `${stepPrefix}${check.name}`, CMD_AGENT), cmd);
       info(run, `   ${r.ok ? "✓" : "✗"} ${check.name}${r.ok ? "" : logHint(run, r.seq)}`);
       results.push({ name: check.name, ok: r.ok, output: tail(r.output, 3000) });
     }

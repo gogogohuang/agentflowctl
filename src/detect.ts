@@ -8,7 +8,7 @@ import { RepoConfig } from "./schemas.js";
  */
 
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
-type Check = { name: string; cmd: string };
+type Check = { name: string; cmd: string; finalOnly?: boolean; changedOnly?: boolean };
 
 export interface ProjectDefaults {
   manager: PackageManager;
@@ -47,6 +47,9 @@ const CHECK_SCRIPTS: Record<string, string[]> = {
   test: ["test"],
   build: ["build"],
 };
+
+/** 每個任務不跑、最後才跑的檢查 */
+const FINAL_CHECKS = new Set(["typecheck", "lint"]);
 
 /** 出現在依賴裡就代表專案有測試框架 */
 const TEST_FRAMEWORKS = ["vitest", "jest", "mocha", "ava", "jasmine", "tap", "uvu", "@playwright/test", "cypress"];
@@ -95,9 +98,13 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
   const { manager, source } = detectManager(root, pkg);
   const defaults = RepoConfig.parse({});
   const scripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
-  const checks = defaults.checks.map(({ name, cmd }) => {
+  const checks = defaults.checks.flatMap(({ name, cmd }): Check[] => {
     const script = CHECK_SCRIPTS[name]?.find((s) => typeof scripts[s] === "string");
-    return { name, cmd: script ? `${manager} run ${script}` : withExec(cmd, manager) };
+    // lint 與型別檢查只在最後整支分支才跑，專案沒有對應 script 就略過，不退回預設指令
+    if (FINAL_CHECKS.has(name)) {
+      return script ? [{ name, cmd: `${manager} run ${script}`, finalOnly: true, ...(name === "lint" ? { changedOnly: true } : {}) }] : [];
+    }
+    return [{ name, cmd: script ? `${manager} run ${script}` : withExec(cmd, manager) }];
   });
   return { manager, source, install: INSTALL[manager], test: withExec(defaults.test, manager), checks, testFramework: hasTestFramework(pkg) };
 }
@@ -121,7 +128,7 @@ export function describeDetected(raw: Record<string, unknown>, detected: Project
   const framework = usesTestFramework(raw, detected);
   if (!("install" in raw)) lines.push(`   install：${detected.install}`);
   if (!("test" in raw) && framework) lines.push(`   test：${detected.test}`);
-  if (!("checks" in raw)) lines.push(...detected.checks.filter((c) => framework || c.name !== "test").map((c) => `   checks.${c.name}：${c.cmd}`));
+  if (!("checks" in raw)) lines.push(...detected.checks.filter((c) => framework || c.name !== "test").map((c) => `   checks.${c.name}：${c.cmd}${c.finalOnly ? "（只在最後驗證，" + (c.changedOnly ? "只檢查改過的檔案）" : "整個專案）") : ""}`));
   if (!framework) lines.push("ℹ️  未偵測到測試框架，所有任務略過紅綠燈，也不跑 test 檢查（在 flow.config.json 設定 test 可改回來）");
   if (!lines.length) return [];
   const why = detected.source === "預設" ? "預設" : `依 ${detected.source}`;

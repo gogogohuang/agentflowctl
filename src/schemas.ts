@@ -57,6 +57,8 @@ export const HandoffIssue = z.object({
   evidence: z.string().min(1),
   targetStage: HandoffTarget,
   status: HandoffStatus,
+  /** 後來又被回報、因內容重複而併進這筆的次數；舊紀錄沒有這個欄位 */
+  repeats: z.number().int().positive().optional(),
   resolution: z.object({
     agent: z.string(),
     reason: z.string(),
@@ -221,7 +223,14 @@ export const RepoConfig = z.object({
   test: z.string().default("npx vitest run"),
   testPattern: z.string().default("\\.(test|spec)\\.[cm]?[jt]sx?$"),
   checks: z
-    .array(z.object({ name: z.string(), cmd: z.string() }))
+    .array(z.object({
+      name: z.string(),
+      cmd: z.string(),
+      /** 每個任務的驗證跳過，只在最後整支分支的 verify 才跑 */
+      finalOnly: z.boolean().optional(),
+      /** 最後 verify 時只檢查整支分支改過的檔案：把檔案清單接在指令後面 */
+      changedOnly: z.boolean().optional(),
+    }))
     .default([
       { name: "typecheck", cmd: "npx tsc --noEmit" },
       { name: "lint", cmd: "npx eslint ." },

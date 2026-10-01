@@ -20,7 +20,8 @@ describe("detectProjectDefaults", () => {
     expect(d.manager).toBe("npm");
     expect(d.install).toBe(defaults.install);
     expect(d.test).toBe(defaults.test);
-    expect(d.checks).toEqual(defaults.checks);
+    // 沒有 lint／typecheck script 就略過，不退回預設指令；其餘維持預設
+    expect(d.checks).toEqual(defaults.checks.filter((c) => c.name !== "typecheck" && c.name !== "lint"));
   });
 
   it("依依賴與 test script 判斷有沒有測試框架", () => {
@@ -59,8 +60,6 @@ describe("detectProjectDefaults", () => {
     expect(d.install).toBe("pnpm install");
     expect(d.test).toBe("pnpm exec vitest run");
     expect(d.checks).toEqual([
-      { name: "typecheck", cmd: "pnpm exec tsc --noEmit" },
-      { name: "lint", cmd: "pnpm exec eslint ." },
       { name: "test", cmd: "pnpm exec vitest run" },
       { name: "build", cmd: "pnpm exec vite build" },
     ]);
@@ -81,8 +80,8 @@ describe("detectProjectDefaults", () => {
       "package.json": { scripts: { "type-check": "tsc -b", lint: "eslint .", test: "vitest run", build: "tsc -b && vite build" } },
     }));
     expect(d.checks).toEqual([
-      { name: "typecheck", cmd: "pnpm run type-check" },
-      { name: "lint", cmd: "pnpm run lint" },
+      { name: "typecheck", cmd: "pnpm run type-check", finalOnly: true },
+      { name: "lint", cmd: "pnpm run lint", finalOnly: true, changedOnly: true },
       { name: "test", cmd: "pnpm run test" },
       { name: "build", cmd: "pnpm run build" },
     ]);
@@ -90,7 +89,7 @@ describe("detectProjectDefaults", () => {
 
   it("typecheck 也認得不含連字號的 script 名稱", () => {
     const d = detectProjectDefaults(project({ "package.json": { scripts: { typecheck: "tsc --noEmit" } } }));
-    expect(d.checks[0]).toEqual({ name: "typecheck", cmd: "npm run typecheck" });
+    expect(d.checks[0]).toEqual({ name: "typecheck", cmd: "npm run typecheck", finalOnly: true });
   });
 
   it("package.json 不是合法 JSON 時退回 lockfile 判斷", () => {
