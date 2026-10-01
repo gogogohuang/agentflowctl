@@ -122,7 +122,8 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
       continue;
     }
     const model = (await ask("  model（Enter 不指定）")) || undefined;
-    const edit = isNew ? addAgent(cfg, name, { adapter, model }) : setAgent(cfg, name, { adapter, model });
+    const effort = adapter === "claude" || adapter === "codex" ? (await ask("  effort（推理強度，例如 low、medium、high；Enter 不指定）")).trim() || undefined : undefined;
+    const edit = isNew ? addAgent(cfg, name, { adapter, model, effort }) : setAgent(cfg, name, { adapter, model, effort });
     cfg = edit.cfg;
     changes.push(...edit.changes);
     chosen.push(name);
@@ -145,9 +146,9 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
 
   cfg = await chooseModelMode(cfg, changes);
 
-  const agents = cfg.agents as Record<string, { adapter: string; model?: string }>;
+  const agents = cfg.agents as Record<string, { adapter: string; model?: string; effort?: string }>;
   log("\n即將寫入：");
-  for (const name of chosen) log(`  ${name.padEnd(14)} adapter=${agents[name]!.adapter}${agents[name]!.model ? ` model=${agents[name]!.model}` : ""}`);
+  for (const name of chosen) log(`  ${name.padEnd(14)} adapter=${agents[name]!.adapter}${agents[name]!.model ? ` model=${agents[name]!.model}` : ""}${agents[name]!.effort ? ` effort=${agents[name]!.effort}` : ""}`);
   log(`  參與的 agent：${(cfg.cycle as string[]).join("、")}`);
   log("  需要自訂指令的 CLI 請改用 agent add <name> --adapter command -- <指令>");
   if (!(await confirm("寫入 flow.config.json？", true))) {
