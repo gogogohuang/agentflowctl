@@ -38,7 +38,7 @@ npx agentflowctl run --req-file ./requirement.md
    - 不另立條件：相同結果的不同說法、修正後自然成立的推論，以及沒有具體誤傷風險的既有行為，不會各自變成驗收條件和實作任務；審查者與修訂者會保留必要條件，並合併或刪除重複的。
    - 不回歸條件：需求明寫要維持不變的行為各列一條，其餘限於最關鍵的一兩條。
    - 非行為變更：需求本身若是文件、設定、純重構或特徵化測試，仍以所需產物與自動檢查結果列出驗收條件。
-2. 依計畫逐個任務寫出會失敗的測試，再由另一位 agent 實作到測試通過；每個任務都會經過審查與驗證。計畫 agent 會依改動內容在任務標記 `tdd`：建置流程、設定、文件、型別、純重構，以及實作前就會通過的特徵化測試，會略過紅綠燈直接實作，改由任務審查與驗證把關。描述寫明不要求紅燈卻沒標 `tdd: false` 的計畫不會通過。已定案的計畫若仍帶著這個衝突，執行到該任務時仍會寫測試，但測試一開始就通過也算完成，不會再要求紅燈、也不會因此讓 run 失敗。專案沒有測試框架時，所有任務都略過紅綠燈，也不跑 `test` 檢查。只跑檢查、不改檔案的工作不要拆成實作任務；這種任務若沒有檔案變更會直接略過，不再要求 commit。需要人眼確認的任務標成 `kind: confirm`，計畫定案後寫進 `.flow/confirmations.json`，不進入實作，也不會把 run 停下來。`status` 在任務清單之外另列「待你確認（不進實作）」；`confirmations <id>` 只印這個區塊。計畫還沒通過首次驗證前查詢，清單會從尚未經檢查的草稿蒐集，標題會多帶「（計畫尚未定案，以下為草稿）」，項目最終可能不會定案。
+2. 依計畫逐個任務寫出會失敗的測試，再由另一位 agent 實作到測試通過；每個任務都會經過審查與驗證。計畫 agent 會依改動內容在任務標記 `tdd`：建置流程、設定、文件、型別、純重構，以及實作前就會通過的特徵化測試，會略過紅綠燈直接實作，改由任務審查與驗證把關。描述寫明不要求紅燈卻沒標 `tdd: false` 的計畫不會通過。已定案的計畫若仍帶著這個衝突，執行到該任務時仍會寫測試，但測試一開始就通過也算完成，不會再要求紅燈、也不會因此讓 run 失敗。紅燈測試被退回一次、原因是測試一開始就通過（行為早已存在，例如前一個任務順手做掉了）時，下一次嘗試同樣改為接受這份特徵化測試，不再重試到上限；仍由任務審查與驗證把關。測試階段若完全沒有新增或修改任何檔案、但現有測試已通過，也視為這個任務的行為已被既有測試涵蓋，直接進入實作，不會以「未寫測試」重試。任務的實作與修正若動到「只有後面任務描述提到」的檔案（以描述中寫出的 `目錄/檔名.副檔名` 路徑比對），這次變更會被還原並要求重做，retry 分類為「動到後面任務的檔案」；這個檢查只擋前兩次嘗試，避免路徑比對誤判讓 run 卡死，之後仍由審查把關。專案沒有測試框架時，所有任務都略過紅綠燈，也不跑 `test` 檢查。只跑檢查、不改檔案的工作不要拆成實作任務；這種任務若沒有檔案變更會直接略過，不再要求 commit。需要人眼確認的任務標成 `kind: confirm`，計畫定案後寫進 `.flow/confirmations.json`，不進入實作，也不會把 run 停下來。`status` 在任務清單之外另列「待你確認（不進實作）」；`confirmations <id>` 只印這個區塊。計畫還沒通過首次驗證前查詢，清單會從尚未經檢查的草稿蒐集，標題會多帶「（計畫尚未定案，以下為草稿）」，項目最終可能不會定案。
 3. 全部任務完成後，再執行專案檢查與整體程式碼審查。未通過的項目會交回修正。
 4. 有 `origin` 時會推送分支；若 `gh` 可用，會嘗試建立 PR。沒有 `origin` 時，完成的分支留在本機。
 
@@ -151,7 +151,7 @@ agentflowctl config agent cycle claude,codex
 
 `config agent add` 的 `--adapter` 可填 `claude`、`codex`、`gemini` 或 `command`。`--model` 指定個別 agent 的模型；`--extra-arg=--參數` 可重複使用，傳給該 CLI。使用 `command` adapter 時，把指令寫在 `--` 後，例如 `agentflowctl config agent add aider --adapter command -- aider --message {prompt}`。`config agent remove <名稱>` 會移除設定與參與名單；`config agent cycle` 不帶名單則顯示目前參與者。
 
-`config agent model add/set/remove` 只修改指定 agent 的模型清單；`config agent model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `config agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`config agent setup` 遇到同名 agent 會先詢問是否覆寫。Claude Code 與 Codex 在問完 `model` 後會再問 `effort`（Enter 不指定）。`config agent setup` 最後會問模型模式：預設 `balanced`（設定裡已是 adaptive 時預設沿用 adaptive）；選 `adaptive` 時會逐一詢問缺 `models` 的參與 agent，輸入「名稱 強度 effort」（強度省略為 medium，effort 可省略，Enter 結束），任何一個 agent 沒登記模型就回到模式選擇。精靈只寫入設定、不送請求驗證，寫入後可執行 `config agent model check`。若 adaptive 模式下參與的 agent 缺 `models`，`run` 會列出所有缺 `models` 的 agent，並附上 `config agent model add` 與 `config selection mode balanced` 兩種修法。
+`config agent model add/set/remove` 只修改指定 agent 的模型清單；`config agent model remove` 移除最後一個模型時，會檢查參與的 agent 是否仍有模型，不論目前使用哪種模型模式。同一 adapter 的 `config agent set` 會保留清單；換 adapter 時會清掉舊 adapter 的模型設定。`config agent setup` 遇到同名 agent 會先詢問是否覆寫。Claude Code 與 Codex 在問完 `model` 後會再問 `effort`（Enter 不指定）。每個 agent 設定後，都可先逐行登記可選模型、強度與 effort（Enter 略過或結束）；即使最後選 balanced 也會保留清單，選 adaptive 時不再詢問已有模型清單的 agent。`config agent setup` 最後會問模型模式：預設 `balanced`（設定裡已是 adaptive 時預設沿用 adaptive）；選 `adaptive` 時會逐一詢問缺 `models` 的參與 agent，輸入「名稱 強度 effort」（強度省略為 medium，effort 可省略，Enter 結束），任何一個 agent 沒登記模型就回到模式選擇。精靈只寫入設定、不送請求驗證，寫入後可執行 `config agent model check`。若 adaptive 模式下參與的 agent 缺 `models`，`run` 會列出所有缺 `models` 的 agent，並附上 `config agent model add` 與 `config selection mode balanced` 兩種修法。
 
 ### 依階段與任務難度選模型
 
@@ -184,7 +184,7 @@ agentflowctl config agent model add claude MODEL_NAME --strength high --effort h
 agentflowctl config agent model set claude MODEL_NAME --effort low     # 只改 effort；--effort none 清除
 ```
 
-Claude Code 以 `--effort <值>` 傳入，Codex 以 `-c model_reasoning_effort="<值>"` 傳入，放在 `extraArgs` 之前。可用的值由各 CLI 決定（例如 Claude Code 的 `low`、`medium`、`high`、`xhigh`、`max`），agentflowctl 只檢查非空，`config agent model add` 與 `config agent model check` 會連同 effort 一起送出探測請求，值不合法時會失敗。`adaptive` 模式下 `extraArgs` 不可再放 `--effort`。終端機每次呼叫會在模型名稱後顯示 `（effort …）`，log 檔頭也會記錄；`config agent list` 與 `config agent model list` 會列出設定的 effort。
+Claude Code 以 `--effort <值>` 傳入，Codex 以 `-c model_reasoning_effort="<值>"` 傳入，放在 `extraArgs` 之前。可用的值由各 CLI 決定（例如 Claude Code 的 `low`、`medium`、`high`、`xhigh`、`max`），agentflowctl 只檢查非空，`config agent model add` 與 `config agent model check` 會連同 effort 一起送出探測請求，值不合法時會失敗。`adaptive` 模式下 `extraArgs` 不可再放 `--effort`，Codex 也不可透過 `-c` 或 `--config` 設定 `model_reasoning_effort`（包含參數合併形式），避免覆寫選定的 effort；其他 config 參數仍可使用。終端機每次呼叫會在模型名稱後顯示 `（effort …）`，log 檔頭也會記錄；`config agent list` 與 `config agent model list` 會列出設定的 effort。
 
 #### 模型驗證
 

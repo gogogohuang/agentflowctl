@@ -301,8 +301,9 @@ if (existsSync(\`.flow/tamper-\${phase}.txt\`)) {
   rmSync(\`.flow/tamper-\${phase}.txt\`);
   writeFileSync(".flow/acceptance.json", "[]");
 }
-const noop = phase === "direct" && existsSync(".flow/noop-direct.txt");
-if (noop) rmSync(".flow/noop-direct.txt");
+const noopFile = \`.flow/noop-\${phase}.txt\`;
+const noop = (phase === "direct" || phase === "tests") && existsSync(noopFile);
+if (noop) rmSync(noopFile);
 else if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
 else writeFileSync("feature.mjs", "export const answer = 42;\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
@@ -428,6 +429,93 @@ describe("略過 TDD", () => {
     expect(existsSync(join(flowDir(id), "feedback-tests.txt"))).toBe(false);
   });
 
+  it("實作早已存在、上一次剛因測試一開始就通過被退回時，改接受特徵化測試而不是重試到上限", async () => {
+    const id = "f-red-already-green";
+    const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
+      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    writeFileSync(join(wt, "feature.mjs"), "export const answer = 42;\n");
+    await commitAll(wt, "feat: 前一個任務順手做掉的實作");
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "元件測試", description: "新增元件測試", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+    ]));
+    const base = {
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement" as const,
+      autopilot: true, maxAgentRuns: 2, cycle: ["a", "b"], taskIndex: 0, taskPhase: "tests" as const,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    // 第一次：照常要求紅燈，退回重試
+    const first = await advance({ ...base, maxAgentRuns: 1, attempts: {} });
+    expect(first.attempts["T-1:tests"]).toBe(1);
+    expect(listRetries(id).map((item) => item.category)).toContain("tests_not_red");
+    expect(readFileSync(join(flowDir(id), "feedback.md"), "utf8")).toContain("請撰寫會因功能尚未實作而失敗的測試");
+    // 第二次：行為早已存在，改接受特徵化測試，進入綠燈
+    const second = await advance({ ...first, stage: "implement", maxAgentRuns: 2 });
+    expect(second.taskPhase).toBe("code");
+    expect(second.attempts["T-1:tests"]).toBeUndefined();
+    expect(listRetries(id)).toHaveLength(1);
+    expect(readFileSync(join(flowDir(id), "red-output.txt"), "utf8")).toContain("不要求紅燈");
+  });
+
+  it("測試階段沒有新增任何檔案、但現有測試已通過時，視為已涵蓋並進入綠燈", async () => {
+    const id = "f-tests-covered";
+    const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
+      cycle: ["a", "b"], install: "true", test: "true", checks: [],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "noop-tests.txt"), "");
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "元件測試", description: "新增元件測試", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+      autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.taskPhase).toBe("code");
+    expect(listRetries(id).map((item) => item.category)).not.toContain("tests_not_written");
+    expect(readFileSync(join(flowDir(id), "red-output.txt"), "utf8")).toContain("視為已涵蓋");
+  });
+
+  it("實作階段動到後面任務負責的檔案時還原並重試", async () => {
+    const id = "f-out-of-scope";
+    const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }, { id: "AC-3", description: "後面任務" }];
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
+      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
+    // T-2 的描述把 feature.mjs 派給它，但實作者在 T-1 就會寫 feature.mjs
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "第一個", description: "新增 ./feature.test.mjs", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+      { id: "T-2", title: "第二個", description: "實作 ./feature.mjs", dependsOn: [], acceptance: ["AC-3"], tdd: true },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+      autopilot: true, maxAgentRuns: 2, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(listRetries(id).map((item) => item.category)).toContain("out_of_scope");
+    expect(existsSync(join(wt, "feature.mjs"))).toBe(false);
+    expect(run.attempts["T-1:code"]).toBe(1);
+  });
+
   it("不走 TDD 且沒有檔案變更時略過任務，不以未實作重試", async () => {
     const run = await implementRun("f-no-commit-skip", acceptance, { maxAgentRuns: 1, tdd: false, noop: true });
     expect(run.failureCategory).toBe("agent_budget");
@@ -491,6 +579,34 @@ describe("修正階段", () => {
     const feedback = readFileSync(join(flowDir(id), "feedback-seen.txt"), "utf8");
     expect(feedback).toContain("型別檢查失敗");
     expect(feedback).toContain("不可修改規格與計畫檔");
+  });
+
+  it("任務修正動到後面任務負責的檔案時還原並帶著原本的意見重試", async () => {
+    const id = "f-fix-out-of-scope";
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", fixer] }])),
+      cycle: ["a", "b"], install: "true", test: "true", checks: [],
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "a" }, { id: "AC-2", description: "b" }]));
+    writeFileSync(join(flowDir(id), "feedback.md"), "型別檢查失敗");
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "第一個", description: "新增 ./first.txt", dependsOn: [], acceptance: ["AC-1"], tdd: false },
+      { id: "T-2", title: "第二個", description: "新增 ./fixed.txt", dependsOn: [], acceptance: ["AC-2"], tdd: false },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement", fixSource: "verify",
+      autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], lastWriter: "a", attempts: {},
+      taskIndex: 0, taskPhase: "fix", createdAt: now, updatedAt: now,
+    });
+    expect(run.attempts["T-1:fix"]).toBe(1);
+    expect(listRetries(id).map((item) => item.category)).toContain("out_of_scope");
+    expect(existsSync(join(worktreeDir(id), "fixed.txt"))).toBe(false);
+    const feedback = readFileSync(join(flowDir(id), "feedback.md"), "utf8");
+    expect(feedback).toContain("型別檢查失敗");
+    expect(feedback).toContain("fixed.txt（T-2）");
   });
 });
 

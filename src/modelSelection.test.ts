@@ -91,6 +91,26 @@ describe("依階段與任務難度選模", () => {
 });
 
 describe("adaptive 設定檢查", () => {
+  it.each([
+    ["-c", 'model_reasoning_effort="high"'],
+    ["--config", 'model_reasoning_effort="high"'],
+    ['--config=model_reasoning_effort="high"'],
+    ['-cmodel_reasoning_effort="high"'],
+    ["-c", ' model_reasoning_effort = "high"'],
+  ])("拒絕 Codex extraArgs 覆寫 effort：%j", (...extraArgs) => {
+    const config = RepoConfig.parse({ agents: { a: { adapter: "codex", models: [
+      { name: "small", strength: "low", effort: "low" },
+    ], extraArgs } } });
+    expect(() => validateAdaptiveConfig(config, ["a"])).toThrow(/衝突/);
+  });
+
+  it("Codex 其他 config 參數不與 adaptive effort 衝突", () => {
+    const config = RepoConfig.parse({ agents: { a: { adapter: "codex", models: [
+      { name: "small", strength: "low", effort: "low" },
+    ], extraArgs: ["-c", 'approval_policy="never"', "--config=tools.shell=false"] } } });
+    expect(() => validateAdaptiveConfig(config, ["a"])).not.toThrow();
+  });
+
   it("拒絕沒有模型清單或與 extraArgs 衝突的 agent", () => {
     expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex" } } }), ["a"])).toThrow(/a.*models/);
     expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex" }, b: { adapter: "claude" } } }), ["a", "b"]))
