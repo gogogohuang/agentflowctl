@@ -301,8 +301,9 @@ if (existsSync(\`.flow/tamper-\${phase}.txt\`)) {
   rmSync(\`.flow/tamper-\${phase}.txt\`);
   writeFileSync(".flow/acceptance.json", "[]");
 }
-const noop = phase === "direct" && existsSync(".flow/noop-direct.txt");
-if (noop) rmSync(".flow/noop-direct.txt");
+const noopFile = \`.flow/noop-\${phase}.txt\`;
+const noop = (phase === "direct" || phase === "tests") && existsSync(noopFile);
+if (noop) rmSync(noopFile);
 else if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
 else writeFileSync("feature.mjs", "export const answer = 42;\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
@@ -460,6 +461,32 @@ describe("略過 TDD", () => {
     expect(second.attempts["T-1:tests"]).toBeUndefined();
     expect(listRetries(id)).toHaveLength(1);
     expect(readFileSync(join(flowDir(id), "red-output.txt"), "utf8")).toContain("不要求紅燈");
+  });
+
+  it("測試階段沒有新增任何檔案、但現有測試已通過時，視為已涵蓋並進入綠燈", async () => {
+    const id = "f-tests-covered";
+    const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
+      cycle: ["a", "b"], install: "true", test: "true", checks: [],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "noop-tests.txt"), "");
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify(acceptance));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "元件測試", description: "新增元件測試", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+      autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts: {},
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.taskPhase).toBe("code");
+    expect(listRetries(id).map((item) => item.category)).not.toContain("tests_not_written");
+    expect(readFileSync(join(flowDir(id), "red-output.txt"), "utf8")).toContain("視為已涵蓋");
   });
 
   it("不走 TDD 且沒有檔案變更時略過任務，不以未實作重試", async () => {

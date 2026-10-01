@@ -1063,7 +1063,16 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       return retry(run, key, planTamperedMessage(tampered), "implement", "plan_tampered");
     }
     const commit = await commitAll(repo, `test(${task.id}): ${task.title} [${testsAuthor}]`);
-    if (!commit) return retry(run, key, "沒有任何檔案變更，這個階段必須撰寫測試。", "implement", "tests_not_written");
+    if (!commit) {
+      // 完全沒有變更：若現有測試已經通過，表示行為早就被既有測試涵蓋（例如前一個任務已寫過同樣的斷言），不必硬寫重複的測試
+      const covered = await runCommand(target(run, redStepName(task.id), CMD_AGENT), testCmd);
+      if (!covered.ok) return retry(run, key, "沒有任何檔案變更，這個階段必須撰寫測試。", "implement", "tests_not_written");
+      const coveredError = await settleHandoff(run, outcome, LOCKED_FILES, before);
+      if (coveredError) return retry(run, key, coveredError, "implement", "handoff_invalid");
+      writeFileSync(flowFile(run, "red-output.txt"), "此任務沒有新增測試：既有測試已通過，視為已涵蓋。不要為了製造失敗而修改產品程式；若沒有其他必須的實作，保持現況即可。");
+      info(run, `✅ [${progress}] 沒有新增測試，既有測試已通過，視為已涵蓋`);
+      return { ...succeed(run, key, "implement"), taskPhase: "code", taskBase: before, testsCommit: before, lastTestsAuthor: testsAuthor };
+    }
     const changed = await changedFiles(repo, before, commit);
     if (!changed.some((f) => testRe.test(f))) {
       await resetTo(repo, before);
