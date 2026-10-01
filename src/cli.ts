@@ -11,7 +11,7 @@ import { addWorktree, git } from "./git.js";
 import { cleanableRuns, cleanRun } from "./cleanup.js";
 import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
-import { flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
+import { confirmationsPath, flowDir, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, OrderedTaskList, StopAfterStage, type FlowRun, type StopAfterStage as StopAfterStageType, type TaskItem } from "./schemas.js";
 import { computeInsights, failureLabel, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
@@ -130,7 +130,8 @@ function loadConfirmationTasks(
   id: string,
   ordered: JsonResult<TaskItem[]> = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList),
 ): { tasks: TaskItem[]; draft: boolean } {
-  const savedPath = join(flowDir(id), "confirmations.json");
+  const newPath = confirmationsPath(id);
+  const savedPath = existsSync(newPath) ? newPath : join(flowDir(id), "confirmations.json"); // 舊 run 的清單放在 .flow/
   const savedExists = existsSync(savedPath);
   const saved = savedExists ? readJsonFile(savedPath, OrderedTaskList) : undefined;
   const planned = readJsonFile(join(flowDir(id), "tasks.json"), OrderedTaskList);

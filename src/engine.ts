@@ -7,7 +7,7 @@ import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from ".
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
-import { flowDir, logDir, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { confirmationDetailsPath, confirmationsPath, flowDir, logDir, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
 import { exec } from "./proc.js";
 import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
@@ -51,7 +51,7 @@ import {
   type PlanReviewRound,
   type PlanReviewState,
 } from "./planReview.js";
-import { descriptionWaivesRed, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { confirmationChecklist, descriptionWaivesRed, splitHumanItems, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 import { violatingTestChanges } from "./testGuard.js";
 
@@ -351,22 +351,65 @@ function loadOrderedTasks(run: FlowRun): TaskItem[] {
 }
 
 function loadConfirmations(run: FlowRun): TaskItem[] {
-  if (!existsSync(flowFile(run, "confirmations.json"))) return [];
-  const r = readJsonFile(flowFile(run, "confirmations.json"), OrderedTaskList);
+  if (!existsSync(confirmationsPath(run.id))) return [];
+  const r = readJsonFile(confirmationsPath(run.id), OrderedTaskList);
   return r.ok ? r.data : [];
+}
+
+function loadConfirmationDetails(run: FlowRun): { acceptance: AcceptanceItem[]; plan: Record<string, string> } {
+  try {
+    const d = JSON.parse(readFileSync(confirmationDetailsPath(run.id), "utf8")) as { acceptance?: AcceptanceItem[]; plan?: Record<string, string> };
+    return { acceptance: d.acceptance ?? [], plan: d.plan ?? {} };
+  } catch {
+    return { acceptance: [], plan: {} };
+  }
 }
 
 function rememberConfirmation(run: FlowRun, task: TaskItem): void {
   const current = loadConfirmations(run);
   if (current.some((item) => item.id === task.id)) return;
-  writeFileSync(flowFile(run, "confirmations.json"), JSON.stringify([...current, task], null, 2));
+  mkdirSync(runDir(run.id), { recursive: true });
+  writeFileSync(confirmationsPath(run.id), JSON.stringify([...current, task], null, 2));
+}
+
+/**
+ * 計畫定案時，把人工確認的任務、驗收條件與計畫段落從 .flow/ 搬到 run 目錄：
+ * 之後的實作、審查與修正都看不到它們，只在開 PR 時交給人。可重複執行（resume 時已搬過就不再有 confirm 任務）。
+ */
+function separateHumanItems(run: FlowRun): void {
+  const tasks = readJsonFile(flowFile(run, "tasks.json"), OrderedTaskList);
+  const ac = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  const planMd = flowText(run, "plan.md");
+  mkdirSync(runDir(run.id), { recursive: true });
+  if (tasks.ok && ac.ok) {
+    const split = splitHumanItems(tasks.data, ac.data, planMd);
+    if (split.confirm.length) {
+      const saved = loadConfirmations(run);
+      const details = loadConfirmationDetails(run);
+      const merged = [...saved, ...split.confirm.filter((t) => !saved.some((s) => s.id === t.id))];
+      writeFileSync(confirmationsPath(run.id), JSON.stringify(merged, null, 2));
+      writeFileSync(
+        confirmationDetailsPath(run.id),
+        JSON.stringify({
+          acceptance: [...details.acceptance, ...split.humanAcceptance.filter((a) => !details.acceptance.some((d) => d.id === a.id))],
+          plan: { ...details.plan, ...split.humanPlan },
+        }, null, 2),
+      );
+      writeFileSync(flowFile(run, "tasks.json"), JSON.stringify(split.tasks, null, 2));
+      writeFileSync(flowFile(run, "acceptance.json"), JSON.stringify(split.acceptance, null, 2));
+      writeFileSync(flowFile(run, "plan.md"), split.planMd);
+      const ordered = loadOrderedTasks(run).map((t) => ({ ...t, dependsOn: t.dependsOn.filter((d) => !split.confirm.some((c) => c.id === d)) }));
+      writeFileSync(flowFile(run, "tasks.ordered.json"), JSON.stringify(ordered, null, 2));
+    }
+  }
+  if (!existsSync(confirmationsPath(run.id))) writeFileSync(confirmationsPath(run.id), "[]");
 }
 
 function announceConfirmations(run: FlowRun): void {
   const confirm = loadConfirmations(run);
   if (!confirm.length) return;
   info(run, `👀 另有 ${confirm.length} 項需要你確認（不進實作，不會停下）：${confirm.map((t) => `${t.id} ${t.title}`).join("、")}`);
-  info(run, `   清單：${flowFile(run, "confirmations.json")}`);
+  info(run, `   這些項目不會交給 agent，會在開 PR 時附給你；清單：${confirmationsPath(run.id)}`);
 }
 
 // ───────────────────────── 各階段 ─────────────────────────
@@ -392,7 +435,7 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
 
 const PLAN_FILES = ["spec.md", "acceptance.json", "plan.md", "tasks.json"] as const;
 /** 計畫定案後（實作、修正、程式碼審查）另外依賴排好的任務順序，同樣不能被改 */
-const LOCKED_FILES = [...PLAN_FILES, "tasks.ordered.json", "confirmations.json"] as const;
+const LOCKED_FILES = [...PLAN_FILES, "tasks.ordered.json"] as const;
 /** 審查、修訂與仲裁的快照另外包含審查回應；不要併進 PLAN_FILES，定案後的階段不依賴它 */
 const PLAN_REPLY_FILES = [...PLAN_FILES, "plan-replies.md"] as const;
 
@@ -433,10 +476,7 @@ function validatePlan(run: FlowRun): TaskItem[] | string {
 }
 
 function acceptPlan(run: FlowRun, ordered: TaskItem[]): void {
-  const confirm = ordered.filter((t) => t.kind === "confirm");
-  const implement = ordered.filter((t) => t.kind !== "confirm");
-  writeFileSync(flowFile(run, "tasks.ordered.json"), JSON.stringify(implement, null, 2));
-  writeFileSync(flowFile(run, "confirmations.json"), JSON.stringify(confirm, null, 2));
+  writeFileSync(flowFile(run, "tasks.ordered.json"), JSON.stringify(ordered.filter((t) => t.kind !== "confirm"), null, 2));
 }
 
 function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
@@ -455,6 +495,7 @@ function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
 function planSettled(run: FlowRun, key: string): FlowRun {
   const pending = openActions(readHandoff(run.id), "plan");
   if (pending.length) return retry(run, "plan-handoff", `計畫仍有未結交接事項：${pending.map((item) => item.id).join("、")}`, "plan_fix", "open_handoff");
+  separateHumanItems(run);
   const next = run.autopilot ? "implement" : "awaiting_approval";
   const ordered = loadOrderedTasks(run);
   announceTasks(run, ordered);
@@ -1463,9 +1504,11 @@ async function prStage(run: FlowRun): Promise<FlowRun> {
   const title = run.requirement.split("\n")[0]!.slice(0, 72);
   const spec = existsSync(flowFile(run, "spec.md")) ? readFileSync(flowFile(run, "spec.md"), "utf8") : "";
   const bodyPath = join(runDir(run.id), "pr-body.md");
+  const details = loadConfirmationDetails(run);
+  const checklist = confirmationChecklist(loadConfirmations(run), details.acceptance, details.plan);
   writeFileSync(
     bodyPath,
-    `> 由 agentflowctl 自動產生（run: ${run.id}，參與的 agent：${run.cycle.join("、")}，執行 agent ${agentRuns(run.id)} 次）\n\n${spec}`,
+    `> 由 agentflowctl 自動產生（run: ${run.id}，參與的 agent：${run.cycle.join("、")}，執行 agent ${agentRuns(run.id)} 次）\n\n${checklist ? `${checklist}\n` : ""}${spec}`,
   );
   const r = await exec(
     "gh",

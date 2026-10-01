@@ -113,6 +113,57 @@ export function confirmationLines(tasks: TaskItem[], draft = false): string[] {
   return lines;
 }
 
+/**
+ * 把人工確認的內容從自動流程的檔案中分出來：
+ * 只由 confirm 任務負責的驗收條件、confirm 任務本身，以及計畫裡 `## T-n` 的段落。
+ * 剩下的任務去掉對 confirm 任務的相依。沒有任務認領的條件照舊保留。
+ */
+export function splitHumanItems<A extends { id: string }>(
+  tasks: TaskItem[],
+  acceptance: A[],
+  planMd: string,
+): { tasks: TaskItem[]; confirm: TaskItem[]; acceptance: A[]; humanAcceptance: A[]; planMd: string; humanPlan: Record<string, string> } {
+  const confirm = tasks.filter((t) => t.kind === "confirm");
+  const confirmIds = new Set(confirm.map((t) => t.id));
+  const implemented = new Set(tasks.filter((t) => t.kind !== "confirm").flatMap((t) => t.acceptance));
+  const confirmAc = new Set(confirm.flatMap((t) => t.acceptance));
+  const isHuman = (a: A) => confirmAc.has(a.id) && !implemented.has(a.id);
+  const humanPlan: Record<string, string> = {};
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of planMd.split("\n")) {
+    const heading = /^## (T-\d+)\b/.exec(line);
+    if (heading) {
+      skipping = confirmIds.has(heading[1]!);
+      if (skipping) humanPlan[heading[1]!] = "";
+    } else if (/^## /.test(line)) skipping = false;
+    if (skipping) {
+      const id = Object.keys(humanPlan).at(-1)!;
+      humanPlan[id] += `${line}\n`;
+    } else kept.push(line);
+  }
+  return {
+    tasks: tasks.filter((t) => t.kind !== "confirm").map((t) => ({ ...t, dependsOn: t.dependsOn.filter((d) => !confirmIds.has(d)) })),
+    confirm,
+    acceptance: acceptance.filter((a) => !isHuman(a)),
+    humanAcceptance: acceptance.filter(isHuman),
+    planMd: kept.join("\n"),
+    humanPlan,
+  };
+}
+
+/** PR 描述用的核對清單：這些項目不進實作，交給審 PR 的人逐項勾選；沒有項目時回空字串 */
+export function confirmationChecklist(tasks: TaskItem[], acceptance: { id: string; description: string }[] = [], plan: Record<string, string> = {}): string {
+  if (!tasks.length) return "";
+  const text = new Map(acceptance.map((item) => [item.id, item.description]));
+  const items = tasks.map((task) => {
+    const criteria = task.acceptance.map((id) => (text.has(id) ? `${id} ${text.get(id)}` : id));
+    const notes = plan[task.id]?.replace(/^## .*\n/, "").trim();
+    return `- [ ] **${task.id} ${task.title}**\n  ${task.description.replace(/\n+/g, "\n  ")}\n  驗收：${criteria.join("；")}${notes ? `\n  計畫備註：${notes.replace(/\n+/g, "\n  ")}` : ""}`;
+  });
+  return `## 需要人工確認\n\n以下項目無法由程式判定，沒有交給 agent 實作，請在合併前親自確認：\n\n${items.join("\n")}\n`;
+}
+
 /** 描述裡寫出的檔案路徑（含目錄與副檔名），例如 src/pages/x/Foo.tsx */
 const PATH_TOKEN = /[\w@.-]+(?:\/[\w@.-]+)+\.[A-Za-z0-9]+/g;
 

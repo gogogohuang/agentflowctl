@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TaskItem } from "./schemas.js";
-import { confirmationLines, confirmationTasks, describedPaths, orderTasks, outOfScopeFiles, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { confirmationChecklist, splitHumanItems, confirmationLines, confirmationTasks, describedPaths, orderTasks, outOfScopeFiles, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 
 const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
   TaskItem.parse({ id, title: id, description: id, dependsOn, acceptance });
@@ -103,6 +103,37 @@ describe("待人確認的任務", () => {
     expect(lines).toContain("人眼看過首頁");
     expect(lines).toContain("驗收：AC-32");
     expect(confirmationLines([])).toEqual(["沒有需要人確認的任務"]);
+  });
+
+  it("PR 描述的核對清單：每項一個未勾選方塊，沒有項目時回空字串", () => {
+    const md = confirmationChecklist([confirm]);
+    expect(md).toContain("## 需要人工確認");
+    expect(md).toContain("- [ ] **T-18 核對畫面**");
+    expect(md).toContain("人眼看過首頁");
+    expect(md).toContain("AC-32");
+    expect(confirmationChecklist([])).toBe("");
+  });
+
+  it("splitHumanItems 把人工確認的任務、只屬於它的 AC 與計畫段落分出去", () => {
+    const ac = [{ id: "AC-1" }, { id: "AC-32" }, { id: "AC-5" }, { id: "AC-9" }];
+    const tasks = [
+      task("T-1"),
+      confirm,
+      TaskItem.parse({ ...confirm, id: "T-19", acceptance: ["AC-5", "AC-1"] }),
+      task("T-2", ["T-18"], ["AC-5"]),
+    ];
+    const plan = "整體\n\n## T-1\n實作\n\n## T-18 核對\n看首頁\n### 細節\n更多\n\n## T-2\n做事\n";
+    const r = splitHumanItems(tasks, ac, plan);
+    expect(r.tasks.map((t) => t.id)).toEqual(["T-1", "T-2"]);
+    expect(r.tasks[1]!.dependsOn).toEqual([]);
+    expect(r.confirm.map((t) => t.id)).toEqual(["T-18", "T-19"]);
+    // AC-32 只有 confirm 認領 → 分出；AC-5 另有 implement 任務、AC-1 有 T-1 認領 → 保留；AC-9 無人認領 → 保留
+    expect(r.humanAcceptance.map((a) => a.id)).toEqual(["AC-32"]);
+    expect(r.acceptance.map((a) => a.id)).toEqual(["AC-1", "AC-5", "AC-9"]);
+    expect(r.planMd).not.toContain("看首頁");
+    expect(r.planMd).toContain("## T-1");
+    expect(r.planMd).toContain("## T-2");
+    expect(r.humanPlan["T-18"]).toContain("更多");
   });
 
   it("draft 為 true 時標示計畫尚未定案", () => {
