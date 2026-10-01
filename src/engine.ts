@@ -315,6 +315,10 @@ function taskUsesTdd(task: TaskItem, framework: boolean): boolean {
   return framework && task.tdd !== false;
 }
 
+/** 紅燈測試一開始就通過時寫進 feedback.md 的原因；下一次嘗試靠它判斷上一次是不是同樣原因被退回 */
+const TESTS_NOT_RED_REASON = "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。";
+const TESTS_NOT_RED_MARK = "請撰寫會因功能尚未實作而失敗的測試";
+
 /** 已定案的任務寫明不要求紅燈：仍寫測試，但通過也算完成紅燈階段。 */
 function testsRedGuidance(testCmd: string, waiveRed: boolean): { roleGoal: string; redGuidance: string; verifyNote: string } {
   if (!waiveRed) {
@@ -1015,7 +1019,11 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
   if (!acceptance.ok) throw new Error(acceptance.error);
   const acceptanceJson = JSON.stringify(taskAcceptance(task, acceptance.data), null, 2);
-  const waiveRed = task.tdd !== false && descriptionWaivesRed(task.description);
+  // 上一次嘗試剛因「測試一開始就通過」被退回：測試只動了測試檔卻在既有程式上通過，表示行為早就存在
+  // （例如前一個任務順手做掉了），再要求紅燈只會重試到上限。第二次起改為接受特徵化測試，由任務審查與驗證把關
+  const redAlreadyGreen = run.taskPhase === "tests" && existsSync(flowFile(run, "feedback.md"))
+    && readFileSync(flowFile(run, "feedback.md"), "utf8").includes(TESTS_NOT_RED_MARK);
+  const waiveRed = task.tdd !== false && (descriptionWaivesRed(task.description) || redAlreadyGreen);
   if (run.taskPhase === "review") return taskReviewStep(run, task, progress, taskJson, acceptanceJson);
   if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
   if (run.taskPhase === "fix") return taskFixStep(run, task, progress);
@@ -1033,9 +1041,10 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (run.taskPhase === "tests") {
     const key = `${task.id}:tests`;
     info(run, `🧪 [${progress}] 撰寫測試（${agents.tests}）`);
-    if (waiveRed && existsSync(flowFile(run, "feedback.md")) && readFileSync(flowFile(run, "feedback.md"), "utf8").includes("請撰寫會因功能尚未實作而失敗的測試")) {
+    if (waiveRed && existsSync(flowFile(run, "feedback.md")) && readFileSync(flowFile(run, "feedback.md"), "utf8").includes(TESTS_NOT_RED_MARK)) {
       rmSync(flowFile(run, "feedback.md"));
     }
+    if (redAlreadyGreen) info(run, `ℹ️  [${progress}] 測試在既有實作上就通過，改為接受特徵化測試（不再要求紅燈）`);
     const before = await headCommit(repo);
     const snap = snapshotPlan(run, LOCKED_FILES);
     const outcome = await agentStep(
@@ -1063,7 +1072,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const red = await runCommand(target(run, redStepName(task.id), CMD_AGENT), testCmd);
     if (red.ok && !waiveRed) {
       await resetTo(repo, before);
-      return retry(run, key, "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。", "implement", "tests_not_red");
+      return retry(run, key, TESTS_NOT_RED_REASON, "implement", "tests_not_red");
     }
     const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, before);
     if (handoffError) {
