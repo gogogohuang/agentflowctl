@@ -21,6 +21,8 @@ export interface InvokeOptions {
   prompt: string;
   cwd: string;
   model?: string;
+  /** 推理強度；只有 claude 與 codex 使用 */
+  effort?: string;
   extraArgs: string[];
   /** 這個 run 的資料目錄，adapter 可以在這裡寫設定檔 */
   runDir: string;
@@ -42,7 +44,7 @@ export interface Adapter {
   probe(command?: string[]): { cmd: string; args: string[] };
   invoke(opts: InvokeOptions): Invocation;
   /** 實際模型可用性檢查；無法強制停用工具的 adapter 不提供。 */
-  invokeModelProbe?(model: string, cwd: string): Invocation;
+  invokeModelProbe?(model: string, cwd: string, effort?: string): Invocation;
   /** 模型探測時解析一行 stdout；可以比 parse 更嚴格（例如尚未完成的工具也算），未提供時用 parse */
   parseModelProbe?(line: string): AgentEvent[];
   /** 從模型探測的 stderr 找出讓驗證失敗的診斷，回傳失敗原因 */

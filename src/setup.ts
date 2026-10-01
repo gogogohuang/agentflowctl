@@ -61,16 +61,16 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
       for (const name of lacking) {
         log(`${name} 沒有登記模型，adaptive 只看 models，請登記可用的模型與強度`);
         for (;;) {
-          const line = (await ask(`  ${name} 模型（名稱 強度 low|medium|high，強度省略為 medium，Enter 結束）`)).trim();
+          const line = (await ask(`  ${name} 模型（名稱 [強度 low|medium|high] [effort]，強度省略為 medium，effort 僅限 Claude Code 與 Codex，Enter 結束）`)).trim();
           if (!line) break;
-          const [model, strength = "medium", ...extra] = line.split(/\s+/);
+          const [model, strength = "medium", effort, ...extra] = line.split(/\s+/);
           if (extra.length || !ModelStrength.safeParse(strength).success) {
-            log("  格式是「名稱 強度」，強度只能是 low、medium 或 high");
+            log("  格式是「名稱 強度 effort」（後兩項可省略），強度只能是 low、medium 或 high");
             continue;
           }
           try {
-            tried = addModel(tried, name, model!, strength as "low" | "medium" | "high");
-            notes.push(`${name} 模型 ${model}（${strength}）`);
+            tried = addModel(tried, name, model!, strength as "low" | "medium" | "high", effort);
+            notes.push(`${name} 模型 ${model}（${strength}${effort ? `，effort ${effort}` : ""}）`);
           } catch (e) {
             log(`  ${(e as Error).message}`);
           }

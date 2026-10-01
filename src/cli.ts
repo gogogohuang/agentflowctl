@@ -380,6 +380,7 @@ agent
       const detail = [
         `adapter=${def.adapter}`,
         def.model && `model=${def.model}`,
+        def.effort && `effort=${def.effort}`,
         def.extraArgs.length && `extraArgs=${def.extraArgs.join(" ")}`,
         def.command && `command=${def.command.join(" ")}`,
       ].filter(Boolean);
@@ -394,11 +395,12 @@ agent
   .description("新增 agent；command adapter 的指令寫在 -- 後面")
   .requiredOption("--adapter <adapter>", "claude、codex、gemini 或 command")
   .option("--model <model>", "模型名稱")
+  .option("--effort <effort>", "推理強度，只有 claude 與 codex 支援，例如 low、medium、high")
   .option("--extra-arg <arg>", "額外參數，可重複；以 - 開頭時寫成 --extra-arg=--sandbox", collect)
   .option("--model-probe-arg <arg>", "自訂 command 的模型探測命令參數，可重複", collect)
-  .action((name: string, command: string[], opts: { adapter: string; model?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
+  .action((name: string, command: string[], opts: { adapter: string; model?: string; effort?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
     applyEdit(
-      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
+      (cfg) => addAgent(cfg, name, { adapter: opts.adapter, model: opts.model, effort: opts.effort, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
       `已新增 ${name}；要讓它參與請用 agent cycle`,
     );
   });
@@ -408,11 +410,12 @@ agent
   .description("修改 agent；更換 adapter 時會清掉舊 adapter 的 model、extraArgs、command")
   .option("--adapter <adapter>", "claude、codex、gemini 或 command")
   .option("--model <model>", "模型名稱")
+  .option("--effort <effort>", "推理強度，只有 claude 與 codex 支援，例如 low、medium、high")
   .option("--extra-arg <arg>", "額外參數，可重複，會整個取代原本的設定", collect)
   .option("--model-probe-arg <arg>", "自訂 command 的模型探測命令參數，可重複，會整個取代", collect)
-  .action((name: string, command: string[], opts: { adapter?: string; model?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
+  .action((name: string, command: string[], opts: { adapter?: string; model?: string; effort?: string; extraArg?: string[]; modelProbeArg?: string[] }) => {
     applyEdit(
-      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
+      (cfg) => setAgent(cfg, name, { adapter: opts.adapter, model: opts.model, effort: opts.effort, extraArgs: opts.extraArg, modelProbe: opts.modelProbeArg, command: command.length ? command : undefined }),
       `已更新 ${name}`,
     );
   });
@@ -474,25 +477,29 @@ const model = program.command("model").description("設定模型強度並檢查�
 
 model.command("add <agent> <name>")
   .requiredOption("--strength <strength>", "low、medium 或 high")
-  .action(async (agent: string, name: string, opts: { strength: string }) => {
+  .option("--effort <effort>", "這個模型呼叫時的推理強度，只有 claude 與 codex 支援")
+  .action(async (agent: string, name: string, opts: { strength: string; effort?: string }) => {
     const strength = parseStrength(opts.strength);
     const before = readRawConfig(configPath());
     const cfg = loadRepoConfig();
     const def = cfg.agents[agent];
     if (!def) throw new Error(`未定義的 agent：${agent}`);
-    const next = addModel(before, agent, name, strength);
+    const next = addModel(before, agent, name, strength, opts.effort);
     console.log("模型檢查會送出最短請求，可能耗用少量 token。");
-    const checked = await probeModel(def, name);
+    const checked = await probeModel(def, name, undefined, opts.effort);
     if (checked.status !== "ok") throw new Error(`${agent} 的模型 ${name} 未加入：${checked.reason}`);
     writeRawConfig(configPath(), next);
-    console.log(`✅ 已新增 ${agent} 的模型 ${name}（${strength}）${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}；探測可能耗用少量 token`);
+    console.log(`✅ 已新增 ${agent} 的模型 ${name}（${strength}${opts.effort ? `，effort ${opts.effort}` : ""}）${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}；探測可能耗用少量 token`);
   });
 
 model.command("set <agent> <name>")
-  .requiredOption("--strength <strength>", "low、medium 或 high")
-  .action((agent: string, name: string, opts: { strength: string }) => {
-    writeRawConfig(configPath(), setModelStrength(readRawConfig(configPath()), agent, name, parseStrength(opts.strength)));
-    console.log(`✅ 已將 ${agent} 的模型 ${name} 強度設為 ${opts.strength}；此指令不重驗可用性`);
+  .option("--strength <strength>", "low、medium 或 high")
+  .option("--effort <effort>", "推理強度；填 none 清除")
+  .action((agent: string, name: string, opts: { strength?: string; effort?: string }) => {
+    const effort = opts.effort === "none" ? null : opts.effort;
+    writeRawConfig(configPath(), setModelStrength(readRawConfig(configPath()), agent, name, opts.strength === undefined ? undefined : parseStrength(opts.strength), effort));
+    const changed = [opts.strength !== undefined && `強度設為 ${opts.strength}`, opts.effort !== undefined && (effort === null ? "已清除 effort" : `effort 設為 ${opts.effort}`)].filter(Boolean).join("、");
+    console.log(`✅ 已將 ${agent} 的模型 ${name} ${changed}；此指令不重驗可用性`);
   });
 
 model.command("remove <agent> <name>").action((agent: string, name: string) => {
@@ -507,7 +514,7 @@ model.command("list [agent]").action((agent?: string) => {
     const def = cfg.agents[name];
     if (!def) throw new Error(`未定義的 agent：${name}`);
     console.log(`${name}（${def.adapter}）`);
-    for (const item of def.models ?? []) console.log(`  ${item.name}  ${item.strength}`);
+    for (const item of def.models ?? []) console.log(`  ${item.name}  ${item.strength}${item.effort ? `  effort=${item.effort}` : ""}`);
     if (!def.models?.length) console.log("  尚未設定模型");
   }
   console.log("清單只顯示設定內容；要確認當前帳號是否可用，請執行 model check。");
@@ -521,7 +528,7 @@ model.command("check [agent]").action(async (agent?: string) => {
     const def = cfg.agents[name];
     if (!def) throw new Error(`未定義的 agent：${name}`);
     for (const item of def.models ?? []) {
-      const checked = await probeModel(def, item.name);
+      const checked = await probeModel(def, item.name, undefined, item.effort);
       const at = new Date().toISOString();
       const mark = checked.status === "ok" ? "✅" : checked.status === "unverifiable" ? "⚪" : "❌";
       const result = checked.status === "ok" ? `可呼叫${checked.resolvedModel ? ` → ${checked.resolvedModel}` : ""}${def.adapter === "command" ? "（由自訂探測命令回報）" : ""}` : checked.reason;

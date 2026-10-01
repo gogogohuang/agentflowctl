@@ -19,6 +19,7 @@ export function effectiveStageStrengths(cfg: RepoConfig): Record<ModelStage, { s
 
 export interface SelectedModel {
   name?: string;
+  effort?: string;
   strength?: ModelStrength;
   targetStrength?: ModelStrength;
   insufficient: boolean;
@@ -98,7 +99,7 @@ export function selectModel(
   const mode = run.modelMode ?? "balanced";
   if (mode === "balanced") {
     const fallback = def.adapter === "command" ? undefined : cfg.defaultModels[def.adapter];
-    return { mode, name: def.model ?? fallback, insufficient: false };
+    return { mode, name: def.model ?? fallback, effort: def.effort, insufficient: false };
   }
   if (!def.models?.length) throw new Error(`agent ${agent} 沒有設定 models`);
   const stage = stepStage(step);
@@ -109,7 +110,7 @@ export function selectModel(
   const min = Math.min(...candidates.map((m) => LEVEL[m.strength]));
   const chosen = candidates.find((m) => LEVEL[m.strength] === min)
     ?? def.models.reduce((best, current) => LEVEL[current.strength] > LEVEL[best.strength] ? current : best);
-  return { mode, name: chosen.name, strength: chosen.strength, targetStrength, insufficient: LEVEL[chosen.strength] < LEVEL[targetStrength] };
+  return { mode, name: chosen.name, effort: chosen.effort ?? def.effort, strength: chosen.strength, targetStrength, insufficient: LEVEL[chosen.strength] < LEVEL[targetStrength] };
 }
 
 /** adaptive 模式下缺少 models 的錯誤說明：列出全部 agent，並給兩種修法 */
@@ -135,7 +136,7 @@ export function validateAdaptiveConfig(cfg: RepoConfig, cycle: string[]): void {
     if (def.adapter === "command") {
       if (!def.command?.some((arg) => arg.includes("{model}"))) throw new Error(`agent ${name} 的 command 缺少 {model}`);
       if (!def.modelProbe?.length || !def.modelProbe.some((arg) => arg.includes("{model}"))) throw new Error(`agent ${name} 的 modelProbe 缺少 {model}`);
-    } else if (def.extraArgs.some((arg) => arg === "--model" || arg === "-m" || arg.startsWith("--model="))) {
+    } else if (def.extraArgs.some((arg) => arg === "--model" || arg === "-m" || arg.startsWith("--model=") || arg === "--effort" || arg.startsWith("--effort="))) {
       throw new Error(`agent ${name} 的 extraArgs 與 adaptive 模型參數衝突`);
     }
   }

@@ -12,6 +12,7 @@ type RawAgent = Record<string, unknown>;
 export interface AgentPatch {
   adapter?: string;
   model?: string;
+  effort?: string;
   extraArgs?: string[];
   command?: string[];
   modelProbe?: string[];
@@ -24,7 +25,7 @@ export interface Edit {
 }
 
 /** 這些欄位的意義取決於 adapter，換 adapter 時要清掉 */
-const ADAPTER_FIELDS = ["model", "models", "modelProbe", "extraArgs", "command"] as const;
+const ADAPTER_FIELDS = ["model", "effort", "models", "modelProbe", "extraArgs", "command"] as const;
 
 const agentsOf = (cfg: RawConfig) => ({ ...((cfg.agents ?? {}) as Record<string, RawAgent>) });
 const isDefined = (cfg: RawConfig, name: string) => name in agentsOf(cfg);
@@ -52,7 +53,7 @@ export function addAgent(cfg: RawConfig, name: string, def: AgentPatch & { adapt
 export function setAgent(cfg: RawConfig, name: string, patch: AgentPatch): Edit {
   if (!isDefined(cfg, name)) throw new Error(`未定義的 agent：${name}`);
   if (Object.values(patch).every((v) => v === undefined)) {
-    throw new Error("沒有要修改的欄位（--adapter、--model、--model-probe-arg、--extra-arg 或 -- <command>）");
+    throw new Error("沒有要修改的欄位（--adapter、--model、--effort、--model-probe-arg、--extra-arg 或 -- <command>）");
   }
   const agents = agentsOf(cfg);
   const base: RawAgent = { ...agents[name] };

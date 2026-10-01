@@ -143,10 +143,10 @@ async function agentStep(
     const selected = selectModel(run, cfg, agent, step,
       /^T-\d+-/.test(step) ? loadOrderedTasks(run)[run.taskIndex]?.complexity : undefined,
       mode.kind === "review" ? agent : undefined, mode.modelScope);
-    say(`🤖 ${step}：${agent} 使用 ${selected.name ?? "CLI 預設（名稱未知）"}${selected.insufficient ? `（低於目標 ${selected.targetStrength}）` : ""}`);
+    say(`🤖 ${step}：${agent} 使用 ${selected.name ?? "CLI 預設（名稱未知）"}${selected.effort ? `（effort ${selected.effort}）` : ""}${selected.insufficient ? `（低於目標 ${selected.targetStrength}）` : ""}`);
     const callKey = handoffKey(run, step, mode.slot ?? 0, agent);
     prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false, mode.workspace?.flow);
-    const r = await runAgent(agent, { ...resolveAgent(cfg, agent), model: selected.name },
+    const r = await runAgent(agent, { ...resolveAgent(cfg, agent), model: selected.name, effort: selected.effort },
       { ...target(run, step, agent, mode.workspace?.dir), strength: selected.strength, targetStrength: selected.targetStrength }, prompt);
     if (r.resolvedModel && r.resolvedModel !== selected.name) say(`   ↳ CLI 回報實際模型：${r.resolvedModel}`);
     addUsage(run.id, { stage: step, agent, model: selected.name, resolvedModel: r.resolvedModel,

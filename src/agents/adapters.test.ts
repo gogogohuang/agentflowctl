@@ -49,6 +49,17 @@ describe("adapter 事件解析", () => {
     expect(inv.args.at(-1)).toBe("-");
   });
 
+  it("effort：claude 用 --effort，codex 用 -c model_reasoning_effort，沒給就不加", () => {
+    const base = { prompt: "P", cwd: "/w", model: "m", extraArgs: ["--x"], runDir: mkdtempSync(join(tmpdir(), "agentflowctl-effort-")), projectRoot: "/p" };
+    const claude = ADAPTERS.claude.invoke({ ...base, effort: "high" }).args;
+    expect(claude.slice(claude.indexOf("--model"), claude.indexOf("--model") + 4)).toEqual(["--model", "m", "--effort", "high"]);
+    expect(ADAPTERS.claude.invoke(base).args).not.toContain("--effort");
+    const codex = ADAPTERS.codex.invoke({ ...base, effort: "xhigh" }).args;
+    expect(codex).toEqual(expect.arrayContaining(["-m", "m", "-c", 'model_reasoning_effort="xhigh"']));
+    expect(codex.indexOf("--x")).toBeGreaterThan(codex.indexOf("model_reasoning_effort=\"xhigh\""));
+    expect(ADAPTERS.codex.invoke(base).args.join(" ")).not.toContain("model_reasoning_effort");
+  });
+
   it("gemini：stream-json", () => {
     const { parse } = ADAPTERS.gemini;
     expect(parse(j({ type: "message", role: "assistant", content: "yo" }))).toEqual([{ kind: "text", text: "yo" }]);

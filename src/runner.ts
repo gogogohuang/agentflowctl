@@ -96,12 +96,13 @@ export async function runAgent(
     prompt,
     cwd: t.cwd,
     model: def.model,
+    effort: def.effort,
     extraArgs: def.extraArgs,
     runDir: runDir(t.runId),
     projectRoot: projectRoot(),
     command: def.command,
   });
-  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: name, adapter: def.adapter, model: def.model, strength: t.strength, targetStrength: t.targetStrength, startedAt: new Date().toISOString() }));
+  appendLog(t.logFile, headerLine({ stage: t.stage, step: t.step, agent: name, adapter: def.adapter, model: def.model, effort: def.effort, strength: t.strength, targetStrength: t.targetStrength, startedAt: new Date().toISOString() }));
 
   let done: { ok: boolean; summary?: string } | undefined;
   let lastText = "";

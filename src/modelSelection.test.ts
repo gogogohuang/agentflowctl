@@ -98,3 +98,26 @@ describe("adaptive 設定檢查", () => {
     expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex", models: [{ name: "x", strength: "low" }], extraArgs: ["-m", "other"] } } }), ["a"])).toThrow(/extraArgs/);
   });
 });
+
+describe("effort", () => {
+  const withEffort = () => RepoConfig.parse({ agents: { a: { adapter: "claude", effort: "medium", models: [
+    { name: "small", strength: "low", effort: "low" },
+    { name: "large", strength: "high" },
+  ] } } });
+
+  it("adaptive 取被選中模型的 effort，沒寫時退回 agent 的 effort", () => {
+    expect(selectModel(run(), withEffort(), "a", "T-1-code", "low")).toMatchObject({ name: "small", effort: "low" });
+    expect(selectModel(run(), withEffort(), "a", "T-1-code", "high")).toMatchObject({ name: "large", effort: "medium" });
+  });
+
+  it("balanced 沿用 agent 的 effort", () => {
+    expect(selectModel(run({ modelMode: "balanced" }), withEffort(), "a", "T-1-code")).toMatchObject({ effort: "medium" });
+  });
+
+  it("gemini 與 command 不能設定 effort，extraArgs 的 --effort 與 adaptive 衝突", () => {
+    expect(() => RepoConfig.parse({ agents: { g: { adapter: "gemini", effort: "high" } } })).toThrow(/不支援 effort/);
+    expect(() => RepoConfig.parse({ agents: { c: { adapter: "command", command: ["x"], models: [{ name: "m", strength: "low", effort: "low" }] } } })).toThrow(/不支援 effort/);
+    const conflict = RepoConfig.parse({ agents: { a: { adapter: "claude", extraArgs: ["--effort", "high"], models: [{ name: "m", strength: "low" }] } } });
+    expect(() => validateAdaptiveConfig(conflict, ["a"])).toThrow(/衝突/);
+  });
+});
