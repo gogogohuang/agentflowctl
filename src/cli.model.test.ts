@@ -26,7 +26,7 @@ describe("model CLI", () => {
     const emit = (lines: unknown[]) => writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs');
       fs.writeFileSync(${JSON.stringify(captured)},JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2)}));
       ${lines.map((line) => `console.log(${JSON.stringify(JSON.stringify(line))});`).join("\n")}`, { mode: 0o755 });
-    const run = (...args: string[]) => spawnSync(process.execPath, ["--import", tsx, cli, "model", ...args], {
+    const run = (...args: string[]) => spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", ...args], {
       cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
     });
     try {
@@ -60,34 +60,34 @@ describe("model CLI", () => {
     const config = join(root, "flow.config.json");
     writeFileSync(probe, "console.log(JSON.stringify({requestedModel:process.argv[2],resolvedModel:'actual-id'}))");
     writeFileSync(config, JSON.stringify({ agents: { local: { adapter: "command", command: ["custom", "{model}"], modelProbe: [process.execPath, probe, "{model}"] } } }));
-    const success = spawnSync(process.execPath, ["--import", tsx, cli, "model", "add", "local", "alias", "--strength", "low"], { cwd: root, encoding: "utf8" });
+    const success = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "add", "local", "alias", "--strength", "low"], { cwd: root, encoding: "utf8" });
     expect(success.status, success.stderr).toBe(0);
     expect(JSON.parse(readFileSync(config, "utf8")).agents.local.models).toEqual([{ name: "alias", strength: "low" }]);
     const marker = join(root, "duplicate-probed");
     writeFileSync(probe, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'probed')`);
-    const duplicate = spawnSync(process.execPath, ["--import", tsx, cli, "model", "add", "local", "alias", "--strength", "high"], { cwd: root, encoding: "utf8" });
+    const duplicate = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "add", "local", "alias", "--strength", "high"], { cwd: root, encoding: "utf8" });
     expect(duplicate.status).toBe(1);
     expect(existsSync(marker)).toBe(false);
     const before = readFileSync(config, "utf8");
     writeFileSync(probe, "console.log(JSON.stringify({requestedModel:'wrong',resolvedModel:'actual-id'}))");
-    const failed = spawnSync(process.execPath, ["--import", tsx, cli, "model", "add", "local", "another", "--strength", "high"], { cwd: root, encoding: "utf8" });
+    const failed = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "add", "local", "another", "--strength", "high"], { cwd: root, encoding: "utf8" });
     expect(failed.status).toBe(1);
     expect(readFileSync(config, "utf8")).toBe(before);
 
-    const stage = spawnSync(process.execPath, ["--import", tsx, cli, "model", "stage", "taskReview", "high"], { cwd: root, encoding: "utf8" });
+    const stage = spawnSync(process.execPath, ["--import", tsx, cli, "config", "selection", "stage", "taskReview", "high"], { cwd: root, encoding: "utf8" });
     expect(stage.status, stage.stderr).toBe(0);
-    const mode = spawnSync(process.execPath, ["--import", tsx, cli, "model", "mode", "adaptive"], { cwd: root, encoding: "utf8" });
+    const mode = spawnSync(process.execPath, ["--import", tsx, cli, "config", "selection", "mode", "adaptive"], { cwd: root, encoding: "utf8" });
     expect(mode.status, mode.stderr).toBe(0);
     expect(JSON.parse(readFileSync(config, "utf8")).modelSelection).toEqual({ stageStrength: { taskReview: "high" }, mode: "adaptive" });
-    const set = spawnSync(process.execPath, ["--import", tsx, cli, "model", "set", "local", "alias", "--strength", "medium"], { cwd: root, encoding: "utf8" });
+    const set = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "set", "local", "alias", "--strength", "medium"], { cwd: root, encoding: "utf8" });
     expect(set.status, set.stderr).toBe(0);
-    const list = spawnSync(process.execPath, ["--import", tsx, cli, "model", "list", "local"], { cwd: root, encoding: "utf8" });
+    const list = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "list", "local"], { cwd: root, encoding: "utf8" });
     expect(list.stdout).toContain("alias  medium");
     writeFileSync(probe, "console.log(JSON.stringify({requestedModel:process.argv[2],resolvedModel:'actual-id'}))");
-    const check = spawnSync(process.execPath, ["--import", tsx, cli, "model", "check", "local"], { cwd: root, encoding: "utf8" });
+    const check = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "check", "local"], { cwd: root, encoding: "utf8" });
     expect(check.status, check.stderr).toBe(0);
     expect(check.stdout).toContain("alias: 可呼叫 → actual-id");
-    const blocked = spawnSync(process.execPath, ["--import", tsx, cli, "model", "remove", "local", "alias"], { cwd: root, encoding: "utf8" });
+    const blocked = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "remove", "local", "alias"], { cwd: root, encoding: "utf8" });
     expect(blocked.status).toBe(1);
     expect(JSON.parse(readFileSync(config, "utf8")).agents.local.models).toEqual([{ name: "alias", strength: "medium" }]);
   }, 30_000);

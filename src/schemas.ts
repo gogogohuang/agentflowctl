@@ -139,7 +139,7 @@ export type ModelStrength = z.infer<typeof ModelStrength>;
 export const ModelStage = z.enum(["spec", "plan", "planReview", "planFix", "planArbiter", "taskTests", "taskCode", "taskReview", "taskFix", "fix", "review"]);
 export type ModelStage = z.infer<typeof ModelStage>;
 
-/** 推理強度（effort）；各 CLI 接受的值不同且變動快，這裡只確保非空，值是否可用交給 CLI 與 model check */
+/** 推理強度（effort）；各 CLI 接受的值不同且變動快，這裡只確保非空，值是否可用交給 CLI 與 config agent model check */
 export const Effort = z.string().trim().min(1);
 
 export const ModelEntry = z.object({ name: z.string().trim().min(1), strength: ModelStrength, effort: Effort.optional() });
@@ -165,7 +165,7 @@ export type AgentDef = z.infer<typeof AgentDef>;
 
 /** 目標專案可選的 flow.config.json，預設值對應 Vite + TypeScript + Vitest 專案 */
 export const RepoConfig = z.object({
-  /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 agent add） */
+  /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 config agent add） */
   agents: z.record(z.string(), AgentDef).default({}),
   /** 各 CLI adapter 的預設模型；agent 自己指定 model 時優先使用個別設定 */
   defaultModels: z.strictObject({

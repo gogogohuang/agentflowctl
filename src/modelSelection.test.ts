@@ -94,7 +94,7 @@ describe("adaptive 設定檢查", () => {
   it("拒絕沒有模型清單或與 extraArgs 衝突的 agent", () => {
     expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex" } } }), ["a"])).toThrow(/a.*models/);
     expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex" }, b: { adapter: "claude" } } }), ["a", "b"]))
-      .toThrow(/a、b[\s\S]*model add a[\s\S]*model add b[\s\S]*model mode balanced/);
+      .toThrow(/a、b[\s\S]*model add a[\s\S]*model add b[\s\S]*selection mode balanced/);
     expect(() => validateAdaptiveConfig(RepoConfig.parse({ agents: { a: { adapter: "codex", models: [{ name: "x", strength: "low" }], extraArgs: ["-m", "other"] } } }), ["a"])).toThrow(/extraArgs/);
   });
 });

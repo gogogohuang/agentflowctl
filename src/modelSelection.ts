@@ -118,9 +118,9 @@ export function missingModelsMessage(names: string[]): string {
   return [
     `目前是 adaptive 模式，但以下 agent 沒有登記 models（adaptive 只看 models，不看 model）：${names.join("、")}`,
     "  修法一：登記模型與強度（會用目前帳號送一個短請求驗證）",
-    ...names.map((n) => `    agentflowctl model add ${n} <模型名稱> --strength low|medium|high`),
+    ...names.map((n) => `    agentflowctl config agent model add ${n} <模型名稱> --strength low|medium|high`),
     "  修法二：改用 balanced，沿用各 agent 的 model",
-    "    agentflowctl model mode balanced（只改這次 run：run --model-mode balanced）",
+    "    agentflowctl config selection mode balanced（只改這次 run：run --model-mode balanced）",
   ].join("\n");
 }
 

@@ -13,7 +13,7 @@ pnpm test                                 # vitest run（全部）
 npx vitest run src/runner.test.ts         # 單一檔案
 npx vitest run -t "adapter 事件解析"       # 依測試名稱篩選
 pnpm run build                            # tsc → dist/（bin 指向 dist/cli.js）
-pnpm dev doctor                           # 用 tsx 直接跑 src/cli.ts
+pnpm dev config doctor                    # 用 tsx 直接跑 src/cli.ts
 pnpm release patch --dry-run              # 本機發版（限 main）；patch|minor|major|x.y.z，去掉 --dry-run 才會建立 GitHub Release
 ```
 
@@ -33,7 +33,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu／macos × Node 22／24 跑 typeche
 - **`logs.ts`：log 格式。** 檔名由 `nextLogFile` 產生（序號-階段-步驟-agent），檔頭 `# agentflowctl {...}`、檔尾 `# exit {...}` 由 runner 寫入，中間原樣保存 agent 的 stdout。`renderLog` 在顯示時才用 adapter 的 `parse` 解析，並整理出錯誤段落；新增 adapter 或事件格式時，解析結果會自動反映在 `logs` 指令。`renderLog` 預設精簡工具內容（`--full` 才完整）。`summarizeLog` 取出一份 log 的結果，供 `stopReport.ts` 在 run 停下時（Ctrl-C、失敗、暫停、等待核准，以及 `status`）印出結果、未結交接事項與下一步指令。
 - **`insights.ts` 與 `usageInsights.ts`。** `insights.ts` 彙總結果、失敗原因與重試；`usageInsights.ts` 彙總用量與規則式建議；步驟合併在 `stats.ts` 的 `mergeStats`。跨 run 讀各 run 的 `costs.jsonl`、`retries.jsonl`、`substitutions.jsonl` 與 logs 檔頭檔尾。
 - **隔離方式。** 每個 run 有自己的 git worktree（`.agentflowctl/worktrees/<id>`，分支 `flow/<id>`），agent 只在那裡工作。run 的資料放在 `.agentflowctl/runs/<id>/`（`state.json`、`costs.jsonl`（存的其實是用量）、`retries.jsonl`、`logs/`、`reviews/`、`claude-settings.json`、`plan-review-state.json`、`plan-arbitration.json`、`parallel-review/`（平行審查已完成呼叫的存檔）、`tmp-review/`（審查者的臨時 worktree，固定為 `slot-<N>/`，被占用時才改用唯一子目錄））。agent 之間交接的檔案放在 worktree 內的 `.flow/`，例如 `spec.md`、`acceptance.json`、`plan.md`、`tasks.json`、`plan-replies.md`、`feedback.md`、`verify.json`、`review.json`。路徑一律從 `paths.ts` 取得。
-- **設定。** `flow.config.json` 放在主專案根目錄，由 `schemas.ts` 的 `RepoConfig` 驗證並補上預設值；沒寫的 `install`／`test`／`checks` 由 `detect.ts` 依 `packageManager`、lockfile 與 `package.json` scripts 推出（不寫檔），指令本身仍以 Vite + TS + Vitest 為底。每次都重新讀取，所以未 commit 的修改也會生效。`agentConfig.ts` 實作 `agentflowctl agent ...` 系列指令，寫入前會先驗證整份設定；`setup.ts` 是 `agent setup` 的互動精靈，問答以注入的 `ask` 進行，只組出設定、不直接寫檔。沒有內建 agent：所有 agent 都要定義在 `agents`（`resolveAgent` 只查這裡），沒設定 `cycle` 時由 `cli.ts` 的 `resolveCycle` 依 `agents` 的順序挑出已安裝的，一個都沒有就報錯。不使用環境變數：重試上限（`maxAttempts`）、`verbose` 等都放在 `flow.config.json`，`config.ts` 只放執行期旗標與 `MIN_ATTEMPTS`。
+- **設定。** `flow.config.json` 放在主專案根目錄，由 `schemas.ts` 的 `RepoConfig` 驗證並補上預設值；沒寫的 `install`／`test`／`checks` 由 `detect.ts` 依 `packageManager`、lockfile 與 `package.json` scripts 推出（不寫檔），指令本身仍以 Vite + TS + Vitest 為底。每次都重新讀取，所以未 commit 的修改也會生效。`agentConfig.ts` 實作 `agentflowctl config agent ...` 系列指令，寫入前會先驗證整份設定；`setup.ts` 是 `config agent setup` 的互動精靈，問答以注入的 `ask` 進行，只組出設定、不直接寫檔。沒有內建 agent：所有 agent 都要定義在 `agents`（`resolveAgent` 只查這裡），沒設定 `cycle` 時由 `cli.ts` 的 `resolveCycle` 依 `agents` 的順序挑出已安裝的，一個都沒有就報錯。不使用環境變數：重試上限（`maxAttempts`）、`verbose` 等都放在 `flow.config.json`，`config.ts` 只放執行期旗標與 `MIN_ATTEMPTS`。
 - **Prompt。** `prompts/<stage>.md` 由 `renderPrompt` 代入 `{{變數}}`，少了變數會直接丟錯。每個 prompt 都用 XML 分段（`<role>`、`<context>`、`<inputs>`、`<steps>`、`<constraints>`、`<output_format>`、`<reply_format>`），並要求回覆附上 `<result>` 區塊。新增或修改變數時，要同步改 engine 裡對應的 `renderPrompt` 呼叫。`prompts/` 會隨 npm 套件一起發布。
 
 ## 改動時注意
