@@ -38,7 +38,7 @@ npx agentflowctl run --req-file ./requirement.md
    - 不另立條件：相同結果的不同說法、修正後自然成立的推論，以及沒有具體誤傷風險的既有行為，不會各自變成驗收條件和實作任務；審查者與修訂者會保留必要條件，並合併或刪除重複的。
    - 不回歸條件：需求明寫要維持不變的行為各列一條，其餘限於最關鍵的一兩條。
    - 非行為變更：需求本身若是文件、設定、純重構或特徵化測試，仍以所需產物與自動檢查結果列出驗收條件。
-2. 依計畫逐個任務寫出會失敗的測試，再由另一位 agent 實作到測試通過；每個任務都會經過審查與驗證。計畫 agent 會依改動內容在任務標記 `tdd`：建置流程、設定、文件、型別、純重構，以及實作前就會通過的特徵化測試，會略過紅綠燈直接實作，改由任務審查與驗證把關。描述寫明不要求紅燈卻沒標 `tdd: false` 的計畫不會通過。已定案的計畫若仍帶著這個衝突，執行到該任務時仍會寫測試，但測試一開始就通過也算完成，不會再要求紅燈、也不會因此讓 run 失敗。紅燈測試被退回一次、原因是測試一開始就通過（行為早已存在，例如前一個任務順手做掉了）時，下一次嘗試同樣改為接受這份特徵化測試，不再重試到上限；仍由任務審查與驗證把關。測試階段若完全沒有新增或修改任何檔案、但現有測試已通過，也視為這個任務的行為已被既有測試涵蓋，直接進入實作，不會以「未寫測試」重試。任務的實作與修正若動到「只有後面任務描述提到」的檔案（以描述中寫出的 `目錄/檔名.副檔名` 路徑比對），這次變更會被還原並要求重做，retry 分類為「動到後面任務的檔案」；這個檢查只擋前兩次嘗試，避免路徑比對誤判讓 run 卡死，之後仍由審查把關。專案沒有測試框架時，所有任務都略過紅綠燈，也不跑 `test` 檢查。只跑檢查、不改檔案的工作不要拆成實作任務；這種任務若沒有檔案變更會直接略過，不再要求 commit。需要人眼確認的任務標成 `kind: confirm`，計畫定案時，這些任務、只由它們負責的驗收條件，以及 `plan.md` 裡對應的 `## T-n` 段落，會從 `.flow/` 的 `tasks.json`、`acceptance.json`、`plan.md` 搬到 run 目錄（`.agentflowctl/runs/<id>/confirmations.json` 與 `confirmation-details.json`）：實作、任務審查、程式碼審查與修正都看不到它們，不會因此重試或停下來，只在開 PR 時以未勾選的「需要人工確認」清單附在描述最前面，由你在合併前親自確認（`spec.md` 不會被改寫）。`status` 在任務清單之外另列「待你確認（不進實作）」；`confirmations <id>` 只印這個區塊。計畫還沒通過首次驗證前查詢，清單會從尚未經檢查的草稿蒐集，標題會多帶「（計畫尚未定案，以下為草稿）」，項目最終可能不會定案。計畫與計畫審查也會核對實作階段的硬性限制：`tdd: true` 任務的綠燈實作不可改測試檔（例外：連同被測檔一起刪除的測試檔，例如移除舊 helper 時，會放行）、修正階段不可刪測試檔，所以要改寫既有測試檔、或只刪測試檔的任務必須標 `tdd: false`，否則會被要求修改。
+2. 依計畫逐個任務寫出會失敗的測試，再由另一位 agent 實作到測試通過；每個任務都會經過審查與驗證。沒有相依關係的任務會同時在各自的 worktree 裡執行，完成後依序合併回分支（見「平行執行任務」）。計畫 agent 會依改動內容在任務標記 `tdd`：建置流程、設定、文件、型別、純重構，以及實作前就會通過的特徵化測試，會略過紅綠燈直接實作，改由任務審查與驗證把關。描述寫明不要求紅燈卻沒標 `tdd: false` 的計畫不會通過。已定案的計畫若仍帶著這個衝突，執行到該任務時仍會寫測試，但測試一開始就通過也算完成，不會再要求紅燈、也不會因此讓 run 失敗。紅燈測試被退回一次、原因是測試一開始就通過（行為早已存在，例如前一個任務順手做掉了）時，下一次嘗試同樣改為接受這份特徵化測試，不再重試到上限；仍由任務審查與驗證把關。測試階段若完全沒有新增或修改任何檔案、但現有測試已通過，也視為這個任務的行為已被既有測試涵蓋，直接進入實作，不會以「未寫測試」重試。任務的實作與修正若動到「只有後面任務描述提到」的檔案（以描述中寫出的 `目錄/檔名.副檔名` 路徑比對），這次變更會被還原並要求重做，retry 分類為「動到後面任務的檔案」；這個檢查只擋前兩次嘗試，避免路徑比對誤判讓 run 卡死，之後仍由審查把關。專案沒有測試框架時，所有任務都略過紅綠燈，也不跑 `test` 檢查。只跑檢查、不改檔案的工作不要拆成實作任務；這種任務若沒有檔案變更會直接略過，不再要求 commit。需要人眼確認的任務標成 `kind: confirm`，計畫定案時，這些任務、只由它們負責的驗收條件，以及 `plan.md` 裡對應的 `## T-n` 段落，會從 `.flow/` 的 `tasks.json`、`acceptance.json`、`plan.md` 搬到 run 目錄（`.agentflowctl/runs/<id>/confirmations.json` 與 `confirmation-details.json`）：實作、任務審查、程式碼審查與修正都看不到它們，不會因此重試或停下來，只在開 PR 時以未勾選的「需要人工確認」清單附在描述最前面，由你在合併前親自確認（`spec.md` 不會被改寫）。`status` 在任務清單之外另列「待你確認（不進實作）」；`confirmations <id>` 只印這個區塊。計畫還沒通過首次驗證前查詢，清單會從尚未經檢查的草稿蒐集，標題會多帶「（計畫尚未定案，以下為草稿）」，項目最終可能不會定案。計畫與計畫審查也會核對實作階段的硬性限制：`tdd: true` 任務的綠燈實作不可改測試檔（例外：連同被測檔一起刪除的測試檔，例如移除舊 helper 時，會放行）、修正階段不可刪測試檔，所以要改寫既有測試檔、或只刪測試檔的任務必須標 `tdd: false`，否則會被要求修改。
 3. 全部任務完成後，再執行專案檢查與整體程式碼審查。未通過的項目會交回修正。
 4. 有 `origin` 時會推送分支；若 `gh` 可用，會嘗試建立 PR，描述裡會附上 `kind: confirm` 的待人工確認清單。沒有 `origin` 時，完成的分支留在本機。
 
@@ -46,7 +46,7 @@ npx agentflowctl run --req-file ./requirement.md
 
 需要先取用某個階段的產出時，可用 `--stop-after <階段>`。可選停點是 `spec`（規格）、`plan`（計畫審查完成）、`implement`（所有任務完成）、`verify`（測試與 checks 通過）、`review`（程式碼審查完成）或 `pr`（PR 流程完成）。除了 `pr` 會照常結束外，其他停點完成後會進入 `paused`，可檢視 worktree 與 `.flow/` 檔案，再執行 `agentflowctl resume <id>` 從下一階段接續；`--manual-plan` 與 `--stop-after` 不能同時使用。
 
-agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。偵測到的 `lint` 與 `typecheck`（`type-check`）檢查只在最後整支分支的驗證才跑，每個任務的驗證不跑；`lint` 只檢查整支分支相對基底分支改過的程式檔（排除 `.flow/`，沒有可檢查的檔案就略過；一律沿用專案原本的 lint 設定，agentflowctl 不會修改任何 eslint 設定檔，只在指令列略過自己產生的 `.flow/`、`.agentflowctl/`），型別檢查仍是整個專案（`tsc` 無法只檢查部分檔案）。`package.json` 沒有對應 script 時直接略過，不會退回 `npx eslint .` 或 `npx tsc --noEmit`；要沿用舊行為，請在 `flow.config.json` 自行寫 `checks`。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。
+agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。偵測到的 `lint` 與 `typecheck`（`type-check`）檢查只在最後整支分支的驗證才跑，每個任務的驗證不跑；`lint` 只檢查整支分支相對基底分支改過的程式檔（排除 `.flow/`，沒有可檢查的檔案就略過；一律沿用專案原本的 lint 設定，agentflowctl 不會修改任何 eslint 設定檔，只在指令列略過自己產生的 `.flow/`、`.agentflowctl/`），型別檢查仍是整個專案（`tsc` 無法只檢查部分檔案）。`package.json` 沒有對應 script 時直接略過，不會退回 `npx eslint .` 或 `npx tsc --noEmit`；要沿用舊行為，請在 `flow.config.json` 自行寫 `checks`。同一次驗證裡，install 先跑完，其餘檢查預設同時執行（`checksConcurrency` 可限制同時數量，`1` 為一次一個）；結果與 log 仍照設定順序列出。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。
 
 ## 查看進度
 
@@ -127,7 +127,7 @@ config doctor                                             檢查 CLI 是否可�
 | `run --model-mode balanced\|adaptive` | 只覆蓋這次 run 的模型模式；`resume` 沿用建立時的模式 |
 | `run --base <分支>` | 指定起始分支；未設定時使用目前分支 |
 | `run --max-attempts <次數>` | 覆蓋這次的重試上限（至少 3；預設取 `flow.config.json` 的 `maxAttempts`，未設定為 5）；失敗後可用 `resume <id> --max-attempts <次數>` 調高 |
-| `run --max-agent-runs <次數>` | 覆蓋這次的 `maxAgentRuns`；上限不夠時可用 `resume <id> --max-agent-runs <次數>` 調高 |
+| `run --max-agent-runs <次數>` | 直接指定這次的上限，之後計畫定案也不再依任務數改算；上限不夠時可用 `resume <id> --max-agent-runs <次數>` 調高（同樣視為明確指定） |
 | `-v` / `--verbose` | 執行時顯示 agent 文字、工具呼叫與專案指令，適用於 `run`、`resume`、`approve` |
 
 例如：
@@ -237,11 +237,14 @@ Codex 另有幾點差異：
 | `tddSplit` | `true` | 有多位 agent 時，`true` 會把同一任務的測試與實作分給不同 agent |
 | `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准 |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者核准 |
+| `taskConcurrency` | 不限 | 沒有相依關係的任務最多幾個同時執行（各在自己的 worktree）；`1` 為一次一個任務，等同關閉平行任務；說明見「平行執行任務」 |
+| `checksConcurrency` | 不限 | 同一次驗證裡 typecheck、lint、test、build 等檢查最多幾個同時執行；`1` 為一次一個。install 仍先單獨跑完 |
 | `reviewConcurrency` | 不限 | 同一輪審查最多幾位審查者同時執行；`1` 為一次一位；說明見表格下方，`config doctor` 會顯示目前的設定 |
 | `planArbiter` | `true` | 計畫審查僵持，或修訂一次後仍被要求修改時是否啟用仲裁 |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |
 | `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
-| `maxAgentRuns` | `60` | 一次 run 最多執行幾次 agent；可用指令選項覆蓋 |
+| `maxAgentRuns` | `60` | 計畫定案前，一次 run 最多執行幾次 agent；定案後改依任務數決定（見 `agentRunsPerTask`） |
+| `agentRunsPerTask` | `20` | 計畫定案時，上限改為「已執行次數 ＋ 任務數 × 這個值」（任務數不含 `kind: confirm`）。`run`／`resume` 明確指定 `--max-agent-runs` 後不再改算 |
 | `maxAttempts` | `5` | 同一關連續失敗幾次後停止，至少 3；可用 `run`／`resume` 的 `--max-attempts` 覆蓋 |
 | `verbose` | `false` | 顯示 agent 文字、工具呼叫與專案指令，效果同 `-v` |
 | `install`、`test` | 依專案偵測 | 寫成指令字串，例如 `"install": "pnpm install"` |
@@ -249,6 +252,19 @@ Codex 另有幾點差異：
 | `testPattern` | 常見的 `.test.`、`.spec.` 檔名 | 辨識測試檔的正規表示式字串；非標準檔名時調整 |
 
 計畫審查會依任務規模選做法。同時符合下列條件時，每輪先做一次索引審查，再只審查有變動的任務群：任務達到 `planReviewLayers.minTasks` 個；依 description 寫的檔案路徑能分成至少兩群，而且最大一群不超過三分之二；`plan.md` 每個任務都有 `## T-<數字>` 標題。索引審查讀規格、全部任務描述、驗收條件與整體做法，人數是 `planReviewQuorum`。群數最多 `maxGroups`，也不超過任務數除以 `tasksPerGroup`；每群一位審查者，含 `high` 任務的群改由 `planReviewQuorum` 位審查。改了 `plan.md` 的整體做法時所有群都重審；某一次審查失敗時只重跑還沒完成的部分。已達門檻卻不符其他條件時，終端機會印出原因並改由審查者讀完整份規格與計畫。`"planReviewLayers": { "enabled": false }` 可以關閉，`config doctor` 會顯示目前的設定。
+
+#### 平行執行任務
+
+實作階段開始時，若有兩個以上的任務同時可以開始（沒有 `dependsOn`，或依賴的任務都已完成），這些任務會各占一條「車道」同時執行；只有相依鏈（每個任務都依賴前一個）、或 `taskConcurrency` 設為 `1` 時，照舊一次做一個任務。可用 `taskConcurrency` 限制同時數量。
+
+- **每條車道是一個小 run。** 車道有自己的 git worktree（`.agentflowctl/runs/<id>/lanes/<任務>/worktree`）與分支 `flow/<id>+<任務>`，起點是 run 當時的 HEAD，也有自己的 `.flow/` 與 `state.json`。任務在車道裡走和順序執行完全一樣的流程：紅燈、綠燈、任務審查、任務驗證、修正。角色輪替仍依任務在清單中的位置決定，與順序執行時一致。
+- **共用的紀錄寫進所屬 run。** log、用量、重試、代打與交接帳本都記在 run 底下，所以 `logs`、`stats`、`insights` 與 `maxAgentRuns` 不需要另外合併。因此車道裡的 agent 也看得到其他車道開的交接事項。
+- **合併一次一個。** 車道完成後依完成順序合併回 run 的分支（保留合併 commit，訊息 `merge(T-n): …`），合併後才解鎖依賴它的任務；車道的 worktree 與分支隨即清掉。合併後若 `package.json` 或 lockfile 變了，會在 run 的 worktree 重新安裝。
+- **衝突時重做。** 和已合併的任務在同一處衝突時，這條車道會回到最新的分支、從寫測試重做（重試分類 `merge_conflict`，次數計入 `maxAttempts`）。計畫與計畫審查的 prompt 都要求：會修改同一個檔案、或用到另一個任務新增內容的任務必須用 `dependsOn` 排出先後。語意上的衝突（沒有文字衝突但合在一起壞掉）由最後的整體驗證與程式碼審查把關。
+- **車道裡不安裝相依套件。** 車道的 `node_modules` 是指向 run 的 symlink，各自安裝會互相覆寫，所以車道裡只跑測試與 build 等檢查；新增相依套件的任務，合併後才會在 run 裡安裝。
+- **失敗、暫停與 resume。** 任一車道失敗（重試達上限、agent 次數用完）就不再開新車道，已在跑的跑完並合併，run 以失敗結束，原因會寫明是哪個任務。額度用完同理：額度是 agent 層級的，用同一家 agent 的車道也會一起暫停，其餘車道跑完後 run 暫停。`resume` 時已合併的任務不重做，失敗或暫停的車道接續。
+- `maxAgentRuns` 是整個 run 所有車道合計的次數；平行時可能略微超出（最多多出同時執行的車道數）。
+- `status` 在任務清單裡標出正在平行執行的任務。
 
 #### 平行審查
 

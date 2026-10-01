@@ -196,6 +196,10 @@ export const RepoConfig = z.object({
   planReviewQuorum: z.number().int().min(1).default(1),
   /** 同一輪審查最多幾位審查者同時執行；沒寫＝不限，1＝一次一位 */
   reviewConcurrency: z.number().int().min(1).optional(),
+  /** 沒有相依關係的任務最多幾個同時執行（各在自己的 worktree）；沒寫不限，1 為一次一個任務 */
+  taskConcurrency: z.number().int().min(1).optional(),
+  /** 同一次驗證裡 typecheck、lint、test、build 等檢查最多幾個同時執行；沒寫不限，1 為一次一個 */
+  checksConcurrency: z.number().int().min(1).optional(),
   /** 計畫審查僵持不下（達到重試上限或意見不再變化）時，交給第三方 agent 仲裁，而不是停下來等人 */
   planArbiter: z.boolean().default(true),
   /** 任務夠多、能依檔案分群時，計畫審查改成每輪一次索引加上只審有變動的任務群 */
@@ -213,8 +217,10 @@ export const RepoConfig = z.object({
    * proceed＝繼續實作，爭議記錄在計畫裡，後面還有測試、驗證與程式碼審查把關；stop＝停下來等人
    */
   tieBreak: z.enum(["proceed", "stop"]).default("proceed"),
-  /** 單一 run 最多執行幾次 agent */
+  /** 計畫定案前，單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive().default(60),
+  /** 計畫定案後，上限改為「已執行次數 + 任務數 × 這個值」；run／resume 明確指定 --max-agent-runs 時不改算 */
+  agentRunsPerTask: z.number().int().positive().default(20),
   /** 同一關連續失敗幾次後停止；至少 3，修正與審查才來得及往返一輪 */
   maxAttempts: z.number().int().min(3).default(5),
   /** 終端機是否印出 agent 的文字、工具呼叫與專案指令；命令列 -v 也能開啟 */
@@ -255,6 +261,8 @@ export const FlowRun = z.object({
   autopilot: z.boolean(),
   /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive(),
+  /** 使用者用 --max-agent-runs 明確指定過上限：計畫定案時不再依任務數改算（舊 state.json 沒有此欄位） */
+  maxAgentRunsExplicit: z.boolean().optional(),
   /** 這個 run 同一關連續失敗的上限；沒寫就用 flow.config.json 的 maxAttempts（舊 state.json 沒有此欄位） */
   maxAttempts: z.number().int().min(3).optional(),
   /** 暫停前所在的階段與原因（額度用完時） */
@@ -277,6 +285,10 @@ export const FlowRun = z.object({
   modelMode: z.enum(["balanced", "adaptive"]).optional(),
   modelRetryAttempts: z.record(z.string(), z.number().int().nonnegative()).optional(),
   taskIndex: z.number().int().nonnegative(),
+  /** 平行任務模式下已合併回 run 分支的任務 id（舊 state.json 沒有此欄位） */
+  doneTasks: z.array(z.string()).optional(),
+  /** 平行任務的車道專用：這個任務在整份任務清單裡的位置，讓角色輪替與依序執行時一致 */
+  taskOffset: z.number().int().nonnegative().optional(),
   /** 目前任務進行到哪一步：寫測試 → 實作 → 審查 → 驗證，審查或驗證未通過時進入修正 */
   taskPhase: z.enum(["tests", "code", "review", "verify", "fix"]),
   /** 目前任務寫測試前的 commit，任務審查只看這之後的變更 */

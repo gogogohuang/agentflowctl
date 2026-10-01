@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { git, removeWorktree } from "./git.js";
-import { projectRoot, runDir, runsDir, worktreeDir, worktreesDir } from "./paths.js";
+import { laneId, lanesDir, projectRoot, runDir, runsDir, worktreeDir, worktreesDir } from "./paths.js";
 import type { Stage } from "./schemas.js";
 import { getRun } from "./store.js";
 import { cleanupTempWorktrees } from "./tempWorktree.js";
@@ -16,6 +16,11 @@ export async function cleanRun(id: string): Promise<boolean> {
   const root = projectRoot();
   const wt = worktreeDir(id);
   const found = existsSync(wt) || existsSync(runDir(id));
+  // 平行任務的車道 worktree 在 run 目錄底下，要先讓 git 放掉登記，再整個刪掉 run 目錄
+  for (const lane of existsSync(lanesDir(id)) ? readdirSync(lanesDir(id)) : []) {
+    const lw = worktreeDir(laneId(id, lane));
+    if (existsSync(lw)) await removeWorktree(root, lw).catch(() => rmSync(lw, { recursive: true, force: true }));
+  }
   // 平行審查中斷留下的臨時 worktree：locked 的登記 prune 不會清，要先處理；tmp-review/ 已不在時也要查
   await cleanupTempWorktrees(id, { force: true });
   if (existsSync(wt)) {

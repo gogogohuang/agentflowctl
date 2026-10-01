@@ -1,13 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
-import { changedFiles, commitAll, discardChanges, git, headCommit, resetTo } from "./git.js";
+import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
-import { confirmationDetailsPath, confirmationsPath, flowDir, logDir, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { confirmationDetailsPath, confirmationsPath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
 import { exec } from "./proc.js";
 import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
@@ -27,7 +27,8 @@ import {
   type HandoffLedger,
   type Stage,
 } from "./schemas.js";
-import { addRetry, addSubstitution, addUsage, agentRuns, saveRun, type RetryCategory } from "./store.js";
+import { addRetry, addSubstitution, addUsage, agentRuns, getRun, saveRun, type RetryCategory } from "./store.js";
+import { doneSet, readyTasks, scheduleLanes, type LaneOutcome } from "./lanes.js";
 import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
 import {
   applyReviewVerdicts,
@@ -484,7 +485,7 @@ function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
   info(run, `📋 共 ${ordered.length} 個任務：${ordered.map((t) => t.id).join(" → ")}`);
   const framework = hasTestFramework();
   ordered.forEach((t, i) => {
-    const a = taskAgents(run.cycle, i, cfg.tddSplit, run.id);
+    const a = taskAgents(run.cycle, i, cfg.tddSplit, ownerId(run.id));
     info(run, taskUsesTdd(t, framework)
       ? `   ${t.id} 測試：${a.tests}　實作：${a.code}　審查：${a.review}`
       : `   ${t.id} 略過 TDD　實作：${a.code}　審查：${a.review}`);
@@ -506,7 +507,12 @@ function planSettled(run: FlowRun, key: string): FlowRun {
   const settled = succeed(run, key, next);
   const attempts = { ...settled.attempts };
   delete attempts["plan-arbitration"];
-  return { ...settled, attempts, taskIndex: 0, taskPhase: "tests" };
+  // 規劃階段已花掉的不算進任務預算：定案後依任務數決定上限，使用者明確指定過就不動
+  const budget = run.maxAgentRunsExplicit || ordered.length === 0
+    ? run.maxAgentRuns
+    : agentRuns(run.id) + ordered.length * loadRepoConfig().agentRunsPerTask;
+  if (budget !== run.maxAgentRuns) info(run, `🎟️  agent 執行次數上限改為 ${budget}（已執行 ${agentRuns(run.id)} 次 + ${ordered.length} 個任務 × ${loadRepoConfig().agentRunsPerTask}）`);
+  return { ...settled, attempts, maxAgentRuns: budget, taskIndex: 0, taskPhase: "tests" };
 }
 
 async function planStage(run: FlowRun): Promise<FlowRun> {
@@ -1039,6 +1045,10 @@ function planTamperedMessage(files: string[]): string {
   return `計畫定案後不可修改規格與計畫檔，已還原你的變更：${files.map((f) => `.flow/${f}`).join(", ")}。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。`;
 }
 
+const inLane = (run: FlowRun) => laneParts(run.id) !== undefined;
+/** 任務在整份清單裡的位置：順序執行就是 taskIndex，車道要加上它在清單中的位移，角色輪替才和順序執行時一致 */
+const taskPosition = (run: FlowRun) => (run.taskOffset ?? 0) + run.taskIndex;
+
 async function implementStage(run: FlowRun): Promise<FlowRun> {
   const tasks = loadOrderedTasks(run);
   const task = tasks[run.taskIndex];
@@ -1048,10 +1058,17 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     return to(run, "verify");
   }
   const cfg = loadRepoConfig();
+  // 兩個以上的任務同時可以開始（或平行模式已經開始），改由車道同時執行；只有相依鏈、或 taskConcurrency 為 1 時照舊一個一個做
+  if (!inLane(run) && run.taskPhase === "tests" && cfg.taskConcurrency !== 1 && tasks.length > 1) {
+    const done = doneSet(tasks, run.taskIndex, run.doneTasks);
+    const hasLanes = existsSync(lanesDir(run.id)) && readdirSync(lanesDir(run.id)).some((t) => !done.has(t) && getRun(laneId(run.id, t)));
+    if (run.doneTasks?.length || hasLanes || readyTasks(tasks, done).length >= 2) return implementLanes(run, tasks, cfg);
+  }
   const repo = worktreeDir(run.id);
   const testRe = new RegExp(cfg.testPattern);
-  const testCmd = `${cfg.install} && ${cfg.test}`;
-  const progress = `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
+  // 車道共用所屬 run 的 node_modules（symlink），各自安裝會互相覆寫，所以車道裡只跑測試
+  const testCmd = inLane(run) ? cfg.test : `${cfg.install} && ${cfg.test}`;
+  const progress = inLane(run) ? `平行 ${task.id} ${task.title}` : `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
   if (task.kind === "confirm") {
     rememberConfirmation(run, task);
     const rest = tasks.filter((item) => item.id !== task.id);
@@ -1071,7 +1088,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (run.taskPhase === "review") return taskReviewStep(run, task, progress, taskJson, acceptanceJson);
   if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
   if (run.taskPhase === "fix") return taskFixStep(run, task, progress, tasks);
-  const agents = taskAgents(run.cycle, run.taskIndex, cfg.tddSplit, run.id);
+  const agents = taskAgents(run.cycle, taskPosition(run), cfg.tddSplit, ownerId(run.id));
   const framework = hasTestFramework();
   const tdd = taskUsesTdd(task, framework);
 
@@ -1202,6 +1219,132 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   return { ...succeed(run, key, "implement"), taskPhase: "review", lastWriter: codeAuthor };
 }
 
+// ───────────────────────── 平行任務（車道） ─────────────────────────
+
+/** 依賴或鎖定檔變了，合併後要在 run 的 worktree 重新安裝 */
+const DEPENDENCY_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
+
+/** 建立（或接續）一個任務的車道：自己的 worktree 與分支，起點是 run 目前的 HEAD */
+async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, tasks: TaskItem[], done: ReadonlySet<string>): Promise<FlowRun> {
+  const id = laneId(parent.id, task.id);
+  const wt = worktreeDir(id);
+  const existing = getRun(id);
+  if (existing && existsSync(wt)) {
+    await cleanupTempWorktrees(id);
+    let lane: FlowRun = { ...existing, maxAgentRuns: parent.maxAgentRuns, maxAttempts: parent.maxAttempts, cycle: parent.cycle };
+    if (lane.stage === "paused") lane = { ...lane, stage: lane.pausedStage ?? "implement", pausedStage: undefined, pauseReason: undefined };
+    if (lane.stage === "failed") {
+      lane = { ...lane, stage: lane.failedStage ?? "implement", attempts: {}, modelRetryAttempts: {}, failedStage: undefined, failureReason: undefined, failureCategory: undefined };
+    }
+    return saveRun(lane);
+  }
+  const root = projectRoot();
+  const branch = `flow/${id}`;
+  // 上次中斷在建立到一半：清掉殘留再重建
+  rmSync(runDir(id), { recursive: true, force: true });
+  await git(root, "worktree", "prune");
+  await git(root, "branch", "-D", branch).catch(() => {});
+  await excludePaths(root, ["/node_modules"]); // symlink 不是目錄，.gitignore 的 node_modules/ 擋不住，commitAll 會把它加進去
+  await addWorktree(root, wt, await headCommit(worktreeDir(parent.id)), branch);
+  mkdirSync(flowDir(id), { recursive: true });
+  for (const name of ["spec.md", "acceptance.json", "plan.md", "tasks.json"]) {
+    if (existsSync(flowFile(parent, name))) cpSync(flowFile(parent, name), join(flowDir(id), name));
+  }
+  // 這個任務放第一個；其餘還沒完成的任務留著，讓「不可動後面任務的檔案」的檢查仍能比對
+  const rest = tasks.filter((t) => t.id !== task.id && !done.has(t.id));
+  writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([task, ...rest], null, 2));
+  const deps = join(worktreeDir(parent.id), "node_modules");
+  if (existsSync(deps)) symlinkSync(deps, join(wt, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  const now = new Date().toISOString();
+  return saveRun({
+    id, baseBranch: parent.branch, branch, requirement: parent.requirement, stage: "implement", autopilot: true,
+    maxAgentRuns: parent.maxAgentRuns, maxAttempts: parent.maxAttempts, cycle: parent.cycle, attempts: {},
+    modelMode: parent.modelMode, taskIndex: 0, taskPhase: "tests", taskOffset: offset, createdAt: now, updatedAt: now,
+  });
+}
+
+/** 讓車道裡的任務走完整個任務流程（紅燈、綠燈、任務審查、任務驗證、修正）；結束時車道的 stage 是 verify */
+async function driveLane(parent: FlowRun, task: TaskItem, offset: number, tasks: TaskItem[], done: ReadonlySet<string>): Promise<LaneOutcome> {
+  let lane = await prepareLane(parent, task, offset, tasks, done);
+  try {
+    for (;;) {
+      if (lane.stage === "verify") return { kind: "done" };
+      if (lane.stage !== "implement") return { kind: "failed", reason: lane.failureReason ?? `車道停在 ${lane.stage}`, category: lane.failureCategory };
+      const runs = agentRuns(parent.id);
+      if (runs >= parent.maxAgentRuns) {
+        return { kind: "failed", category: "agent_budget", reason: `已執行 agent ${runs} 次，達到上限 ${parent.maxAgentRuns}（可用 resume --max-agent-runs 調高）` };
+      }
+      lane = saveRun(await implementStage(lane));
+      // 車道只有這一個任務：做完 taskIndex 變 1，停在這裡等合併
+      if (lane.stage === "implement" && lane.taskIndex >= 1) lane = saveRun({ ...lane, stage: "verify" });
+    }
+  } catch (err) {
+    if (err instanceof QuotaPause) {
+      info(lane, `⏸️  暫停：${err.message}`);
+      saveRun({ ...lane, stage: "paused", pausedStage: "implement", pauseReason: err.message });
+      return { kind: "paused", reason: err.message };
+    }
+    saveRun({ ...lane, stage: "failed", failedStage: "implement", failureCategory: "error", failureReason: (err as Error).message });
+    return { kind: "failed", category: "error", reason: (err as Error).message };
+  }
+}
+
+/** 把完成的車道合併回 run 的分支；衝突時讓車道從最新的分支重做 */
+async function mergeLane(ref: { run: FlowRun }, task: TaskItem): Promise<"merged" | "redo" | { kind: "failed"; reason: string; category?: string }> {
+  const parent = ref.run;
+  const id = laneId(parent.id, task.id);
+  const lane = getRun(id);
+  if (!lane) throw new Error(`找不到車道 ${id} 的紀錄`);
+  const pwt = worktreeDir(parent.id);
+  const before = await headCommit(pwt);
+  const merged = await mergeBranch(pwt, lane.branch, `merge(${task.id}): ${task.title}`);
+  if (!merged.ok) {
+    info(parent, `🔀 [${task.id}] 與已合併的任務衝突（${merged.conflicts.join("、")}），從最新的分支重做`);
+    await resetTo(worktreeDir(id), before); // 車道的分支回到 run 目前的 HEAD，之前的 commit 全部丟掉
+    const redo = retry({ ...lane, stage: "implement" }, `${task.id}:merge`,
+      `和已合併的其他任務在這些檔案衝突：${merged.conflicts.join("、")}。分支已更新為最新，請在既有內容之上重新完成這個任務。`,
+      "implement", "merge_conflict");
+    saveRun({ ...redo, taskIndex: 0, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
+    if (redo.stage === "failed") return { kind: "failed", category: "retry_limit", reason: redo.failureReason ?? "合併衝突重試達上限" };
+    return "redo";
+  }
+  info(parent, `🔀 [${task.id}] 已合併回 ${parent.branch}`);
+  // 先記下完成，再清理：中斷在兩者之間時，resume 重新合併只會得到「已是最新」
+  ref.run = saveRun({ ...parent, doneTasks: [...new Set([...(parent.doneTasks ?? []), task.id])] });
+  const changed = await changedFiles(pwt, before, merged.commit);
+  if (changed.some((f) => DEPENDENCY_FILE.test(f))) {
+    const install = await runCommand(target(parent, `${task.id}-install`, CMD_AGENT), loadRepoConfig().install);
+    if (!install.ok) info(parent, `   ⚠️  合併後重新安裝相依套件失敗${logHint(parent, install.seq)}，整體驗證會再試一次`);
+  }
+  for (const name of existsSync(flowDir(id)) ? readdirSync(flowDir(id)) : []) {
+    if (/^review-T-\d+-.+\.json$/.test(name)) cpSync(join(flowDir(id), name), flowFile(parent, name));
+  }
+  await cleanupTempWorktrees(id);
+  await removeWorktree(projectRoot(), worktreeDir(id)).catch(() => rmSync(worktreeDir(id), { recursive: true, force: true }));
+  await git(projectRoot(), "branch", "-D", lane.branch).catch(() => {});
+  return "merged";
+}
+
+/** 平行執行所有任務：沒有相依關係的任務各占一條車道，完成後依序合併，直到全部完成、有車道失敗，或額度用完 */
+async function implementLanes(run: FlowRun, tasks: TaskItem[], cfg: RepoConfig): Promise<FlowRun> {
+  const ref = { run };
+  const limit = cfg.taskConcurrency ?? Infinity;
+  const done0 = doneSet(tasks, run.taskIndex, run.doneTasks);
+  info(run, `🔀 平行執行任務（${limit === Infinity ? "不限同時數量" : `最多同時 ${limit} 個`}）`);
+  const result = await scheduleLanes(tasks, done0, limit, {
+    start: (task) => driveLane(ref.run, task, tasks.findIndex((t) => t.id === task.id), tasks, new Set(ref.run.doneTasks ?? [])),
+    merge: (task) => mergeLane(ref, task),
+  });
+  if (result.failed) {
+    const { task, reason, category } = result.failed;
+    return { ...ref.run, stage: "failed", failedStage: "implement", failureCategory: (category as FlowRun["failureCategory"]) ?? "error", failureReason: `${task.id}：${reason}` };
+  }
+  if (result.paused) throw new QuotaPause(result.paused);
+  info(ref.run, "✅ 所有任務完成");
+  announceConfirmations(ref.run);
+  return { ...to(ref.run, "verify"), taskIndex: tasks.length, taskPhase: "tests" };
+}
+
 // ── 任務審查：只看這個任務的變更與驗收條件 ──
 async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, taskJson: string, acceptanceJson: string): Promise<FlowRun> {
   const key = `${task.id}:review`;
@@ -1216,7 +1359,7 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     saveAs: (reviewer) => `review-${task.id}-${reviewer}.json`,
     testAuthor: run.lastTestsAuthor,
     // 輪流交換角色：優先由排定的審查者審查，讓各家用量平均
-    prefer: taskAgents(run.cycle, run.taskIndex, loadRepoConfig().tddSplit, run.id).review,
+    prefer: taskAgents(run.cycle, taskPosition(run), loadRepoConfig().tddSplit, ownerId(run.id)).review,
     // 未結交接事項可能屬於後面的任務，由最後的整體審查把關
     gate: false,
     runKey: `${task.id}:review-run`,
@@ -1298,12 +1441,14 @@ async function branchChangedFiles(run: FlowRun): Promise<string[] | undefined> {
 export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "final" = "final"): Promise<string | undefined> {
   const cfg = loadRepoConfig();
   const results: { name: string; ok: boolean; output: string }[] = [];
-  const install = await runCommand(target(run, `${stepPrefix}install`, CMD_AGENT), cfg.install);
+  const install = inLane(run) ? { ok: true as const, output: "", seq: 0 } : await runCommand(target(run, `${stepPrefix}install`, CMD_AGENT), cfg.install);
   if (!install.ok) {
     info(run, `   ✗ install${logHint(run, install.seq)}`);
     results.push({ name: "install", ok: false, output: tail(install.output) });
   } else {
     const changed = scope === "final" && cfg.checks.some((c) => c.changedOnly) ? await branchChangedFiles(run) : undefined;
+    // 先依序決定要跑哪些檢查並佔好 log 序號（序號由目錄內現有的檔案算出，不能讓平行的呼叫搶同一個），再同時執行
+    const planned: { name: string; cmd: string; target: AgentTarget }[] = [];
     for (const check of cfg.checks) {
       if (scope === "task" && check.finalOnly) continue;
       let cmd = check.cmd;
@@ -1315,10 +1460,17 @@ export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "
         }
         cmd = withFiles(cmd, files);
       }
-      const r = await runCommand(target(run, `${stepPrefix}${check.name}`, CMD_AGENT), cmd);
+      const t = target(run, `${stepPrefix}${check.name}`, CMD_AGENT);
+      mkdirSync(dirname(t.logFile), { recursive: true });
+      writeFileSync(t.logFile, "");
+      planned.push({ name: check.name, cmd, target: t });
+    }
+    const outcomes = await runPool(planned, cfg.checksConcurrency ?? Infinity, (check) => runCommand(check.target, check.cmd));
+    planned.forEach((check, i) => {
+      const r = outcomes[i]!;
       info(run, `   ${r.ok ? "✓" : "✗"} ${check.name}${r.ok ? "" : logHint(run, r.seq)}`);
       results.push({ name: check.name, ok: r.ok, output: tail(r.output, 3000) });
-    }
+    });
   }
   writeFileSync(flowFile(run, "verify.json"), JSON.stringify(results, null, 2));
   const failed = results.filter((r) => !r.ok);
@@ -1559,11 +1711,13 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
     try {
       run = saveRun(pauseAtStopAfter(run, await STAGES[stage](run)));
     } catch (err) {
+      // 階段中途（例如平行任務每合併一個）會先存檔，停下時要接在最新的狀態上，不能退回階段開始時的樣子
+      const latest = getRun(run.id) ?? run;
       if (err instanceof QuotaPause) {
         info(run, `⏸️  暫停：${err.message}`);
-        return saveRun({ ...run, stage: "paused", pausedStage: stage, pauseReason: err.message });
+        return saveRun({ ...latest, stage: "paused", pausedStage: stage, pauseReason: err.message });
       }
-      return saveRun({ ...run, stage: "failed", failedStage: stage, failureCategory: "error", failureReason: (err as Error).message });
+      return saveRun({ ...latest, stage: "failed", failedStage: stage, failureCategory: "error", failureReason: (err as Error).message });
     }
   }
 }

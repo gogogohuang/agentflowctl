@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ADAPTERS } from "./agents/index.js";
 import type { AgentEvent } from "./agents/types.js";
@@ -46,7 +46,11 @@ const segment = (s: string) => s.replace(/[\s/\\:*?"<>|]+/g, "_");
 export function nextLogFile(dir: string, stage: string, step: string, agent: string): string {
   const seqs = existsSync(dir) ? readdirSync(dir).map((f) => Number(f.match(/^(\d+)-/)?.[1] ?? 0)) : [];
   const seq = Math.max(0, ...seqs) + 1;
-  return join(dir, `${String(seq).padStart(3, "0")}-${segment(stage)}-${segment(step)}-${segment(agent)}.log`);
+  const file = join(dir, `${String(seq).padStart(3, "0")}-${segment(stage)}-${segment(step)}-${segment(agent)}.log`);
+  // 先占住序號：平行的呼叫在寫入第一行之前同步取號，不先建檔就會拿到同一個號碼
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, "", { flag: "a" });
+  return file;
 }
 
 export const logSeq = (file: string) => Number(file.split(/[\\/]/).at(-1)?.match(/^(\d+)-/)?.[1] ?? 0);
