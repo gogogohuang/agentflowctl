@@ -31,7 +31,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({
 const { addWorktree, commitAll, git } = await import("./git.js");
 const { advance, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
-const { flowDir, logDir, planReviewStatePath, worktreeDir } = await import("./paths.js");
+const { confirmationsPath, flowDir, logDir, planReviewStatePath, worktreeDir } = await import("./paths.js");
 const { agentRuns, listRetries, listSubstitutions, listUsage } = await import("./store.js");
 
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
@@ -530,7 +530,7 @@ describe("略過 TDD", () => {
     expect(run.stage).not.toBe("awaiting_approval");
     expect(run.failedStage).toBe("review");
     expect(JSON.parse(readFileSync(join(flowDir(run.id), "tasks.ordered.json"), "utf8"))).toEqual([]);
-    const confirm = JSON.parse(readFileSync(join(flowDir(run.id), "confirmations.json"), "utf8"));
+    const confirm = JSON.parse(readFileSync(confirmationsPath(run.id), "utf8"));
     expect(confirm.map((t: { id: string }) => t.id)).toEqual(["T-1"]);
     expect(agentRuns(run.id)).toBe(1);
   });
