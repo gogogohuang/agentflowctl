@@ -38,6 +38,28 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
 
   const hasModels = (c: RawConfig, name: string) => !!(c.agents as Record<string, { models?: unknown[] }>)[name]?.models?.length;
 
+  /** 逐行登記某個 agent 的模型（名稱 [強度] [effort]），空行結束；只寫設定、不送請求驗證 */
+  async function registerModels(start: RawConfig, name: string, notes: string[], prompt: string): Promise<RawConfig> {
+    let next = start;
+    for (;;) {
+      const line = (await ask(prompt)).trim();
+      if (!line) return next;
+      const [model, strength = "medium", effort, ...extra] = line.split(/\s+/);
+      if (extra.length || !ModelStrength.safeParse(strength).success) {
+        log("  格式是「名稱 強度 effort」（後兩項可省略），強度只能是 low、medium 或 high");
+        continue;
+      }
+      try {
+        next = addModel(next, name, model!, strength as "low" | "medium" | "high", effort);
+        notes.push(`${name} 模型 ${model}（${strength}${effort ? `，effort ${effort}` : ""}）`);
+      } catch (e) {
+        log(`  ${(e as Error).message}`);
+      }
+    }
+  }
+
+  const MODEL_FORMAT = "名稱 [強度 low|medium|high] [effort]，強度省略為 medium，effort 僅限 Claude Code 與 Codex，Enter 結束";
+
   /** 問模型模式：balanced 不用登記模型；adaptive 逐一登記缺 models 的 agent，只寫設定、不送請求驗證 */
   async function chooseModelMode(start: RawConfig, notes: string[]): Promise<RawConfig> {
     let next = start;
@@ -60,21 +82,7 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
       const empty: string[] = [];
       for (const name of lacking) {
         log(`${name} 沒有登記模型，adaptive 只看 models，請登記可用的模型與強度`);
-        for (;;) {
-          const line = (await ask(`  ${name} 模型（名稱 [強度 low|medium|high] [effort]，強度省略為 medium，effort 僅限 Claude Code 與 Codex，Enter 結束）`)).trim();
-          if (!line) break;
-          const [model, strength = "medium", effort, ...extra] = line.split(/\s+/);
-          if (extra.length || !ModelStrength.safeParse(strength).success) {
-            log("  格式是「名稱 強度 effort」（後兩項可省略），強度只能是 low、medium 或 high");
-            continue;
-          }
-          try {
-            tried = addModel(tried, name, model!, strength as "low" | "medium" | "high", effort);
-            notes.push(`${name} 模型 ${model}（${strength}${effort ? `，effort ${effort}` : ""}）`);
-          } catch (e) {
-            log(`  ${(e as Error).message}`);
-          }
-        }
+        tried = await registerModels(tried, name, notes, `  ${name} 模型（${MODEL_FORMAT}）`);
         if (!hasModels(tried, name)) empty.push(name);
       }
       if (empty.length) {
@@ -126,6 +134,7 @@ export async function runSetup(initial: RawConfig, deps: SetupDeps): Promise<Edi
     const edit = isNew ? addAgent(cfg, name, { adapter, model, effort }) : setAgent(cfg, name, { adapter, model, effort });
     cfg = edit.cfg;
     changes.push(...edit.changes);
+    cfg = await registerModels(cfg, name, changes, `  ${name} 可選模型與強度，adaptive 選模用（${MODEL_FORMAT.replace("Enter 結束", "Enter 略過")}）`);
     chosen.push(name);
   }
 
