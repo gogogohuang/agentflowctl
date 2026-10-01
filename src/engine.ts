@@ -51,7 +51,7 @@ import {
   type PlanReviewRound,
   type PlanReviewState,
 } from "./planReview.js";
-import { descriptionWaivesRed, orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { descriptionWaivesRed, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
@@ -317,6 +317,8 @@ function taskUsesTdd(task: TaskItem, framework: boolean): boolean {
 
 /** 紅燈測試一開始就通過時寫進 feedback.md 的原因；下一次嘗試靠它判斷上一次是不是同樣原因被退回 */
 const TESTS_NOT_RED_REASON = "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。";
+/** 越界檢查只擋前兩次：任務描述的路徑只是啟發式，之後交給審查把關，避免誤判讓 run 卡死 */
+const SCOPE_GUARD_ATTEMPTS = 2;
 const TESTS_NOT_RED_MARK = "請撰寫會因功能尚未實作而失敗的測試";
 
 /** 已定案的任務寫明不要求紅燈：仍寫測試，但通過也算完成紅燈階段。 */
@@ -1026,7 +1028,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const waiveRed = task.tdd !== false && (descriptionWaivesRed(task.description) || redAlreadyGreen);
   if (run.taskPhase === "review") return taskReviewStep(run, task, progress, taskJson, acceptanceJson);
   if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
-  if (run.taskPhase === "fix") return taskFixStep(run, task, progress);
+  if (run.taskPhase === "fix") return taskFixStep(run, task, progress, tasks);
   const agents = taskAgents(run.cycle, run.taskIndex, cfg.tddSplit, run.id);
   const framework = hasTestFramework();
   const tdd = taskUsesTdd(task, framework);
@@ -1130,6 +1132,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     await resetTo(repo, testsCommit);
     return retry(run, key, `實作階段不可修改測試檔，已還原你的變更：${touched.join(", ")}`, "implement", "tests_modified");
   }
+  if ((run.attempts[key] ?? 0) < SCOPE_GUARD_ATTEMPTS) {
+    const strays = outOfScopeFiles(tasks, run.taskIndex, await changedFiles(repo, testsCommit, await headCommit(repo)));
+    if (strays.length) {
+      await resetTo(repo, testsCommit);
+      return retry(run, key, outOfScopeMessage(strays), "implement", "out_of_scope");
+    }
+  }
   // 沒有測試框架時沒有東西可跑，後面的驗證與審查照常把關
   const green = framework ? await runCommand(target(run, `${task.id}-green`, CMD_AGENT), testCmd) : { ok: true as const, output: "", seq: 0 };
   if (!green.ok) {
@@ -1199,7 +1208,7 @@ async function taskVerifyStep(run: FlowRun, task: TaskItem, progress: string): P
 }
 
 // ── 任務修正：修完重新審查、驗證 ──
-async function taskFixStep(run: FlowRun, task: TaskItem, progress: string): Promise<FlowRun> {
+async function taskFixStep(run: FlowRun, task: TaskItem, progress: string, tasks: TaskItem[]): Promise<FlowRun> {
   const result = await applyFix(run, {
     seed: `${run.id}:fix:${task.id}:${run.attempts[`${task.id}:review`] ?? 0}`,
     label: `[${progress}] `,
@@ -1207,6 +1216,10 @@ async function taskFixStep(run: FlowRun, task: TaskItem, progress: string): Prom
     commitScope: `fix(${task.id})`,
     key: `${task.id}:fix`,
     backTo: "implement",
+    scopeGuard: (changed) => {
+      const strays = outOfScopeFiles(tasks, run.taskIndex, changed);
+      return strays.length ? outOfScopeMessage(strays) : undefined;
+    },
   });
   if ("run" in result) return result.run;
   return { ...succeed(run, `${task.id}:fix`, "implement"), taskPhase: "review", lastWriter: result.agent };
@@ -1243,7 +1256,7 @@ async function verifyStage(run: FlowRun): Promise<FlowRun> {
 /** 修正驗證錯誤或審查意見；成功時回傳實際修正者，未通過時回傳重試後的 run */
 async function applyFix(
   run: FlowRun,
-  opts: { seed: string; label: string; step: string; commitScope: string; key: string; backTo: Stage },
+  opts: { seed: string; label: string; step: string; commitScope: string; key: string; backTo: Stage; scopeGuard?: (changed: string[]) => string | undefined },
 ): Promise<{ run: FlowRun } | { agent: string }> {
   const cfg = loadRepoConfig();
   const source = run.fixSource ?? "verify";
@@ -1273,6 +1286,13 @@ async function applyFix(
     return again(`${feedback}\n\n另外：${planTamperedMessage(tampered)}`, "plan_tampered");
   }
   await commitAll(repo, `${opts.commitScope}: ${why} [${actual}]`);
+  const stray = (run.attempts[opts.key] ?? 0) < SCOPE_GUARD_ATTEMPTS
+    ? opts.scopeGuard?.(await changedFiles(repo, before, await headCommit(repo)))
+    : undefined;
+  if (stray) {
+    await resetTo(repo, before);
+    return again(`${feedback}\n\n另外：${stray}`, "out_of_scope");
+  }
   const testRe = new RegExp(cfg.testPattern);
   const deleted = (await changedFiles(repo, before, await headCommit(repo), "D")).filter((f) => testRe.test(f));
   if (deleted.length) {

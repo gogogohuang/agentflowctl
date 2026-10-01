@@ -29,6 +29,7 @@
 </steps>
 
 <constraints>
+- 只改這個任務需要的檔案。任務清單裡其他任務描述寫明要改的檔案，不要順手做掉，越界的變更會被還原並要求重做；認為任務切分有誤時寫進 .flow/handoff-response.json 的 newIssues。
 - 不可刪除測試檔（檔名符合 `{{testPattern}}`），也不可用 skip、放寬斷言、`@ts-ignore`、`eslint-disable` 等方式讓檢查通過。
 - 如果測試本身確實有誤，可以修正測試，但必須在回覆的 `<concerns>` 說明理由。
 - 不要執行 git commit（權限設定已禁止）。

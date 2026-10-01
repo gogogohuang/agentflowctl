@@ -16,6 +16,7 @@ export const RETRY_LABEL: Record<RetryCategory, string> = {
   tests_modified: "實作改了測試",
   tests_not_green: "測試仍未通過",
   tests_deleted: "刪除測試檔",
+  out_of_scope: "動到後面任務的檔案",
   checks_failed: "專案檢查失敗",
 };
 

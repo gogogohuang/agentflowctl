@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TaskItem } from "./schemas.js";
-import { confirmationLines, confirmationTasks, orderTasks, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { confirmationLines, confirmationTasks, describedPaths, orderTasks, outOfScopeFiles, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 
 const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
   TaskItem.parse({ id, title: id, description: id, dependsOn, acceptance });
@@ -110,5 +110,35 @@ describe("待人確認的任務", () => {
     expect(lines).toContain("待你確認（不進實作）");
     expect(lines).toContain("計畫尚未定案");
     expect(confirmationLines([confirm], false).join("\n")).not.toContain("計畫尚未定案");
+  });
+});
+
+describe("任務範圍", () => {
+  const withDescription = (id: string, description: string) => TaskItem.parse({ id, title: id, description, dependsOn: [], acceptance: ["AC-1"] });
+  const tasks = [
+    withDescription("T-1", "新增 src/utils/getPageContainer.ts 並沿用 src/utils/old.test.ts 的寫法。不做：改元件"),
+    withDescription("T-2", "修改 src/components/CreateRewardForm.tsx，新增 src/components/CreateRewardForm.test.tsx"),
+    withDescription("T-3", "刪除 ./src/utils/old.ts"),
+  ];
+
+  it("從描述抓出含目錄與副檔名的路徑", () => {
+    expect([...describedPaths(tasks[1].description)]).toEqual(["src/components/CreateRewardForm.tsx", "src/components/CreateRewardForm.test.tsx"]);
+    expect(describedPaths("沿用 vitest 設定，改成 1.5 倍")).toEqual(new Set());
+    expect(describedPaths(tasks[2].description)).toEqual(new Set(["src/utils/old.ts"]));
+  });
+
+  it("只擋住只有後面任務提到的檔案，自己提到或沒人提到的都放行", () => {
+    const found = outOfScopeFiles(tasks, 0, [
+      "src/utils/getPageContainer.ts", "src/components/CreateRewardForm.tsx", "src/utils/old.ts", "package.json",
+    ]);
+    expect(found).toEqual([
+      { file: "src/components/CreateRewardForm.tsx", owner: "T-2" },
+      { file: "src/utils/old.ts", owner: "T-3" },
+    ]);
+  });
+
+  it("前面任務的檔案、最後一個任務都不受限", () => {
+    expect(outOfScopeFiles(tasks, 1, ["src/utils/getPageContainer.ts"])).toEqual([]);
+    expect(outOfScopeFiles(tasks, 2, ["src/components/CreateRewardForm.tsx"])).toEqual([]);
   });
 });

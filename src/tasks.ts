@@ -112,3 +112,29 @@ export function confirmationLines(tasks: TaskItem[], draft = false): string[] {
   }
   return lines;
 }
+
+/** 描述裡寫出的檔案路徑（含目錄與副檔名），例如 src/pages/x/Foo.tsx */
+const PATH_TOKEN = /[\w@.-]+(?:\/[\w@.-]+)+\.[A-Za-z0-9]+/g;
+
+export function describedPaths(description: string): Set<string> {
+  return new Set((description.match(PATH_TOKEN) ?? []).map((path) => path.replace(/^\.\//, "")));
+}
+
+/**
+ * 找出目前任務動到、但只有後面任務的描述提到的檔案。
+ * 這些檔案屬於後面的任務：先做掉會讓那個任務的紅燈不可能成立，審查也看不出是誰的工作。
+ */
+export function outOfScopeFiles(tasks: TaskItem[], index: number, changed: string[]): { file: string; owner: string }[] {
+  const mine = describedPaths(tasks[index]?.description ?? "");
+  const found: { file: string; owner: string }[] = [];
+  for (const file of changed) {
+    if (mine.has(file)) continue;
+    const owner = tasks.slice(index + 1).find((task) => describedPaths(task.description).has(file));
+    if (owner) found.push({ file, owner: owner.id });
+  }
+  return found;
+}
+
+export function outOfScopeMessage(found: { file: string; owner: string }[]): string {
+  return `這些檔案是後面的任務負責的，不屬於這個任務，已還原你的變更：${found.map((item) => `${item.file}（${item.owner}）`).join("、")}。只改這個任務描述提到、或完成它必須動的檔案；若認為任務切分有誤，請寫進 .flow/handoff-response.json 的 newIssues，不要順手做掉。`;
+}
