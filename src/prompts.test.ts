@@ -31,6 +31,11 @@ const vars = {
   step: "T-1-fix",
   error: "handoff-response.json 不存在",
   range: "abc1234..def5678",
+  frame: "acceptance",
+  framePrompt: "假設實作方向對，但測試沒對上驗收條件。",
+  feedback: "測試仍未通過",
+  category: "tests_not_green",
+  branches: "[]",
 };
 
 describe("prompts", () => {
@@ -43,6 +48,23 @@ describe("prompts", () => {
     expect(text).toContain(".flow/handoff-response.json");
     expect(text).toContain('"newIssues": []');
     expect(text).toContain('"dispositions": []');
+  });
+
+  it("diverge-branch 禁止評估其他方案，只寫分支 JSON", () => {
+    const text = renderPrompt("diverge-branch", vars);
+    expect(text).toContain("發散分支");
+    expect(text).toContain(vars.framePrompt);
+    expect(text).toContain(".flow/diverge-branch.json");
+    expect(text).toContain("不要評估、排序或比較其他方案");
+    expect(text).not.toContain("diverge-pick.json");
+  });
+
+  it("diverge-critic 只從給定分支裡選一個", () => {
+    const text = renderPrompt("diverge-critic", vars);
+    expect(text).toContain("發散評審");
+    expect(text).toContain(".flow/diverge-pick.json");
+    expect(text).toContain("只能選 inputs 裡出現的 frame");
+    expect(text).not.toContain("diverge-branch.json");
   });
 
   it("每份 prompt 的角色都不一樣", () => {
