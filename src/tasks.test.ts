@@ -7,12 +7,12 @@ const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
 
 describe("orderTasks", () => {
   it("依相依關係排序", () => {
-    const r = orderTasks([task("T-3", ["T-2"]), task("T-1"), task("T-2", ["T-1"])], new Set(["AC-1"]));
+    const r = orderTasks([task("T-3", ["T-2"], ["AC-3"]), task("T-1"), task("T-2", ["T-1"], ["AC-2"])], new Set(["AC-1", "AC-2", "AC-3"]));
     expect(Array.isArray(r) && r.map((t) => t.id)).toEqual(["T-1", "T-2", "T-3"]);
   });
 
   it("偵測循環相依", () => {
-    const r = orderTasks([task("T-1", ["T-2"]), task("T-2", ["T-1"])], new Set(["AC-1"]));
+    const r = orderTasks([task("T-1", ["T-2"]), task("T-2", ["T-1"], ["AC-2"])], new Set(["AC-1", "AC-2"]));
     expect(r).toContain("循環相依");
   });
 
@@ -24,13 +24,32 @@ describe("orderTasks", () => {
   });
 
   it("偵測重複 id", () => {
-    expect(orderTasks([task("T-1"), task("T-1")], new Set(["AC-1"]))).toContain("重複");
+    expect(orderTasks([task("T-1"), task("T-1", [], ["AC-2"])], new Set(["AC-1", "AC-2"]))).toContain("重複");
   });
 
-  it("一個任務最多對應兩條驗收條件", () => {
-    const acs = new Set(["AC-1", "AC-2", "AC-3"]);
-    expect(Array.isArray(orderTasks([task("T-1", [], ["AC-1", "AC-2"]), task("T-2", [], ["AC-3"])], acs))).toBe(true);
-    expect(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3"])], acs)).toContain("T-1 對應 3 條驗收條件");
+  it("一個任務最多對應三條驗收條件", () => {
+    const acs = new Set(["AC-1", "AC-2", "AC-3", "AC-4"]);
+    expect(Array.isArray(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3"]), task("T-2", [], ["AC-4"])], acs))).toBe(true);
+    expect(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3", "AC-4"])], acs)).toContain("T-1 對應 4 條驗收條件");
+  });
+
+  it("同一條驗收條件只能由一個實作任務負責", () => {
+    const acs = new Set(["AC-1", "AC-2"]);
+    const r = orderTasks([task("T-1", [], ["AC-1"]), task("T-2", ["T-1"], ["AC-2"]), task("T-3", ["T-2"], ["AC-1"])], acs);
+    expect(r).toContain("AC-1 同時由 T-1、T-3 負責");
+    expect(r).not.toContain("AC-2");
+  });
+
+  it("多條驗收條件重複時一次列出", () => {
+    const acs = new Set(["AC-1", "AC-2"]);
+    const r = orderTasks([task("T-1", [], ["AC-1", "AC-2"]), task("T-2", ["T-1"], ["AC-1", "AC-2"])], acs);
+    expect(r).toContain("AC-1 同時由 T-1、T-2 負責");
+    expect(r).toContain("AC-2 同時由 T-1、T-2 負責");
+  });
+
+  it("人工確認任務與實作任務共用驗收條件不算重複", () => {
+    const confirm = TaskItem.parse({ id: "T-2", title: "確認", description: "確認", dependsOn: [], acceptance: ["AC-1"], kind: "confirm" });
+    expect(Array.isArray(orderTasks([task("T-1", [], ["AC-1"]), confirm], new Set(["AC-1"])))).toBe(true);
   });
 });
 

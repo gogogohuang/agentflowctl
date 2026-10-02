@@ -1,7 +1,7 @@
 import type { AcceptanceItem, TaskItem } from "./schemas.js";
 
-/** 一個任務最多做兩件事：對應的驗收條件超過這個數量就要再拆 */
-export const MAX_TASK_ACCEPTANCE = 2;
+/** 一個任務最多對應這麼多條驗收條件：超過就要再拆（同一條驗收條件只能有一個實作任務負責，見 orderTasks） */
+export const MAX_TASK_ACCEPTANCE = 3;
 
 /** 描述已明確放棄紅燈。新計畫必須把 tdd 標成 false；已定案的任務則仍寫測試，但不要求先失敗。 */
 const RED_WAIVED = /不要求紅燈|不必紅燈|不需紅燈|無需紅燈|不用紅燈|略過紅燈|略過紅綠燈/;
@@ -48,6 +48,7 @@ export function orderTasks(tasks: TaskItem[], acceptanceIds: Set<string>): TaskI
     ids.add(t.id);
   }
   const covered = new Set<string>();
+  const owners = new Map<string, string[]>();
   for (const t of tasks) {
     if (t.acceptance.length > MAX_TASK_ACCEPTANCE) {
       errors.push(`${t.id} 對應 ${t.acceptance.length} 條驗收條件，一個任務最多 ${MAX_TASK_ACCEPTANCE} 條，請拆成更小的任務`);
@@ -56,7 +57,11 @@ export function orderTasks(tasks: TaskItem[], acceptanceIds: Set<string>): TaskI
     for (const a of t.acceptance) {
       if (!acceptanceIds.has(a)) errors.push(`${t.id} 對應的驗收條件 ${a} 不存在`);
       covered.add(a);
+      if (t.kind !== "confirm") owners.set(a, [...(owners.get(a) ?? []), t.id]);
     }
+  }
+  for (const [a, ids] of owners) {
+    if (ids.length > 1) errors.push(`${a} 同時由 ${ids.join("、")} 負責，請合併成一個任務，不要用多個任務重複驗證同一條驗收條件`);
   }
   for (const a of acceptanceIds) if (!covered.has(a)) errors.push(`驗收條件 ${a} 沒有任何任務負責`);
   if (errors.length) return errors.join("\n");
