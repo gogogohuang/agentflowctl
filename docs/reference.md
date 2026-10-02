@@ -458,6 +458,7 @@ agentflowctl model stage taskReview high
 | `cache_unread` | cache 寫入多、讀取少 | `cacheWriteTokens >= 1000` 且 `cacheReadTokens < cacheWriteTokens * 0.5` |
 | `hot_model_step` | 單一模型與步驟佔用量過高 | 至少兩個「模型 / 步驟種類」`tokens > 0`，最高列佔合計 `>= 35%` |
 | `hot_failing_step` | 單一執行步驟失敗次數過多 | 合併後有步驟 `failed >= 3`：先取失敗最多的 agent 步驟，沒有才取 cmd |
+| `fragmented_tasks` | 任務可能切太碎 | 逐 run 判斷：排除「非任務步驟」後至少 6 個任務 `tokens > 0`，且平均每任務輸出 `< 6000` tokens；多個 run 符合時取任務用量最高的。影響估為任務用量的 20%。門檻是猜的，尚未用實際 run 校準 |
 
 `model add/check` 對 Claude Code、Codex 與 Gemini CLI 明確指定模型，在獨立暫存目錄送出短請求，不沿用正常工作的 `extraArgs`，30 秒逾時；macOS／Linux 逾時或 Ctrl-C 中斷時會停止整個程序群組，包含 CLI 啟動的子程序。成功必須同時有文字、成功完成事件與零工具事件；任何失敗事件都會使探測失敗，即使後來又回報成功也一樣。Codex 的 `error` item 依 Codex CLI 定義是非致命通知（設定警告、棄用提示、找不到模型 metadata、模型改派），只顯示為警告，不影響探測與 run 結果；真正的失敗是 `turn.failed` 與頂層 `error` 事件。CLI 不支援探測參數或 Gemini 未載入工具限制時直接失敗，不會用更寬鬆權限重試；失敗不新增模型，`model check` 不修改設定。
 
