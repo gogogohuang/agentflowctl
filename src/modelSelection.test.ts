@@ -22,7 +22,15 @@ describe("階段強度", () => {
     expect(all.taskReview).toEqual({ strength: "high", custom: true });
     expect(all.plan).toEqual({ strength: "high", custom: false });
     expect(all.taskCode).toEqual({ strength: "low", custom: false });
-    expect(Object.keys(all)).toHaveLength(11);
+    expect(Object.keys(all)).toHaveLength(12);
+    expect(all.diverge).toEqual({ strength: "low", custom: false });
+  });
+});
+
+describe("發散步驟", () => {
+  it("對應 diverge 階段", () => {
+    expect(stageOfStep("T-1-diverge-acceptance")).toBe("diverge");
+    expect(stageOfStep("T-1-diverge-critic")).toBe("diverge");
   });
 });
 

@@ -7,11 +7,12 @@ import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from ".
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
-import { confirmationDetailsPath, confirmationsPath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { confirmationDetailsPath, confirmationsPath, divergePath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
 import { exec } from "./proc.js";
 import { missingPackageExports } from "./packageExports.js";
-import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
+import { divergeExclude, divergeStamp, formatDivergeFeedback, selectFrames, shouldDiverge } from "./diverge.js";
+import { arbiterPanel, availableAgent, divergeCritic, fixAgent, pick, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid, type StoredCall } from "./parallelReview.js";
 import { cleanupTempWorktrees, withTempWorktree, type Workspace } from "./tempWorktree.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
@@ -20,6 +21,10 @@ import {
   type AcceptanceItem,
   ArbiterResult,
   ConsistentReviewResult,
+  DivergeBranch,
+  DivergePick,
+  DivergeRecord,
+  type DivergeFrame,
   RepoConfig,
   OrderedTaskList,
   TaskItem,
@@ -28,7 +33,7 @@ import {
   type HandoffLedger,
   type Stage,
 } from "./schemas.js";
-import { addRetry, addSubstitution, addUsage, agentRuns, getRun, saveRun, type RetryCategory } from "./store.js";
+import { addRetry, addSubstitution, addUsage, agentRuns, getRun, listRetries, saveRun, type RetryCategory } from "./store.js";
 import { doneSet, readyTasks, scheduleLanes, type LaneOutcome } from "./lanes.js";
 import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
 import {
@@ -1099,6 +1104,108 @@ const inLane = (run: FlowRun) => laneParts(run.id) !== undefined;
 /** 任務在整份清單裡的位置：順序執行就是 taskIndex，車道要加上它在清單中的位移，角色輪替才和順序執行時一致 */
 const taskPosition = (run: FlowRun) => (run.taskOffset ?? 0) + run.taskIndex;
 
+const DIVERGE_FRAME_PROMPT: Record<DivergeFrame, string> = {
+  acceptance: "假設實作方向對，但測試或斷言沒對上驗收條件。只回答要改測試的哪一點。",
+  split: "假設這個任務切太大。只回答下一動應縮小到哪個可驗證的範圍，不要繼續加碼。",
+  invert: "假設 .flow/feedback.md 裡的失敗才是根因。只回答下一動是什麼，不要另開新方向。",
+};
+
+/** running 表示上次中斷（或評審額度暫停）時沒跑完，resume 要重跑，所以只有 done／skipped 的 stamp 才拿來去重；retriesSeen 任何狀態都保留 */
+function readDiverge(id: string): { stamp?: string; since: number } {
+  const parsed = existsSync(divergePath(id)) ? readJsonFile(divergePath(id), DivergeRecord) : undefined;
+  if (!parsed?.ok) return { since: 0 };
+  return { stamp: parsed.data.status === "running" ? undefined : parsed.data.stamp, since: parsed.data.retriesSeen ?? 0 };
+}
+
+function writeDiverge(id: string, record: DivergeRecord): void {
+  mkdirSync(runDir(id), { recursive: true });
+  writeFileSync(divergePath(id), JSON.stringify(record, null, 2));
+}
+
+async function maybeDiverge(run: FlowRun, task: TaskItem, cfg: RepoConfig): Promise<FlowRun> {
+  if (run.taskPhase !== "tests" && run.taskPhase !== "code") return run;
+  const phase = run.taskPhase;
+  const key = `${task.id}:${phase}`;
+  const attempts = run.attempts[key] ?? 0;
+  const stamp = divergeStamp(task.id, phase, attempts, run.testsRedos ?? 0);
+  const retries = listRetries(ownerId(run.id));
+  const last = readDiverge(run.id);
+  if (!shouldDiverge({
+    enabled: cfg.diverge.enabled,
+    after: cfg.diverge.after,
+    phase, taskId: task.id, attempts: run.attempts, testsRedos: run.testsRedos,
+    retries, lastStamp: last.stamp, since: last.since,
+  })) return run;
+
+  const repo = worktreeDir(run.id);
+  const before = await headCommit(repo);
+  const frames = selectFrames(`${run.id}:${key}:${attempts}:${run.testsRedos ?? 0}`, cfg.diverge.branches);
+  const agents = taskAgents(run.cycle, taskPosition(run), cfg.tddSplit, ownerId(run.id));
+  const excluded = divergeExclude({
+    phase, testsRedos: run.testsRedos, lastWriter: run.lastWriter, lastTestsAuthor: run.lastTestsAuthor,
+    testsAgent: agents.tests, codeAgent: agents.code,
+  });
+  info(run, `🔀 [${task.id}] 同一關連續失敗，先從 ${frames.length} 個角度診斷`);
+  // running 時保留上一次的 retriesSeen：中斷後 resume 要用同一個 since 重算，不能被這次的筆數洗掉
+  writeDiverge(run.id, { stamp, status: "running", key, frames, branches: [], retriesSeen: last.since });
+  const retriesSeen = retries.length;
+
+  // 除了鎖定的計畫檔，feedback.md 與 red-output.txt 也要還原：.flow/ 不在 git 裡，resetTo 清不掉分支對它們的改動
+  const snap = snapshotPlan(run, [...LOCKED_FILES, "feedback.md", "red-output.txt"]);
+  const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  const acceptanceJson = acceptance.ok ? JSON.stringify(taskAcceptance(task, acceptance.data), null, 2) : "[]";
+  const taskJson = JSON.stringify(task, null, 2);
+  const feedback = readFeedback(run);
+  const category = retries.filter((item) => item.key === key || item.key === `${task.id}:code`).at(-1)?.category ?? "";
+  const branches: DivergeBranch[] = [];
+  const sweep = () => {
+    rmSync(flowFile(run, "diverge-branch.json"), { force: true });
+    rmSync(flowFile(run, "diverge-pick.json"), { force: true });
+  };
+  const revert = async () => { await resetTo(repo, before); restorePlan(run, snap); sweep(); };
+
+  for (const frame of frames) {
+    const outcome = await agentStep(
+      run, pick(run.cycle, `${run.id}:${stamp}:${frame}`), `${task.id}-diverge-${frame}`,
+      renderPrompt("diverge-branch", {
+        frame, framePrompt: DIVERGE_FRAME_PROMPT[frame], task: taskJson, acceptance: acceptanceJson,
+        feedback, category,
+      }),
+      { kind: "write", reset: revert },
+    );
+    const parsed = readJsonFile(flowFile(run, "diverge-branch.json"), DivergeBranch);
+    await revert();
+    if (!outcome.r.ok || !parsed.ok || parsed.data.frame !== frame) continue;
+    branches.push(parsed.data);
+  }
+
+  if (branches.length < 2) {
+    writeDiverge(run.id, { stamp, status: "skipped", key, frames, branches, reason: `有效分支只有 ${branches.length} 個`, retriesSeen });
+    return run;
+  }
+
+  const critic = divergeCritic(run.cycle, excluded, `${run.id}:${stamp}`);
+  const outcome = await agentStep(
+    run, critic, `${task.id}-diverge-critic`,
+    renderPrompt("diverge-critic", {
+      task: taskJson, acceptance: acceptanceJson, feedback, category,
+      branches: JSON.stringify(branches, null, 2),
+    }),
+    { kind: "review", reset: revert },
+  );
+  const parsed = readJsonFile(flowFile(run, "diverge-pick.json"), DivergePick);
+  await revert();
+  const pickOk = parsed.ok && branches.some((item) => item.frame === parsed.data.pick);
+  if (!outcome.r.ok || !pickOk) {
+    writeDiverge(run.id, { stamp, status: "skipped", key, frames, branches, reason: "評審輸出不合格", retriesSeen });
+    return run;
+  }
+
+  writeFileSync(flowFile(run, "feedback.md"), `${feedback}${formatDivergeFeedback(parsed.data)}`);
+  writeDiverge(run.id, { stamp, status: "done", key, frames, branches, pick: parsed.data, retriesSeen });
+  return run;
+}
+
 async function implementStage(run: FlowRun): Promise<FlowRun> {
   const tasks = loadOrderedTasks(run);
   const task = tasks[run.taskIndex];
@@ -1126,6 +1233,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     info(run, `👀 [${progress}] 改放到待你確認的清單，實作繼續`);
     return run;
   }
+  if (run.taskPhase === "tests" || run.taskPhase === "code") run = await maybeDiverge(run, task, cfg);
   const taskJson = JSON.stringify(task, null, 2);
   const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
   if (!acceptance.ok) throw new Error(acceptance.error);

@@ -50,6 +50,10 @@ export function pick(cycle: string[], seed: string, exclude: string[] = []): str
   return order.find((c) => !exclude.includes(c)) ?? order[0]!;
 }
 
+/** 發散評審不能是這次任務最後的寫檔者；只有一家時退回自己 */
+export const divergeCritic = (cycle: string[], lastWriter: string | undefined, seed: string) =>
+  pick(cycle, `${seed}:diverge-critic`, lastWriter ? [lastWriter] : []);
+
 /** 規格與計畫由同一位撰寫，計畫審查才能同時避開兩者的作者 */
 export const specAgent = (cycle: string[], seed: string) => pick(cycle, `${seed}:author`);
 export const planAgent = specAgent;

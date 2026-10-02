@@ -8,7 +8,7 @@ type ReviewStep = "plan-review" | "plan-review-group" | "review";
 
 export const DEFAULT_STAGE_STRENGTH: Record<ModelStage, ModelStrength> = {
   spec: "medium", plan: "high", planReview: "high", planFix: "medium", planArbiter: "high",
-  taskTests: "low", taskCode: "low", taskReview: "medium", taskFix: "low", fix: "medium", review: "high",
+  taskTests: "low", taskCode: "low", taskReview: "medium", taskFix: "low", fix: "medium", review: "high", diverge: "low",
 };
 
 export function effectiveStageStrengths(cfg: RepoConfig): Record<ModelStage, { strength: ModelStrength; custom: boolean }> {
@@ -58,6 +58,7 @@ export function clearModelReviewStage(run: FlowRun, step: "plan-review" | "revie
 export function stageOfStep(step: string): ModelStage | undefined {
   const task = /^T-\d+-(tests|code|review|fix)$/.exec(step);
   if (task) return ({ tests: "taskTests", code: "taskCode", review: "taskReview", fix: "taskFix" } as const)[task[1] as "tests" | "code" | "review" | "fix"];
+  if (/^T-\d+-diverge(?:-[a-z]+)?$/.test(step)) return "diverge";
   const stage: Record<string, ModelStage> = {
     spec: "spec", plan: "plan", "plan-review": "planReview", "plan-review-group": "planReview", "plan-fix": "planFix",
     "plan-arbiter": "planArbiter", fix: "fix", review: "review",
@@ -74,7 +75,7 @@ function stepStage(step: string): ModelStage {
 function escalation(run: FlowRun, stage: ModelStage, step: string, reviewer?: string, scope?: string): number {
   const a = run.attempts;
   if (stage === "planReview" || stage === "review") return run.modelRetryAttempts?.[reviewFailureKey(step as ReviewStep, reviewer ?? "", scope)] ?? 0;
-  if (stage === "planArbiter") return 0;
+  if (stage === "planArbiter" || stage === "diverge") return 0;
   if (stage === "planFix") return (a["plan-fix"] ?? 0) + Math.max((a["plan-review"] ?? 0) + (a["plan-handoff"] ?? 0) - 1, 0);
   if (stage === "taskFix") {
     const id = step.slice(0, -4);

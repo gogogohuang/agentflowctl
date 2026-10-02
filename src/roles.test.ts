@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { arbiterPanel, availableAgent, fixAgent, pick, planFixAgent, reviewers, shuffled, specAgent, taskAgents } from "./roles.js";
+import { arbiterPanel, availableAgent, divergeCritic, fixAgent, pick, planFixAgent, reviewers, shuffled, specAgent, taskAgents } from "./roles.js";
 
 const three = ["claude", "codex", "gemini"];
 const two = ["claude", "codex"];
@@ -91,6 +91,14 @@ describe("角色規則", () => {
   it("verify 失敗或 author 策略時交回作者修正", () => {
     expect(fixAgent(three, { source: "verify", strategy: "ring", lastWriter: "codex", lastReviewer: "gemini", seed: "x" })).toBe("codex");
     expect(fixAgent(three, { source: "review", strategy: "author", lastWriter: "codex", lastReviewer: "gemini", seed: "x" })).toBe("codex");
+  });
+
+  it("發散評審不是最後寫檔的 agent，單一 agent 時退回自己", () => {
+    for (const s of seeds) {
+      expect(divergeCritic(three, "codex", s)).not.toBe("codex");
+      expect(divergeCritic(two, "claude", s)).toBe("codex");
+    }
+    expect(divergeCritic(["claude"], "claude", "x")).toBe("claude");
   });
 });
 

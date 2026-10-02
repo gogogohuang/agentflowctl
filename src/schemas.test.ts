@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConsistentReviewResult, FlowRun, RepoConfig } from "./schemas.js";
+import { ConsistentReviewResult, DivergePick, DivergeRecord, FlowRun, RepoConfig } from "./schemas.js";
 
 describe("審查結果的 verdict 與 items 一致性", () => {
   const unmet = { criterion: "AC-1", status: "not_met", note: "src/form.tsx 缺少錯誤訊息" };
@@ -84,5 +84,41 @@ describe("審查平行設定", () => {
     for (const bad of [0, -1, 1.5]) {
       expect(RepoConfig.safeParse({ reviewConcurrency: bad }).success).toBe(false);
     }
+  });
+});
+
+describe("RepoConfig.diverge", () => {
+  const defaults = { enabled: true, after: 2, branches: 3 };
+
+  it("沒寫時用預設，只寫一個子欄位時其餘補上預設", () => {
+    expect(RepoConfig.parse({}).diverge).toEqual(defaults);
+    expect(RepoConfig.parse({ diverge: { enabled: false } }).diverge).toEqual({ ...defaults, enabled: false });
+  });
+
+  it("after 小於 1、branches 不是 2 或 3、或寫了未知子欄位時拒絕", () => {
+    expect(RepoConfig.safeParse({ diverge: { after: 0 } }).success).toBe(false);
+    expect(RepoConfig.safeParse({ diverge: { branches: 1 } }).success).toBe(false);
+    expect(RepoConfig.safeParse({ diverge: { branches: 4 } }).success).toBe(false);
+    expect(RepoConfig.safeParse({ diverge: { frames: 3 } }).success).toBe(false);
+  });
+});
+
+describe("DivergePick", () => {
+  it("pick 與 action 必須是允許的值", () => {
+    expect(DivergePick.safeParse({
+      pick: "acceptance", action: "keep_fixing", rationale: "對上驗收", nextStep: "改斷言",
+    }).success).toBe(true);
+    expect(DivergePick.safeParse({
+      pick: "other", action: "keep_fixing", rationale: "x", nextStep: "y",
+    }).success).toBe(false);
+  });
+});
+
+describe("DivergeRecord", () => {
+  it("retriesSeen 是非負整數，可省略", () => {
+    const base = { stamp: "T-1:code:2:0", status: "done", key: "T-1:code", frames: ["acceptance"] };
+    expect(DivergeRecord.safeParse({ ...base, retriesSeen: 2 }).success).toBe(true);
+    expect(DivergeRecord.safeParse(base).success).toBe(true);
+    expect(DivergeRecord.safeParse({ ...base, retriesSeen: -1 }).success).toBe(false);
   });
 });

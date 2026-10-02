@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FlowRun } from "./schemas.js";
 
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-engine-"));
 execFileSync("git", ["init", "-q", "-b", "main", root]);
@@ -23,7 +24,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({
   dispositions: mode.endsWith("close") && id ? [{ id, status: "resolved", reason: "已核對測試", evidence: "src/api.test.ts:25" }] : [],
 }));
 `);
-writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
   agents: { a: { adapter: "command", command: ["node", script] }, b: { adapter: "command", command: ["node", script] } },
   cycle: ["a", "b"],
 }));
@@ -32,13 +33,16 @@ const { addWorktree, commitAll, git } = await import("./git.js");
 const { advance, canReplan, replanRun, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
-const { agentRuns, getRun, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
+const { addRetry, agentRuns, getRun, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
+
+// 會連續啟動多個 node 子程序的測試，本機約 2 到 3 秒；CI 的 macOS 較慢，預設 5 秒不夠
+const SLOW_TEST_MS = 30_000;
 
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
 beforeEach(() => resetQuotaState());
 
 async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false, stopAfter?: "review" | "pr") {
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script, ...(adaptive ? ["{model}"] : [])],
       ...(adaptive ? { models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }], modelProbe: ["node", script, "{model}"] } : {}) }])),
     cycle: ["a", "b", "c"], reviewQuorum: quorum,
@@ -162,7 +166,7 @@ if (prompt.includes("plan-arbiter.json")) {
   writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 }
 `);
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script, name] }])),
       cycle: ["a", "b"], planArbiter: true, tieBreak: "proceed",
     }));
@@ -205,7 +209,7 @@ if (prompt.includes("plan-arbiter.json")) {
 }
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script, name] }])),
       cycle: ["a", "b"], planArbiter: true, tieBreak,
     }));
@@ -237,7 +241,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 
   it("後面輪次的重試次數與先前輪次相同時，審查者的結案仍會套用", async () => {
     const id = "f-plan-rekey";
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
       cycle: ["a", "b", "c"],
     }));
@@ -270,7 +274,7 @@ writeFileSync(".flow/plan-replies.md", "被審查者亂改");
 writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["r1", "r2"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
       cycle: ["r1", "r2"],
     }));
@@ -314,7 +318,7 @@ async function implementRun(
   acceptance: unknown,
   { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs", description = "匯出 answer", noop, kind }: { maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null; description?: string; noop?: boolean; kind?: "confirm" } = {},
 ) {
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
     cycle: ["a", "b"], install: "true", ...(test === null ? {} : { test }), checks: [],
   }));
@@ -381,7 +385,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 
 /** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
 async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, testSource = "process.exit(1);\n" }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; testSource?: string } = {}) {
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
   }));
@@ -416,7 +420,7 @@ describe("紅燈階段檢查測試用到的套件匯出", () => {
 writeFileSync("feature.test.mjs", "// import { renderHook } from 'old-lib'\\nrenderHook();\\nprocess.exit(1);\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
       cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
     }));
@@ -493,6 +497,162 @@ describe("綠燈階段無法讓測試通過時退回測試階段", () => {
   });
 });
 
+describe("重試前短發散", () => {
+  const divergeScript = join(root, "diverge-implementer.mjs");
+  writeFileSync(divergeScript, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+if (prompt.includes("發散分支")) {
+  const frame = /<frame>\\n(\\w+)/.exec(prompt)[1];
+  writeFileSync(".flow/diverge-branch.json", JSON.stringify({ frame, hypothesis: "h-" + frame, nextStep: "n-" + frame }));
+} else if (prompt.includes("發散評審")) {
+  writeFileSync(".flow/diverge-pick.json", JSON.stringify({
+    pick: /"frame": "(\\w+)"/.exec(prompt)[1], action: "keep_fixing", rationale: "對上驗收", nextStep: "先改斷言再實作",
+  }));
+} else {
+  const fb = existsSync(".flow/feedback.md") ? readFileSync(".flow/feedback.md", "utf8") : "";
+  writeFileSync(".flow/saw-diverge.txt", fb);
+  if (prompt.includes("<red_output>")) writeFileSync("stub.mjs", "export const n = 1;\\n");
+  else writeFileSync("feature.test.mjs", "process.exit(1);\\n");
+}
+`);
+
+  async function setup(id: string, extra: Record<string, unknown> = {}) {
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", divergeScript] }])),
+      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+      diverge: { enabled: true, after: 2, branches: 2 },
+      ...extra,
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    const taskBase = await git(wt, "rev-parse", "HEAD");
+    writeFileSync(join(wt, "feature.test.mjs"), "process.exit(1);\n");
+    const testsCommit = (await commitAll(wt, "test(T-1): 測試 [a]"))!;
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-2", description: "匯出 answer" }]));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "元件", description: "新增元件", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+    ]));
+    writeFileSync(join(flowDir(id), "red-output.txt"), "FAIL");
+    return { taskBase, testsCommit, now: new Date().toISOString() };
+  }
+
+  const base = (id: string, o: { now: string; taskBase: string; testsCommit: string }) => ({
+    id, baseBranch: "main" as const, branch: `flow/${id}`, requirement: "測試功能", stage: "implement" as const,
+    autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"] as string[], attempts: {},
+    taskIndex: 0, taskBase: o.taskBase, testsCommit: o.testsCommit, createdAt: o.now,
+    // 真實流程是先記 retry、再存 state，所以 updatedAt 不會早於已有的 retry；否則 addRetry 會把同 key、同 attempt 的紀錄當成重複
+    updatedAt: new Date().toISOString(),
+  });
+  /** failed（預算用完）的 run 再多給一步的額度 */
+  const oneMoreStep = (run: FlowRun) => ({
+    ...run, stage: "implement" as const, failedStage: undefined, failureCategory: undefined, failureReason: undefined,
+    maxAgentRuns: agentRuns(run.id) + 1,
+  });
+
+  it("綠燈第二次失敗退回測試後，下一次寫測試前才發散；回到 code 階段不會再發散", async () => {
+    const id = "f-diverge-redo";
+    const o = await setup(id);
+    // 真實序列：第一次綠燈失敗已經留下一筆 tests_not_green，這次是第二次，所以走 redoTests
+    addRetry(id, { key: "T-1:code", backTo: "implement", category: "tests_not_green", attempt: 1, final: false });
+    const first = await advance({ ...base(id, o), taskPhase: "code", attempts: { "T-1:code": 1 }, lastTestsAuthor: "a" });
+    expect(first.taskPhase).toBe("tests");
+    expect(first.testsRedos).toBe(1);
+    expect(existsSync(join(runDir(id), "diverge.json"))).toBe(false);
+    expect(agentRuns(id)).toBe(1);
+
+    // 下一個階段：2 個分支 + 1 個評審 + 1 次寫測試
+    const second = await advance(oneMoreStep(first));
+        const record = JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8"));
+    expect(record.status).toBe("done");
+    expect(record.stamp).toBe("T-1:tests:0:1");
+    expect(record.retriesSeen).toBe(2);
+    expect(record.frames).toContain(record.pick.pick);
+    expect(second.taskPhase).toBe("code");
+    expect(agentRuns(id)).toBe(1 + 4);
+    // 發散後的測試作者讀得到結論（之後 retry() 會覆寫 feedback.md，所以由腳本留證據）
+    expect(readFileSync(join(flowDir(id), "saw-diverge.txt"), "utf8")).toContain("先改斷言再實作");
+
+    // 回到 code 階段：T-1:code 仍有 tests_not_green + tests_invalid 兩筆，但都在 retriesSeen 之前，不能再發散
+    const third = await advance(oneMoreStep(second));
+    expect(agentRuns(id)).toBe(1 + 4 + 1);
+    expect(JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8")).stamp).toBe("T-1:tests:0:1");
+    expect(third.stage).not.toBe("paused");
+  });
+
+  it("已有相同 stamp 且 done 時不重跑發散", async () => {
+    const id = "f-diverge-resume";
+    const o = await setup(id);
+    addRetry(id, { key: "T-1:code", backTo: "implement", category: "tests_invalid", attempt: 1, final: false });
+    mkdirSync(runDir(id), { recursive: true });
+    writeFileSync(join(runDir(id), "diverge.json"), JSON.stringify({
+      stamp: "T-1:tests:0:1", status: "done", key: "T-1:tests", frames: ["acceptance", "split"], retriesSeen: 1,
+      branches: [], pick: { pick: "split", action: "split_task", rationale: "已做過", nextStep: "拆任務" },
+    }));
+    await advance({ ...base(id, o), taskPhase: "tests", testsRedos: 1 });
+    expect(JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8")).pick.nextStep).toBe("拆任務");
+    expect(agentRuns(id)).toBe(1); // 只有寫測試那一次
+  });
+
+  it("stamp 還是 running（中斷或評審額度暫停）時 resume 會重跑", async () => {
+    const id = "f-diverge-running";
+    const o = await setup(id);
+    addRetry(id, { key: "T-1:code", backTo: "implement", category: "tests_invalid", attempt: 1, final: false });
+    mkdirSync(runDir(id), { recursive: true });
+    writeFileSync(join(runDir(id), "diverge.json"), JSON.stringify({
+      stamp: "T-1:tests:0:1", status: "running", key: "T-1:tests", frames: ["acceptance", "split"], branches: [],
+    }));
+    await advance({ ...base(id, o), taskPhase: "tests", testsRedos: 1 });
+    expect(JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8")).status).toBe("done");
+    expect(agentRuns(id)).toBe(4);
+  });
+
+  it("分支把 .flow/feedback.md 改掉、或留下 commit，評審與後續寫檔都看不到", async () => {
+    const id = "f-diverge-isolation";
+    const o = await setup(id);
+    addRetry(id, { key: "T-1:code", backTo: "implement", category: "tests_invalid", attempt: 1, final: false });
+    writeFileSync(join(flowDir(id), "feedback.md"), "原本的回饋\n");
+    const tamper = join(root, "diverge-tamper.mjs");
+    writeFileSync(tamper, `import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+const prompt = readFileSync(0, "utf8");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+if (prompt.includes("發散分支")) {
+  const frame = /<frame>\\n(\\w+)/.exec(prompt)[1];
+  writeFileSync(".flow/feedback.md", "被分支改掉");
+  writeFileSync("leak.txt", "x");
+  execFileSync("git", ["add", "-A"]);
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "leak"]);
+  writeFileSync(".flow/diverge-branch.json", JSON.stringify({ frame, hypothesis: "h", nextStep: "n" }));
+} else if (prompt.includes("發散評審")) {
+  writeFileSync(".flow/diverge-pick.json", JSON.stringify({ pick: /"frame": "(\\w+)"/.exec(prompt)[1], action: "keep_fixing", rationale: "r", nextStep: "n" }));
+} else {
+  writeFileSync("feature.test.mjs", "process.exit(1);\\n");
+}
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", tamper] }])),
+      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [], diverge: { enabled: true, after: 2, branches: 2 },
+    }));
+    const run = await advance({ ...base(id, o), taskPhase: "tests", testsRedos: 1 });
+    expect(existsSync(join(worktreeDir(id), "leak.txt"))).toBe(false);
+    expect(await git(worktreeDir(id), "log", "--format=%s", "-1")).not.toBe("leak");
+    expect(run.stage).not.toBe("paused");
+    // 發散結論是追加在還原後的 feedback 之後
+    expect(readFileSync(join(flowDir(id), "feedback.md"), "utf8")).not.toContain("被分支改掉");
+  });
+
+  it("關閉時完全不發散", async () => {
+    const id = "f-diverge-off";
+    const o = await setup(id, { diverge: { enabled: false } });
+    addRetry(id, { key: "T-1:code", backTo: "implement", category: "tests_invalid", attempt: 1, final: false });
+    await advance({ ...base(id, o), taskPhase: "tests", testsRedos: 1 });
+    expect(existsSync(join(runDir(id), "diverge.json"))).toBe(false);
+    expect(agentRuns(id)).toBe(1);
+  });
+});
+
 describe("略過 TDD", () => {
   const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
 
@@ -518,7 +678,7 @@ describe("略過 TDD", () => {
   it("描述寫明不要求紅燈時仍撰寫測試，一開始就通過也進入綠燈", async () => {
     const id = "f-waive-red-writes-tests";
     const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
       cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
     }));
@@ -552,7 +712,7 @@ describe("略過 TDD", () => {
   it("實作早已存在、上一次剛因測試一開始就通過被退回時，改接受特徵化測試而不是重試到上限", async () => {
     const id = "f-red-already-green";
     const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
       cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
     }));
@@ -586,7 +746,7 @@ describe("略過 TDD", () => {
   it("測試階段沒有新增任何檔案、但現有測試已通過時，視為已涵蓋並進入綠燈", async () => {
     const id = "f-tests-covered";
     const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
       cycle: ["a", "b"], install: "true", test: "true", checks: [],
     }));
@@ -612,7 +772,7 @@ describe("略過 TDD", () => {
   it("實作階段動到後面任務負責的檔案時還原並重試", async () => {
     const id = "f-out-of-scope";
     const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }, { id: "AC-3", description: "後面任務" }];
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
       cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [], taskConcurrency: 1,
     }));
@@ -676,7 +836,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 describe("修正階段", () => {
   it("修改驗收條件時還原並帶著原本的意見重試", async () => {
     const id = "f-fix-tamper";
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", fixer] }])),
       cycle: ["a", "b"], install: "true", test: "true", checks: [],
     }));
@@ -703,7 +863,7 @@ describe("修正階段", () => {
 
   it("任務修正動到後面任務負責的檔案時還原並帶著原本的意見重試", async () => {
     const id = "f-fix-out-of-scope";
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", fixer] }])),
       cycle: ["a", "b"], install: "true", test: "true", checks: [],
     }));
@@ -761,7 +921,7 @@ describe("交接補寫", () => {
   const calls = (id: string) => readFileSync(join(flowDir(id), "calls.txt"), "utf8");
 
   async function fixRun(id: string, mode: string) {
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", repairScript] }])),
       cycle: ["a", "b"], install: "true", test: "true", checks: [],
     }));
@@ -810,7 +970,7 @@ describe("交接補寫", () => {
 
   it("規格的交接不合格時只補寫交接，補寫動到規格會被還原", async () => {
     const id = "f-repair-spec";
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", repairScript] }])),
       cycle: ["a", "b"], install: "true", test: "true", checks: [],
     }));
@@ -832,7 +992,7 @@ describe("交接補寫", () => {
 
   it("紅燈測試與綠燈實作的交接不合格時也只補寫交接", async () => {
     const id = "f-repair-tdd";
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", repairScript] }])),
       cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
     }));
@@ -891,7 +1051,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce = false,
   failReviewOnce = false, failFixOnce = false, stopAfter }: { tasks?: number; check?: string; rejectOnce?: boolean;
   failReviewOnce?: boolean; failFixOnce?: boolean; stopAfter?: "spec" | "plan" | "implement" | "verify" | "review" | "pr" } = {}) {
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", worker] }])),
     cycle: ["a", "b"], install: "true", taskConcurrency: 1, test: "for f in T-*.test.mjs; do node $f || exit 1; done",
     checks: [{ name: "check", cmd: check }],
@@ -954,7 +1114,7 @@ async function laneFlowRun(id: string, deps: Record<string, string[]>, opts: { c
   rmSync(laneBarrier, { recursive: true, force: true });
   rmSync(laneLog, { force: true });
   writeFileSync(join(root, "lane-config.json"), JSON.stringify(opts.config ?? {}));
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", laneWorker] }])),
     cycle: ["a", "b"], install: "true", test: "for f in T-*.test.mjs; do node $f || exit 1; done",
     checks: [], ...(opts.taskConcurrency ? { taskConcurrency: opts.taskConcurrency } : {}),
@@ -1099,7 +1259,7 @@ if (prompt.includes("plan-review.json")) {
 }
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
       cycle: ["a", "b"],
     }));
@@ -1132,7 +1292,7 @@ if (prompt.includes("plan-review.json")) {
 }
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
       cycle: ["a", "b"],
       ...config,
@@ -1321,7 +1481,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 `);
 
 async function quotaRun(id: string, stage: "fix" | "review", exhausted: string, models: Record<string, Array<{ name: string; strength: string }>>) {
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(Object.entries(models).map(([name, list]) => [name, {
       adapter: "command", command: ["node", quotaAgent, name, name === exhausted ? "quota" : "ok", "{model}"],
       modelProbe: ["node", quotaAgent, "{model}"], models: list,
@@ -1378,7 +1538,7 @@ describe("adaptive 選模與流程串接", () => {
 
   it("舊 run 的任務沒有難度時，選模視為 medium", async () => {
     const id = "f-model-legacy-task";
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["c", "d"].map((name) => [name, {
         adapter: "command", command: ["node", worker, "{model}"], modelProbe: ["node", worker, "{model}"],
         models: [{ name: "small", strength: "low" }, { name: "middle", strength: "medium" }, { name: "large", strength: "high" }],
@@ -1438,7 +1598,7 @@ appendFileSync(${JSON.stringify(join(root, `${id}-seen-prompts.txt`))}, kind + "
 const file = kind === "group" ? ".flow/plan-review-group.json" : ".flow/plan-review.json";
 ${body}
 `);
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(agents.map((name) => [name, { adapter: "command", command: ["node", script] }])),
     cycle: agents, planReviewQuorum: opts.quorum ?? 1, planArbiter: opts.planArbiter ?? true, reviewConcurrency: opts.concurrency ?? 1,
     ...(opts.layers ? { planReviewLayers: opts.layers } : {}),
@@ -1921,7 +2081,7 @@ ${APPROVE}`, { concurrency: 8 });
 ${APPROVE}
 }`);
     const script = join(root, `${id}.mjs`);
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["p1", "p2", "p3"].map((name) => [name, {
         adapter: "command", command: ["node", script, "{model}"], modelProbe: ["node", script, "{model}"],
         models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }],
@@ -1939,13 +2099,13 @@ ${APPROVE}
     expect(models.filter((m) => m === "plan-review:small")).toHaveLength(1);
     expect(models.filter((m) => m === "plan-review-group:small")).toHaveLength(2); // G-1 與 G-2 的第一次
     expect(models.filter((m) => m === "plan-review-group:large")).toHaveLength(1); // 只有 G-2 的重審升級
-  });
+  }, SLOW_TEST_MS);
 });
 
 describe("lint 與型別檢查只在最後驗證", () => {
   const record = (name: string) => `node -e "require('fs').appendFileSync('calls.log', '${name}:' + process.argv.slice(1).join(',') + '\\n')"`;
   async function checkRun(id: string, files: Record<string, string>) {
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: { a: { adapter: "command", command: ["node", script] } }, cycle: ["a"], install: "true",
       checks: [
         { name: "typecheck", cmd: record("typecheck"), finalOnly: true },
@@ -1991,7 +2151,7 @@ describe("lint 與型別檢查只在最後驗證", () => {
     // 每個檢查先宣告自己開始，再等另一個也開始；依序執行時會互相等到逾時而失敗
     const waitFor = (self: string, other: string) =>
       `node -e "const fs=require('fs');fs.writeFileSync('${self}.started','');const t=Date.now();while(!fs.existsSync('${other}.started')){if(Date.now()-t>3000)process.exit(1)}"`;
-    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: { a: { adapter: "command", command: ["node", script] } }, cycle: ["a"], install: "true",
       checks: [{ name: "one", cmd: waitFor("one", "two") }, { name: "two", cmd: waitFor("two", "one") }],
       ...extra,
@@ -2019,7 +2179,7 @@ describe("lint 與型別檢查只在最後驗證", () => {
     const run = await concurrentRun("f-chk-serial", { checksConcurrency: 1 });
     const report = await runChecks(run);
     expect(report).toContain("one 失敗");
-  });
+  }, SLOW_TEST_MS);
 
   it("withFiles：npm run 用 -- 轉給 script，檔名加引號", () => {
     expect(withFiles("pnpm run lint", ["src/a.ts"])).toBe("pnpm run lint 'src/a.ts'");

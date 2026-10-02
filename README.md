@@ -179,7 +179,7 @@ agentflowctl run --req-file ./requirement.md
 
 `status <id>` 的用量以每次 LLM 呼叫為一筆，失敗、額度用完及代打也會計入呼叫次數。只有 CLI 同時回報輸入與輸出 token，才把兩者納入合計與模型強度占比；明確回報的 0 仍算已回報。缺少任一數字列為「未回報」；舊紀錄無法分辨真實 0 與預設補值，列為「舊紀錄不明」，原始數字只供查閱。各 agent、階段、任務、模型與步驟、模型強度是同一批呼叫的不同分組，不應跨組相加。輸入 token 一律包含 cache 讀取與寫入：Claude Code 回報的 `input_tokens` 不含 cache，agentflowctl 會把 cache 讀寫加回去；Codex 的 `input_tokens` 本來就包含 cache。有回報 cache 時，`status` 與 `logs` 會另外標出其中讀取與寫入 cache 各多少。`config agent model add/check` 的探測請求可能耗用 token，但不屬於 run，因此不在 `status` 內。
 
-計畫 agent 會查閱相關程式碼，依影響範圍、技術不確定性與失敗後果為每個任務標註 `low`／`medium`／`high` 難度，取三者中最高等級，並在計畫中寫出依據；計畫審查會逐項核對。自動選模先遵守角色分配，再取階段強度與任務難度中較高者；失敗重試會提高強度。若分配到的 agent 沒有足夠強度的模型，會選它最強的模型並提示。這些強度是你對模型能力的設定，不由 CLI 自動評分。
+計畫 agent 會查閱相關程式碼，依影響範圍、技術不確定性與失敗後果為每個任務標註 `low`／`medium`／`high` 難度，取三者中最高等級，並在計畫中寫出依據；計畫審查會逐項核對。自動選模先遵守角色分配，再取階段強度與任務難度中較高者；失敗重試會提高強度（重試前短發散的 `diverge` 階段例外：預設 low，不隨任務難度或失敗次數升級）。若分配到的 agent 沒有足夠強度的模型，會選它最強的模型並提示。這些強度是你對模型能力的設定，不由 CLI 自動評分。
 
 #### 推理強度（effort）
 
@@ -252,6 +252,7 @@ Codex 另有幾點差異：
 | `reviewConcurrency` | 不限 | 同一輪審查最多幾位審查者同時執行；`1` 為一次一位；說明見表格下方，`config doctor` 會顯示目前的設定 |
 | `planArbiter` | `true` | 計畫審查僵持，或修訂一次後仍被要求修改時是否啟用仲裁 |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |
+| `diverge` | `{ "enabled": true, "after": 2, "branches": 3 }` | 同一任務連續因測試／實作關卡失敗時，先從 2 到 3 個角度診斷再重試；說明見表格下方 |
 | `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
 | `maxAgentRuns` | `60` | 計畫定案前，一次 run 最多執行幾次 agent；定案後改依任務數決定（見 `agentRunsPerTask`） |
 | `agentRunsPerTask` | `20` | 計畫定案時，上限改為「已執行次數 ＋ 任務數 × 這個值」（任務數不含 `kind: confirm`）。`run`／`resume` 明確指定 `--max-agent-runs` 後不再改算 |
@@ -262,6 +263,8 @@ Codex 另有幾點差異：
 | `testPattern` | 常見的 `.test.`、`.spec.` 檔名 | 辨識測試檔的正規表示式字串；非標準檔名時調整 |
 
 計畫審查會依任務規模選做法。同時符合下列條件時，每輪先做一次索引審查，再只審查有變動的任務群：任務達到 `planReviewLayers.minTasks` 個；依 description 寫的檔案路徑能分成至少兩群，而且最大一群不超過三分之二；`plan.md` 每個任務都有 `## T-<數字>` 標題。索引審查讀規格、全部任務描述、驗收條件與整體做法，人數是 `planReviewQuorum`。群數最多 `maxGroups`，也不超過任務數除以 `tasksPerGroup`；每群一位審查者，含 `high` 任務的群改由 `planReviewQuorum` 位審查。改了 `plan.md` 的整體做法時所有群都重審；某一次審查失敗時只重跑還沒完成的部分。已達門檻卻不符其他條件時，終端機會印出原因並改由審查者讀完整份規格與計畫。`"planReviewLayers": { "enabled": false }` 可以關閉，`config doctor` 會顯示目前的設定。
+
+同一個任務最近連續合格失敗剛好達到 `diverge.after` 次（分類為測試未寫、測試本身有問題、或綠燈仍未通過；不含紅燈一開始就通過）時，或 TDD 綠燈第二次失敗而退回測試時，實作階段會先跑短發散：2 到 3 個互不看見的診斷分支，再由不是卡住寫檔者的評審選一個，結論追加到 `.flow/feedback.md`（終端機顯示 `🔀`）。程式不依評審改流程，下一次寫測試或實作仍走原本關卡。第一次失敗不觸發，同一段連續失敗只發散一次（發散之後新增的失敗才重新計數）；退回測試兩次會再發散一次。這 3 到 4 次呼叫會計入 `maxAgentRuns`，而且一次實作階段內不會中途被預算打斷，緊預算時可能先碰到上限。評審額度用完而暫停時，resume 會重跑這一輪發散。可用 `"diverge": { "enabled": false }` 關閉，`config doctor` 會顯示目前的設定。adaptive 模式下這些呼叫預設用 low 強度（階段名 `diverge`），要調高就執行 `agentflowctl config selection stage diverge medium`；balanced 模式不分強度，這個設定不生效。
 
 #### 平行執行任務
 
