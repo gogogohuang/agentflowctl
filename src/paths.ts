@@ -44,6 +44,8 @@ export const handoffPath = (id: string) => join(sharedRunDir(id), "handoff.json"
 export const planReviewStatePath = (id: string) => join(runDir(id), "plan-review-state.json");
 /** 已交付仲裁、尚未得出裁決：暫停後 resume 直接回到仲裁。放在 worktree 外，agent 無法偽造 */
 export const planArbitrationPath = (id: string) => join(runDir(id), "plan-arbitration.json");
+/** 重試前短發散的結果：放在 worktree 外，agent 改不到 */
+export const divergePath = (id: string) => join(runDir(id), "diverge.json");
 /** 需要人眼確認的任務（TaskItem[]）：計畫定案後從 .flow/ 搬出，放在 worktree 外，agent 看不到也改不到，只在開 PR 時交給人 */
 export const confirmationsPath = (id: string) => join(runDir(id), "confirmations.json");
 /** 人工確認項目連帶搬出的驗收條件與計畫段落：{ acceptance, plan }，只供 PR 描述使用 */

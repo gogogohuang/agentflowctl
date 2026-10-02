@@ -610,6 +610,8 @@ async function doctor(): Promise<void> {
   console.log(`沒有相依關係的任務同時執行上限：${cfg.taskConcurrency ?? "不限"}`);
   const layers = cfg.planReviewLayers;
   console.log(`計畫分層審查：${layers.enabled ? `任務達 ${layers.minTasks} 個時開啟，最多 ${layers.maxGroups} 群，每群平均至少 ${layers.tasksPerGroup} 個任務` : "關閉"}`);
+  const diverge = cfg.diverge;
+  console.log(`重試前短發散：${diverge.enabled ? `同一關失敗 ${diverge.after} 次後開啟，${diverge.branches} 個分支` : "關閉"}`);
 }
 
 configCmd.command("doctor").description("檢查可用的 agent CLI 與目前參與的 agent").action(doctor);
