@@ -169,7 +169,7 @@ export const ArbiterResult = ReviewResult.extend({
 export const ModelStrength = z.enum(["low", "medium", "high"]);
 export type ModelStrength = z.infer<typeof ModelStrength>;
 
-export const ModelStage = z.enum(["spec", "plan", "planReview", "planFix", "planArbiter", "taskTests", "taskCode", "taskReview", "taskFix", "fix", "review"]);
+export const ModelStage = z.enum(["spec", "plan", "planReview", "planFix", "planArbiter", "taskTests", "taskCode", "taskReview", "taskFix", "fix", "review", "diverge"]);
 export type ModelStage = z.infer<typeof ModelStage>;
 
 /** 推理強度（effort）；各 CLI 接受的值不同且變動快，這裡只確保非空，值是否可用交給 CLI 與 config agent model check */
@@ -212,7 +212,7 @@ export const RepoConfig = z.object({
       spec: ModelStrength.optional(), plan: ModelStrength.optional(), planReview: ModelStrength.optional(),
       planFix: ModelStrength.optional(), planArbiter: ModelStrength.optional(), taskTests: ModelStrength.optional(),
       taskCode: ModelStrength.optional(), taskReview: ModelStrength.optional(), taskFix: ModelStrength.optional(),
-      fix: ModelStrength.optional(), review: ModelStrength.optional(),
+      fix: ModelStrength.optional(), review: ModelStrength.optional(), diverge: ModelStrength.optional(),
     }).default({}),
   }).default({ mode: "balanced", stageStrength: {} }),
   /** 參與的 agent（順序不影響分工）；未設定時取 agents 裡已安裝的 CLI */
