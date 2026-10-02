@@ -527,15 +527,18 @@ model.command("add <agent> <name>")
 model.command("set <agent> <name>")
   .option("--strength <strength>", "low、medium 或 high")
   .option("--effort <effort>", "推理強度；填 none 清除")
-  .action((agent: string, name: string, opts: { strength?: string; effort?: string }) => {
+  .option("--at <strength>", "同名模型有多筆強度時，指定要修改哪一筆（目前的強度）")
+  .action((agent: string, name: string, opts: { strength?: string; effort?: string; at?: string }) => {
     const effort = opts.effort === "none" ? null : opts.effort;
-    writeRawConfig(configPath(), setModelStrength(readRawConfig(configPath()), agent, name, opts.strength === undefined ? undefined : parseStrength(opts.strength), effort));
+    writeRawConfig(configPath(), setModelStrength(readRawConfig(configPath()), agent, name, opts.strength === undefined ? undefined : parseStrength(opts.strength), effort, opts.at === undefined ? undefined : parseStrength(opts.at)));
     const changed = [opts.strength !== undefined && `強度設為 ${opts.strength}`, opts.effort !== undefined && (effort === null ? "已清除 effort" : `effort 設為 ${opts.effort}`)].filter(Boolean).join("、");
     console.log(`✅ 已將 ${agent} 的模型 ${name} ${changed}；此指令不重驗可用性`);
   });
 
-model.command("remove <agent> <name>").action((agent: string, name: string) => {
-  writeRawConfig(configPath(), removeModel(readRawConfig(configPath()), agent, name));
+model.command("remove <agent> <name>")
+  .option("--at <strength>", "同名模型有多筆強度時，指定要移除哪一筆")
+  .action((agent: string, name: string, opts: { at?: string }) => {
+  writeRawConfig(configPath(), removeModel(readRawConfig(configPath()), agent, name, opts.at === undefined ? undefined : parseStrength(opts.at)));
   console.log(`✅ 已移除 ${agent} 的模型 ${name}`);
 });
 

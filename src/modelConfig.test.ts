@@ -7,13 +7,27 @@ const base = () => ({ agents: {
 }, cycle: ["a", "b"] });
 
 describe("模型設定編輯", () => {
-  it("新增模型保留順序並拒絕重複名稱", () => {
+  it("新增模型保留順序並拒絕重複的名稱與強度", () => {
     const cfg = addModel(base(), "a", "middle", "medium");
     expect(((cfg.agents as Record<string, { models: unknown[] }>).a?.models)).toEqual([
       { name: "small", strength: "low" }, { name: "middle", strength: "medium" },
     ]);
-    expect(() => addModel(cfg, "a", "middle", "high")).toThrow(/重複/);
+    expect(() => addModel(cfg, "a", "middle", "medium")).toThrow(/重複/);
     expect(() => addModel(cfg, "a", " middle ", "high")).toThrow(/空白/);
+  });
+
+  it("同名模型可用不同強度並存；同名同強度重複，set／remove 多筆時要用 at 指定", () => {
+    let cfg = addModel(base(), "a", "small", "high", "high");
+    const models = () => (cfg.agents as Record<string, { models: Array<{ name: string; strength: string; effort?: string }> }>).a!.models;
+    expect(models()).toEqual([{ name: "small", strength: "low" }, { name: "small", strength: "high", effort: "high" }]);
+    expect(() => addModel(cfg, "a", "small", "high")).toThrow(/重複/);
+    expect(() => setModelStrength(cfg, "a", "small", undefined, "low")).toThrow(/--at/);
+    expect(() => removeModel(cfg, "a", "small")).toThrow(/--at/);
+    expect(() => setModelStrength(cfg, "a", "small", undefined, "low", "medium")).toThrow(/沒有強度 medium/);
+    cfg = setModelStrength(cfg, "a", "small", undefined, "xhigh", "high");
+    expect(models()[1]).toEqual({ name: "small", strength: "high", effort: "xhigh" });
+    cfg = removeModel(cfg, "a", "small", "high");
+    expect(models()).toEqual([{ name: "small", strength: "low" }]);
   });
 
   it("新增與修改 effort；null 清除，沒給任何欄位則拒絕", () => {
