@@ -114,6 +114,18 @@ describe("restoreRun", () => {
     expect(existsSync(runDir("r-d"))).toBe(false);
   });
 
+  it("分支已在主專案簽出時拒絕並提示切換分支，也不留下半成品", async () => {
+    const out = await dumped("r-e");
+    execFileSync("git", ["-C", root, "switch", "flow/r-e"]);
+    try {
+      await expect(restoreRun(out)).rejects.toThrow("已在");
+      expect(getRun("r-e")).toBeUndefined();
+      expect(existsSync(runDir("r-e"))).toBe(false);
+    } finally {
+      execFileSync("git", ["-C", root, "switch", "main"]);
+    }
+  });
+
   it("不是 dump 目錄時丟錯", async () => {
     await expect(restoreRun(join(root, "not-a-dump"))).rejects.toThrow("dump");
   });

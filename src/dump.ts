@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { attachWorktree, git } from "./git.js";
+import { attachWorktree, branchCheckedOutAt, git } from "./git.js";
 import { flowDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { FlowRun } from "./schemas.js";
 import { getRun, saveRun } from "./store.js";
@@ -81,6 +81,10 @@ export async function restoreRun(dumpDir: string): Promise<FlowRun> {
     await git(root, "rev-parse", "--verify", `refs/heads/${run.branch}`);
   } catch {
     throw new Error(`找不到分支 ${run.branch}，無法重建 worktree；請先把分支補回這個 repo`);
+  }
+  const usedAt = await branchCheckedOutAt(root, run.branch);
+  if (usedAt) {
+    throw new Error(`分支 ${run.branch} 已在 ${usedAt} 簽出，無法再建 worktree；請先在那裡切到別的分支（例如 git switch ${run.baseBranch}）再復原`);
   }
   try {
     await attachWorktree(root, worktreeDir(id), run.branch);
