@@ -119,6 +119,37 @@ export const ReviewResult = z.object({
   ),
 });
 
+export const DivergeFrame = z.enum(["acceptance", "split", "invert"]);
+export type DivergeFrame = z.infer<typeof DivergeFrame>;
+
+export const DivergeBranch = z.object({
+  frame: DivergeFrame,
+  hypothesis: z.string().trim().min(1),
+  nextStep: z.string().trim().min(1),
+});
+export type DivergeBranch = z.infer<typeof DivergeBranch>;
+
+export const DivergePick = z.object({
+  pick: DivergeFrame,
+  action: z.enum(["keep_fixing", "rewrite_tests", "split_task"]),
+  rationale: z.string().trim().min(1),
+  nextStep: z.string().trim().min(1),
+});
+export type DivergePick = z.infer<typeof DivergePick>;
+
+export const DivergeRecord = z.object({
+  stamp: z.string().min(1),
+  status: z.enum(["running", "done", "skipped"]),
+  key: z.string().min(1),
+  frames: z.array(DivergeFrame),
+  branches: z.array(DivergeBranch).default([]),
+  pick: DivergePick.optional(),
+  reason: z.string().optional(),
+  // 發散當下 retries.jsonl 的筆數：之後連續合格只算這之後新增的，同一段失敗不會再觸發第二次
+  retriesSeen: z.number().int().min(0).optional(),
+});
+export type DivergeRecord = z.infer<typeof DivergeRecord>;
+
 /** 計畫與程式碼審查的結果：verdict 必須和 items 一致，否則視為格式錯誤重試 */
 export const ConsistentReviewResult = ReviewResult.superRefine((review, ctx) => {
   const unmet = review.items.filter((i) => i.status !== "met");
@@ -212,6 +243,13 @@ export const RepoConfig = z.object({
     /** 群數也不超過任務數除以這個值，避免拆出很多只有一兩個任務的呼叫 */
     tasksPerGroup: z.number().int().min(1).default(3),
   }).default({ enabled: true, minTasks: 7, maxGroups: 5, tasksPerGroup: 3 }),
+  /** 同一任務連續因測試／實作關卡失敗時，下一次寫檔前先從 2 到 3 個角度診斷 */
+  diverge: z.strictObject({
+    enabled: z.boolean().default(true),
+    /** 同一 key 最近連續幾筆合格重試時觸發 */
+    after: z.number().int().min(1).default(2),
+    branches: z.number().int().min(2).max(3).default(3),
+  }).default({ enabled: true, after: 2, branches: 3 }),
   /**
    * 仲裁意見分歧時怎麼辦（只有兩家時由雙方各自仲裁，才可能分歧）：
    * proceed＝繼續實作，爭議記錄在計畫裡，後面還有測試、驗證與程式碼審查把關；stop＝停下來等人
