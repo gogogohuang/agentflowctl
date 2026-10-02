@@ -1648,9 +1648,9 @@ const CHECKABLE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
 
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
-/** 把檔案清單接在指令後面；npm run 要用 -- 才會轉給 script */
+/** 把檔案清單接在指令後面；npm run 要用 -- 才會轉給 script（指令已經有 -- 就不重複加） */
 export function withFiles(cmd: string, files: readonly string[]): string {
-  return `${cmd}${/^npm run /.test(cmd) ? " --" : ""} ${files.map(shellQuote).join(" ")}`;
+  return `${cmd}${/^npm run /.test(cmd) && !/ -- /.test(cmd) ? " --" : ""} ${files.map(shellQuote).join(" ")}`;
 }
 
 /** 整支分支（相對基底分支的分歧點）改過、目前還在的檔案；算不出來就回傳 undefined，改檢查整個專案 */
