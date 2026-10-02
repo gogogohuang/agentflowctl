@@ -54,7 +54,7 @@ import {
 } from "./planReview.js";
 import { confirmationChecklist, descriptionWaivesRed, splitHumanItems, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
-import { violatingTestChanges } from "./testGuard.js";
+import { brokenPackageImport, packageImports, violatingTestChanges } from "./testGuard.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
 
@@ -1257,8 +1257,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const failures = (run.attempts[key] ?? 0) + 1;
     // 實作者沒有任何變更、或同樣的測試一再失敗，表示問題多半出在測試本身（用了專案沒有的 API、斷言互相矛盾……），
     // 再叫實作者重試只會原地打轉：丟掉這一輪，回到測試階段重寫
-    if (tdd && run.taskBase && (run.testsRedos ?? 0) < TESTS_REDO_LIMIT && (!codeCommit || failures >= TESTS_REDO_AFTER_FAILURES)) {
-      return redoTests(run, key, repo, run.taskBase, testsCommit, green.output, codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更");
+    // 失敗是「測試呼叫了套件沒有的匯出」時與實作無關，不必等第二次就退回
+    const brokenImport = tdd && run.taskBase ? brokenPackageImport(green.output, await testPackageImports(repo, run.taskBase, testsCommit, testRe)) : undefined;
+    if (tdd && run.taskBase && (run.testsRedos ?? 0) < TESTS_REDO_LIMIT && (brokenImport || !codeCommit || failures >= TESTS_REDO_AFTER_FAILURES)) {
+      return redoTests(
+        run, key, repo, run.taskBase, testsCommit, green.output,
+        brokenImport ? `測試用了已安裝套件沒有的匯出 ${brokenImport}` : codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更",
+      );
     }
     return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement", "tests_not_green");
   }
@@ -1426,6 +1431,16 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     fixSource: "review",
     lastReviewer: result.objector,
   };
+}
+
+/** 這個任務的測試檔由套件匯入的具名符號 */
+async function testPackageImports(repo: string, from: string, to: string, testRe: RegExp): Promise<Set<string>> {
+  const names = new Set<string>();
+  for (const file of (await changedFiles(repo, from, to)).filter((f) => testRe.test(f))) {
+    const path = join(repo, file);
+    if (existsSync(path)) for (const n of packageImports(readFileSync(path, "utf8"))) names.add(n);
+  }
+  return names;
 }
 
 /**

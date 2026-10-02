@@ -380,7 +380,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 `);
 
 /** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
-async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number } = {}) {
+async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, testSource = "process.exit(1);\n" }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; testSource?: string } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
@@ -388,7 +388,7 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   const wt = worktreeDir(id);
   await addWorktree(root, wt, "main", `flow/${id}`);
   const taskBase = await git(wt, "rev-parse", "HEAD");
-  writeFileSync(join(wt, "feature.test.mjs"), "process.exit(1);\n");
+  writeFileSync(join(wt, "feature.test.mjs"), testSource);
   const testsCommit = (await commitAll(wt, "test(T-1): 測試 [a]"))!;
   mkdirSync(flowDir(id), { recursive: true });
   if (writesCode) writeFileSync(join(flowDir(id), "writes-code.txt"), "");
@@ -424,6 +424,17 @@ describe("綠燈階段無法讓測試通過時退回測試階段", () => {
     const { run } = await greenRun("f-green-repeated", { writesCode: true, attempts: { "T-1:code": 1 } });
     expect(run.taskPhase).toBe("tests");
     expect(run.testsRedos).toBe(1);
+    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_invalid"]);
+  });
+
+  it("第一次失敗就是測試呼叫了套件沒有的匯出：不等第二次，立刻退回", async () => {
+    const { run } = await greenRun("f-green-broken-import", {
+      writesCode: true,
+      testSource: "// import { renderHook } from 'some-pkg'\nconsole.log('TypeError: renderHook is not a function');\nprocess.exit(1);\n",
+    });
+    expect(run.taskPhase).toBe("tests");
+    expect(run.testsRedos).toBe(1);
+    expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toContain("renderHook");
     expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_invalid"]);
   });
 
