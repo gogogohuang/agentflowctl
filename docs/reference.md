@@ -243,6 +243,7 @@ stderr：
 | `tests_modified` | 實作改了測試 | 綠燈階段動到測試檔 |
 | `tests_not_green` | 測試仍未通過 | 實作後測試失敗 |
 | `tests_deleted` | 刪除測試檔 | fix 刪測試 |
+| `merge_tests_failed` | 平行任務合併後測試失敗 | 車道合併回 run 分支後全套測試未通過（沒有文字衝突的語意衝突），還原合併並讓車道重做 |
 | `checks_failed` | 專案檢查失敗 | `runChecks` 有失敗 |
 
 run 失敗時，`state.json` 另外記錄 `failureCategory`，`insights` 依此列出「失敗原因」。關卡重試達上限只是其中一種，其他失敗不會出現在 `retries.jsonl`：

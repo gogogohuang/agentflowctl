@@ -60,7 +60,7 @@ import {
 } from "./planReview.js";
 import { confirmationChecklist, descriptionWaivesRed, splitHumanItems, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
-import { brokenPackageImport, packageImports, violatingTestChanges } from "./testGuard.js";
+import { brokenPackageImport, foreignFailingTests, packageImports, violatingTestChanges } from "./testGuard.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
 
@@ -82,6 +82,9 @@ export class QuotaPause extends Error {
 
 /** 測試一再被退回仍過不了而停下等人：沿用 QuotaPause 的暫停流程（run 與車道都會存成 paused，resume 接續） */
 export class TestsStuckPause extends QuotaPause {}
+
+/** 紅燈階段發現分支上別的測試早就失敗：不是這個任務能修的，停下等人處理 */
+export class BaselineRedPause extends TestsStuckPause {}
 
 /** 這次執行中已確認額度用完的 agent；程序結束即清空，resume 時會重新嘗試 */
 const exhausted = new Set<string>();
@@ -1347,6 +1350,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, TESTS_NOT_RED_REASON, "implement", "tests_not_red");
     }
+    // 紅燈跑在實作之前：失敗的若是別的測試檔，就是分支上早就壞了（例如平行車道合併後語意衝突）。
+    // 這不是這個任務的測試或實作能修的，繼續只會在綠燈原地打轉，先還原並停下等人處理
+    const foreign = red.ok ? [] : foreignFailingTests(red.output, changed.filter((f) => testRe.test(f)));
+    if (foreign.length) {
+      await resetTo(repo, before);
+      throw new BaselineRedPause(`${key} 的紅燈階段，失敗的是別的測試檔：${foreign.join("、")}（分支上原本就壞了，不是這個任務造成的）；請先修好那些測試，或用 replan／手動修正後 resume${logHint(run, red.seq)}`);
+    }
     // 紅燈只看得出「失敗」，看不出失敗的原因：測試呼叫了套件沒有的匯出時，實作者再怎麼改都不會綠，現在就退回給測試作者
     const missing = await missingPackageExports(repo, changed.filter((f) => testRe.test(f)));
     if (missing.length) {
@@ -1528,24 +1538,36 @@ async function mergeLane(ref: { run: FlowRun }, task: TaskItem): Promise<"merged
   const pwt = worktreeDir(parent.id);
   const before = await headCommit(pwt);
   const merged = await mergeBranch(pwt, lane.branch, `merge(${task.id}): ${task.title}`);
+  const redoLane = (message: string, category: "merge_conflict" | "merge_tests_failed"): "redo" | { kind: "failed"; reason: string; category?: string } => {
+    const redo = retry({ ...lane, stage: "implement" }, `${task.id}:merge`, message, "implement", category);
+    saveRun({ ...redo, taskIndex: 0, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
+    if (redo.stage === "failed") return { kind: "failed", category: "retry_limit", reason: redo.failureReason ?? "合併重試達上限" };
+    return "redo";
+  };
   if (!merged.ok) {
     info(parent, `🔀 [${task.id}] 與已合併的任務衝突（${merged.conflicts.join("、")}），從最新的分支重做`);
     await resetTo(worktreeDir(id), before); // 車道的分支回到 run 目前的 HEAD，之前的 commit 全部丟掉
-    const redo = retry({ ...lane, stage: "implement" }, `${task.id}:merge`,
-      `和已合併的其他任務在這些檔案衝突：${merged.conflicts.join("、")}。分支已更新為最新，請在既有內容之上重新完成這個任務。`,
-      "implement", "merge_conflict");
-    saveRun({ ...redo, taskIndex: 0, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
-    if (redo.stage === "failed") return { kind: "failed", category: "retry_limit", reason: redo.failureReason ?? "合併衝突重試達上限" };
-    return "redo";
+    return redoLane(`和已合併的其他任務在這些檔案衝突：${merged.conflicts.join("、")}。分支已更新為最新，請在既有內容之上重新完成這個任務。`, "merge_conflict");
   }
-  info(parent, `🔀 [${task.id}] 已合併回 ${parent.branch}`);
-  // 先記下完成，再清理：中斷在兩者之間時，resume 重新合併只會得到「已是最新」
-  ref.run = saveRun({ ...parent, doneTasks: [...new Set([...(parent.doneTasks ?? []), task.id])] });
   const changed = await changedFiles(pwt, before, merged.commit);
   if (changed.some((f) => DEPENDENCY_FILE.test(f))) {
     const install = await runCommand(target(parent, `${task.id}-install`, CMD_AGENT), loadRepoConfig().install);
     if (!install.ok) info(parent, `   ⚠️  合併後重新安裝相依套件失敗${logHint(parent, install.seq)}，整體驗證會再試一次`);
   }
+  // 沒有文字衝突不代表合在一起沒問題（例如一個任務改了元件標籤，另一個任務的測試還在找舊標籤）：
+  // 每條車道單獨都過，這裡是第一次把它們放在一起跑，壞了就還原這次合併，讓這條車道在最新的分支上重做
+  if (hasTestFramework()) {
+    const check = await runCommand(target(parent, `${task.id}-merge-test`, CMD_AGENT), loadRepoConfig().test);
+    if (!check.ok) {
+      info(parent, `🔀 [${task.id}] 合併後全套測試未通過${logHint(parent, check.seq)}，還原合併，從最新的分支重做`);
+      await resetTo(pwt, before);
+      await resetTo(worktreeDir(id), before);
+      return redoLane(`這個任務單獨完成時測試都通過，但和已合併的任務放在一起後全套測試失敗（沒有文字衝突，是行為互相影響，例如標籤、文案或共用函式的假設不同）。分支已更新為最新，請在既有內容之上重新完成這個任務，並讓全套測試通過；不要用修改其他任務的測試來迴避，除非那個測試與這個任務的驗收條件直接衝突。\n\n\`\`\`\n${tail(check.output)}\n\`\`\``, "merge_tests_failed");
+    }
+  }
+  info(parent, `🔀 [${task.id}] 已合併回 ${parent.branch}`);
+  // 先記下完成，再清理：中斷在兩者之間時，resume 重新合併只會得到「已是最新」
+  ref.run = saveRun({ ...parent, doneTasks: [...new Set([...(parent.doneTasks ?? []), task.id])] });
   for (const name of existsSync(flowDir(id)) ? readdirSync(flowDir(id)) : []) {
     if (/^review-T-\d+-.+\.json$/.test(name)) cpSync(join(flowDir(id), name), flowFile(parent, name));
   }

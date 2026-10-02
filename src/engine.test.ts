@@ -445,6 +445,41 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
   });
 });
 
+describe("紅燈階段：失敗的不是本任務的測試", () => {
+  it("全套測試失敗的是別的測試檔（分支上早就壞了）：還原測試 commit 並暫停，不進入綠燈", async () => {
+    const id = "f-red-foreign-failure";
+    const script = join(root, "foreign-failure-tests.mjs");
+    writeFileSync(script, `import { writeFileSync } from "node:fs";
+writeFileSync("feature.test.mjs", "// 新測試\\n");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+      cycle: ["a", "b"], install: "true", checks: [],
+      test: "node -e \"console.log(' FAIL  src/pages/b/Card.reason.test.tsx > 優先序'); process.exit(1)\"",
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    const taskBase = await git(wt, "rev-parse", "HEAD");
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-2", description: "匯出 answer" }]));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "元件", description: "新增元件", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+      autopilot: true, maxAgentRuns: 5, cycle: ["a", "b"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.stage).toBe("paused");
+    expect(run.pauseReason).toContain("Card.reason.test.tsx");
+    expect(run.pauseReason).toContain("resume");
+    expect(run.taskPhase).toBe("tests");
+    expect(await git(wt, "rev-parse", "HEAD")).toBe(taskBase);
+    expect(listRetries(id)).toEqual([]);
+  });
+});
+
 describe("綠燈階段無法讓測試通過時退回測試階段", () => {
   it("實作者沒有任何變更、測試仍未通過：丟掉這輪，退回重寫測試，並把原因與舊測試 commit 交給測試作者", async () => {
     // maxAgentRuns 為 1：退回後下一步會因額度用完而停下，所以只檢查退回的結果，不看 stage
@@ -1101,7 +1136,11 @@ if (cfg.quota?.includes(id) && role === "tests") {
   process.exit(1);
 }
 if (cfg.alwaysFail?.includes(id) && (role === "tests" || role === "code")) process.exit(1);
-if (role === "tests") writeFileSync(id + ".test.mjs", "import { ok } from \\"./" + id + ".mjs\\";\\nif (!ok) process.exit(1);\\n");
+if (role === "tests") {
+  // exclusive：這幾個任務單獨都能過，合在一起才壞（沒有文字衝突的語意衝突）
+  const others = (cfg.exclusive?.includes(id) ? cfg.exclusive.filter((x) => x !== id) : []).map((x) => "if (existsSync(\\"./" + x + ".mjs\\")) process.exit(1);\\n").join("");
+  writeFileSync(id + ".test.mjs", "import { existsSync } from \\"node:fs\\";\\nimport { ok } from \\"./" + id + ".mjs\\";\\n" + others + "if (!ok) process.exit(1);\\n");
+}
 if (role === "code") {
   writeFileSync(id + ".mjs", "export const ok = true;\\n");
   if (cfg.shared?.includes(id)) appendFileSync("shared.txt", id + "\\n");
@@ -1195,6 +1234,21 @@ describe("平行任務", () => {
     expect([...(run.doneTasks ?? [])].sort()).toEqual(["T-1", "T-2"]);
     expect(readFileSync(join(worktreeDir(id), "shared.txt"), "utf8").split("\n").filter(Boolean).sort()).toEqual(["T-1", "T-2"]);
     expect(listRetries(id).some((r) => r.category === "merge_conflict")).toBe(true);
+  });
+
+  it("合併後全套測試變紅（沒有文字衝突的語意衝突）：還原合併，後合併的車道從最新分支重做", async () => {
+    const id = "f-lanes-semantic";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { config: { barrier: ["T-1", "T-2"], exclusive: ["T-1", "T-2"] }, maxAttempts: 3 });
+    // 重做的車道在最新分支上同樣過不了（兩個任務互斥），最後失敗或暫停；重點是壞掉的合併沒有留在 run 的分支上
+    expect(["failed", "paused"]).toContain(run.stage);
+    expect(listRetries(id).some((r) => r.category === "merge_tests_failed")).toBe(true);
+    expect(run.doneTasks).toHaveLength(1);
+    const wt = worktreeDir(id);
+    const mergedTask = run.doneTasks?.[0] ?? "";
+    const other = mergedTask === "T-1" ? "T-2" : "T-1";
+    expect(existsSync(join(wt, `${mergedTask}.mjs`))).toBe(true);
+    expect(existsSync(join(wt, `${other}.mjs`))).toBe(false);
+    expect(await git(wt, "status", "--porcelain")).toBe("");
   });
 
   it("有車道失敗時 run 失敗並指出是哪個任務，已完成的任務仍合併", async () => {
