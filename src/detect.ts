@@ -48,6 +48,9 @@ const CHECK_SCRIPTS: Record<string, string[]> = {
   build: ["build"],
 };
 
+/** agentflowctl 自己產生的資料夾，eslint 不該檢查（.flow/ 的 JSON 格式不符專案規則，agent 也修不掉） */
+const ESLINT_IGNORES = ["'.flow/**'", "'.agentflowctl/**'"].map((p) => `--ignore-pattern ${p}`).join(" ");
+
 /** 每個任務不跑、最後才跑的檢查 */
 const FINAL_CHECKS = new Set(["typecheck", "lint"]);
 
@@ -102,7 +105,12 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
     const script = CHECK_SCRIPTS[name]?.find((s) => typeof scripts[s] === "string");
     // lint 與型別檢查只在最後整支分支才跑，專案沒有對應 script 就略過，不退回預設指令
     if (FINAL_CHECKS.has(name)) {
-      return script ? [{ name, cmd: `${manager} run ${script}`, finalOnly: true, ...(name === "lint" ? { changedOnly: true } : {}) }] : [];
+      if (!script) return [];
+      if (name !== "lint") return [{ name, cmd: `${manager} run ${script}`, finalOnly: true }];
+      // lint script 若是 eslint（常見寫法 eslint .）會掃到 worktree 裡的 .flow/，所以在指令列補上略過
+      const eslint = /\beslint\b/.test(String(scripts[script]));
+      const run = `${manager} run ${script}`;
+      return [{ name, cmd: eslint ? `${run}${manager === "npm" ? " --" : ""} ${ESLINT_IGNORES}` : run, finalOnly: true, changedOnly: true }];
     }
     return [{ name, cmd: script ? `${manager} run ${script}` : withExec(cmd, manager) }];
   });

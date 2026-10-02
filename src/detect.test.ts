@@ -81,10 +81,20 @@ describe("detectProjectDefaults", () => {
     }));
     expect(d.checks).toEqual([
       { name: "typecheck", cmd: "pnpm run type-check", finalOnly: true },
-      { name: "lint", cmd: "pnpm run lint", finalOnly: true, changedOnly: true },
+      { name: "lint", cmd: "pnpm run lint --ignore-pattern '.flow/**' --ignore-pattern '.agentflowctl/**'", finalOnly: true, changedOnly: true },
       { name: "test", cmd: "pnpm run test" },
       { name: "build", cmd: "pnpm run build" },
     ]);
+  });
+
+  it("lint script 是 eslint 時補上略過 .flow 與 .agentflowctl，npm 要加 --", () => {
+    const d = detectProjectDefaults(project({ "package.json": { scripts: { lint: "eslint ." } } }));
+    expect(d.checks.find((c) => c.name === "lint")?.cmd).toBe("npm run lint -- --ignore-pattern '.flow/**' --ignore-pattern '.agentflowctl/**'");
+  });
+
+  it("lint script 不是 eslint 時不動指令", () => {
+    const d = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { scripts: { lint: "biome check ." } } }));
+    expect(d.checks.find((c) => c.name === "lint")?.cmd).toBe("pnpm run lint");
   });
 
   it("typecheck 也認得不含連字號的 script 名稱", () => {

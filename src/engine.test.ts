@@ -2136,7 +2136,7 @@ describe("lint 與型別檢查只在最後驗證", () => {
   });
 
   it("最後驗證跑全部，lint 只收到整支分支改過的程式檔", async () => {
-    const run = await checkRun("f-chk-final", { "src/a.ts": "export {};\n", "docs/readme.md": "# x\n", ".flow/x.ts": "x\n" });
+    const run = await checkRun("f-chk-final", { "src/a.ts": "export {};\n", "docs/readme.md": "# x\n", ".flow/x.ts": "x\n", ".agentflowctl/y.ts": "y\n" });
     expect(await runChecks(run)).toBeUndefined();
     expect(calls("f-chk-final").sort()).toEqual(["lint:src/a.ts", "test:", "typecheck:"]);
   });
@@ -2184,5 +2184,6 @@ describe("lint 與型別檢查只在最後驗證", () => {
   it("withFiles：npm run 用 -- 轉給 script，檔名加引號", () => {
     expect(withFiles("pnpm run lint", ["src/a.ts"])).toBe("pnpm run lint 'src/a.ts'");
     expect(withFiles("npm run lint", ["a b.ts", "it's.ts"])).toBe("npm run lint -- 'a b.ts' 'it'\\''s.ts'");
+    expect(withFiles("npm run lint -- --ignore-pattern 'x'", ["a.ts"])).toBe("npm run lint -- --ignore-pattern 'x' 'a.ts'");
   });
 });

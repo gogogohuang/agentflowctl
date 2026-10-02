@@ -1645,12 +1645,14 @@ async function taskFixStep(run: FlowRun, task: TaskItem, progress: string, tasks
 
 /** 可交給 lint 的檔案類型 */
 const CHECKABLE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
+/** agentflowctl 自己產生的內容（交接檔、run 資料），驗證不該檢查 */
+const GENERATED_PATH = /^\.(?:flow|agentflowctl)\//;
 
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
-/** 把檔案清單接在指令後面；npm run 要用 -- 才會轉給 script */
+/** 把檔案清單接在指令後面；npm run 要用 -- 才會轉給 script（指令已經有 -- 就不重複加） */
 export function withFiles(cmd: string, files: readonly string[]): string {
-  return `${cmd}${/^npm run /.test(cmd) ? " --" : ""} ${files.map(shellQuote).join(" ")}`;
+  return `${cmd}${/^npm run /.test(cmd) && !/ -- /.test(cmd) ? " --" : ""} ${files.map(shellQuote).join(" ")}`;
 }
 
 /** 整支分支（相對基底分支的分歧點）改過、目前還在的檔案；算不出來就回傳 undefined，改檢查整個專案 */
@@ -1680,7 +1682,7 @@ export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "
       if (scope === "task" && check.finalOnly) continue;
       let cmd = check.cmd;
       if (check.changedOnly && changed) {
-        const files = changed.filter((f) => CHECKABLE_FILE.test(f) && !f.startsWith(".flow/") && existsSync(join(worktreeDir(run.id), f)));
+        const files = changed.filter((f) => CHECKABLE_FILE.test(f) && !GENERATED_PATH.test(f) && existsSync(join(worktreeDir(run.id), f)));
         if (!files.length) {
           info(run, `   - ${check.name}（整支分支沒有可檢查的修改檔案，略過）`);
           continue;
