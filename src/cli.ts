@@ -22,7 +22,7 @@ import { confirmationLines, confirmationTasks } from "./tasks.js";
 import { padDisplay, readJsonFile, type JsonResult } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
-import { dumpRun } from "./dump.js";
+import { dumpRun, restoreRun } from "./dump.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 import { addModel, removeModel, setModelMode, setModelStrength, setStageStrength } from "./modelConfig.js";
@@ -390,6 +390,14 @@ program
     const dest = outDir ?? join(projectRoot(), ".agentflowctl", "dumps", `${id}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     await dumpRun(id, dest);
     console.log(`✅ 已輸出到 ${dest}`);
+  });
+
+program
+  .command("restore <dumpDir>", { hidden: true })
+  .description("把 dump 的資料還原成可以 resume 的 run（沿用原 id，用既有分支重建 worktree）")
+  .action(async (dumpDir: string) => {
+    const run = await restoreRun(dumpDir);
+    console.log(`✅ 已還原 ${run.id}（階段 ${run.stage}，分支 ${run.branch}）；worktree 不含 node_modules，接續前請先在裡面安裝相依套件，再用 agentflowctl resume ${run.id}`);
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────

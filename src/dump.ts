@@ -1,8 +1,9 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { git } from "./git.js";
+import { attachWorktree, git } from "./git.js";
 import { flowDir, projectRoot, runDir, worktreeDir } from "./paths.js";
-import { getRun } from "./store.js";
+import { FlowRun } from "./schemas.js";
+import { getRun, saveRun } from "./store.js";
 
 /** run 目錄下要收的檔案；parallel-review 與 tmp-review 是可重建的中間產物，不收 */
 const RUN_ENTRIES = [
@@ -56,4 +57,44 @@ export async function dumpRun(id: string, outDir: string): Promise<void> {
     missing,
   };
   writeFileSync(join(outDir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`);
+}
+
+/**
+ * 把 dumpRun 的輸出還原成可以 resume 的 run：寫回 run 紀錄與 .flow/，並用既有的 flow/<id> 分支重建 worktree。
+ * 沿用原 id；run 已存在、分支不在時拒絕，且不留下半成品。dump 裡的 flow.config.json 只供對照，不覆蓋目前的設定。
+ */
+export async function restoreRun(dumpDir: string): Promise<FlowRun> {
+  const stateFile = join(dumpDir, "run", "state.json");
+  if (!existsSync(join(dumpDir, "meta.json")) || !existsSync(stateFile)) {
+    throw new Error(`${dumpDir} 不是 dump 目錄（缺少 meta.json 或 run/state.json）`);
+  }
+  const parsed = FlowRun.safeParse(JSON.parse(readFileSync(stateFile, "utf8")));
+  if (!parsed.success) throw new Error(`dump 裡的 run/state.json 讀不懂：${parsed.error.message}`);
+  const run = parsed.data;
+  const id = run.id;
+  if (!/^[\w-]+$/.test(id)) throw new Error(`不合法的 run id：${id}`);
+  if (getRun(id) || existsSync(runDir(id)) || existsSync(worktreeDir(id))) {
+    throw new Error(`run ${id} 已存在，請先 agentflowctl clean ${id} 再復原`);
+  }
+  const root = projectRoot();
+  try {
+    await git(root, "rev-parse", "--verify", `refs/heads/${run.branch}`);
+  } catch {
+    throw new Error(`找不到分支 ${run.branch}，無法重建 worktree；請先把分支補回這個 repo`);
+  }
+  try {
+    await attachWorktree(root, worktreeDir(id), run.branch);
+    mkdirSync(runDir(id), { recursive: true });
+    for (const name of readdirSync(join(dumpDir, "run"))) {
+      if (name !== "state.json") cpSync(join(dumpDir, "run", name), join(runDir(id), name), { recursive: true });
+    }
+    if (existsSync(join(dumpDir, "flow"))) cpSync(join(dumpDir, "flow"), flowDir(id), { recursive: true });
+    // state.json 最後寫：它出現才算復原完成，中途失敗不會留下 getRun 看得到的半成品
+    return saveRun(run);
+  } catch (err) {
+    rmSync(runDir(id), { recursive: true, force: true });
+    await git(root, "worktree", "remove", "--force", worktreeDir(id)).catch(() => rmSync(worktreeDir(id), { recursive: true, force: true }));
+    await git(root, "worktree", "prune").catch(() => {});
+    throw err;
+  }
 }

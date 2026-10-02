@@ -35,6 +35,13 @@ export async function addWorktree(root: string, dest: string, base: string, bran
   await git(root, "worktree", "add", "-b", branch, dest, base);
 }
 
+/** 用已存在的分支建立 worktree（復原 dump 用） */
+export async function attachWorktree(root: string, dest: string, branch: string): Promise<void> {
+  await excludePaths(root, [".agentflowctl/", ".flow/"]);
+  await git(root, "worktree", "prune");
+  await git(root, "worktree", "add", dest, branch);
+}
+
 export async function removeWorktree(root: string, dest: string): Promise<void> {
   await git(root, "worktree", "remove", "--force", dest);
 }
