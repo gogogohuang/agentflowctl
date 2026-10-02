@@ -112,6 +112,17 @@ describe("adaptive 設定檢查", () => {
     expect(() => validateAdaptiveConfig(config, ["a"])).toThrow(/衝突/);
   });
 
+  it("同名模型可用不同強度並存，同名同強度才算重複", () => {
+    const make = (models: Array<{ name: string; strength: "low" | "medium" | "high"; effort?: string }>) =>
+      RepoConfig.parse({ agents: { a: { adapter: "claude", models } } });
+    expect(() => validateAdaptiveConfig(make([
+      { name: "m", strength: "medium", effort: "medium" }, { name: "m", strength: "high", effort: "high" },
+    ]), ["a"])).not.toThrow();
+    expect(() => validateAdaptiveConfig(make([
+      { name: "m", strength: "high", effort: "medium" }, { name: "m", strength: "high", effort: "high" },
+    ]), ["a"])).toThrow(/重複/);
+  });
+
   it("Codex 其他 config 參數不與 adaptive effort 衝突", () => {
     const config = RepoConfig.parse({ agents: { a: { adapter: "codex", models: [
       { name: "small", strength: "low", effort: "low" },

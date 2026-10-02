@@ -132,8 +132,8 @@ export function validateAdaptiveConfig(cfg: RepoConfig, cycle: string[]): void {
   for (const name of cycle) {
     const def = cfg.agents[name];
     if (!def) throw new Error(`未定義的 agent：${name}`);
-    const names = (def.models ?? []).map((m) => m.name);
-    if (new Set(names).size !== names.length) throw new Error(`agent ${name} 的 models 有重複名稱`);
+    const keys = (def.models ?? []).map((m) => `${m.name}\0${m.strength}`);
+    if (new Set(keys).size !== keys.length) throw new Error(`agent ${name} 的 models 有重複的名稱與強度`);
     if (def.adapter === "command") {
       if (!def.command?.some((arg) => arg.includes("{model}"))) throw new Error(`agent ${name} 的 command 缺少 {model}`);
       if (!def.modelProbe?.length || !def.modelProbe.some((arg) => arg.includes("{model}"))) throw new Error(`agent ${name} 的 modelProbe 缺少 {model}`);

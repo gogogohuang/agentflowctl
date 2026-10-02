@@ -65,7 +65,7 @@ describe("model CLI", () => {
     expect(JSON.parse(readFileSync(config, "utf8")).agents.local.models).toEqual([{ name: "alias", strength: "low" }]);
     const marker = join(root, "duplicate-probed");
     writeFileSync(probe, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'probed')`);
-    const duplicate = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "add", "local", "alias", "--strength", "high"], { cwd: root, encoding: "utf8" });
+    const duplicate = spawnSync(process.execPath, ["--import", tsx, cli, "config", "agent", "model", "add", "local", "alias", "--strength", "low"], { cwd: root, encoding: "utf8" });
     expect(duplicate.status).toBe(1);
     expect(existsSync(marker)).toBe(false);
     const before = readFileSync(config, "utf8");

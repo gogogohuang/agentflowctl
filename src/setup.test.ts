@@ -46,9 +46,9 @@ describe("runSetup", () => {
     expect(s.asked.filter((q) => q.includes("模型（")).length).toBe(0);
   });
 
-  it("先登記時格式不合法會重問，同名模型會被拒絕", async () => {
+  it("先登記時格式不合法會重問，同名同強度會被拒絕", async () => {
     const lines: string[] = [];
-    const s = scripted(["y", "", "", "", "sonnet ultra", "sonnet", "sonnet high", "", "", "", "y"]);
+    const s = scripted(["y", "", "", "", "sonnet ultra", "sonnet", "sonnet medium", "", "", "", "y"]);
     const edit = await runSetup({}, { ...s, log: (l) => lines.push(l), detected: { claude: true } });
     expect((edit?.cfg.agents as Record<string, { models: unknown }>).claude!.models).toEqual([{ name: "sonnet", strength: "medium" }]);
     expect(lines.join("\n")).toContain("強度只能是");

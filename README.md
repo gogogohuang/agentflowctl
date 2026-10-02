@@ -192,7 +192,12 @@ Claude Code 與 Codex 支援指定推理強度，Gemini CLI 與 `command` 不支
 agentflowctl config agent set claude --effort medium
 agentflowctl config agent model add claude MODEL_NAME --strength high --effort high
 agentflowctl config agent model set claude MODEL_NAME --effort low     # 只改 effort；--effort none 清除
+agentflowctl config agent model add claude MODEL_NAME --strength medium --effort medium   # 同一個模型可用不同強度各登記一筆
+agentflowctl config agent model set claude MODEL_NAME --at high --effort xhigh            # 同名有多筆時用 --at 指定目前強度
+agentflowctl config agent model remove claude MODEL_NAME --at medium
 ```
+
+同一個 agent 的 `models` 以「名稱＋強度」為唯一鍵：同名模型可以用不同強度（通常搭配不同 effort）各登記一筆，同名同強度則視為重複。`model set` 與 `model remove` 遇到同名多筆時，必須用 `--at <強度>` 指定要動哪一筆。
 
 Claude Code 以 `--effort <值>` 傳入，Codex 以 `-c model_reasoning_effort="<值>"` 傳入，放在 `extraArgs` 之前。可用的值由各 CLI 決定（例如 Claude Code 的 `low`、`medium`、`high`、`xhigh`、`max`），agentflowctl 只檢查非空，`config agent model add` 與 `config agent model check` 會連同 effort 一起送出探測請求，值不合法時會失敗。`adaptive` 模式下 `extraArgs` 不可再放 `--effort`，Codex 也不可透過 `-c` 或 `--config` 設定 `model_reasoning_effort`（包含參數合併形式），避免覆寫選定的 effort；其他 config 參數仍可使用。終端機每次呼叫會在模型名稱後顯示 `（effort …）`，log 檔頭也會記錄；`config agent list` 與 `config agent model list` 會列出設定的 effort。
 
