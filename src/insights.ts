@@ -19,6 +19,7 @@ export const RETRY_LABEL: Record<RetryCategory, string> = {
   tests_deleted: "刪除測試檔",
   out_of_scope: "動到後面任務的檔案",
   merge_conflict: "平行任務合併衝突",
+  merge_tests_failed: "平行任務合併後測試失敗",
   checks_failed: "專案檢查失敗",
 };
 

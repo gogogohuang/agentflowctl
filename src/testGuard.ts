@@ -56,3 +56,24 @@ export function brokenPackageImport(output: string, imports: Set<string>): strin
   }
   return undefined;
 }
+
+/**
+ * 紅燈階段的全套測試失敗時，挑出「失敗的不是本任務寫的」測試檔。
+ * 紅燈跑在實作之前，所以別的測試檔失敗代表分支上早就壞了（例如平行車道合併後語意衝突），
+ * 實作者修不了也不該修，繼續下去只會在綠燈原地打轉。
+ * 只看含 FAIL／❯／×／✗／✕ 的行，避免把通過（✓）的檔案算進來；認不出任何失敗的測試檔時回傳空陣列（無法判斷，照常進行）。
+ */
+export function foreignFailingTests(output: string, taskTests: string[]): string[] {
+  // eslint-disable-next-line no-control-regex
+  const plain = output.replace(/\u001b\[[0-9;]*m/g, "");
+  const base = (f: string) => f.split("/").pop() ?? f;
+  const mine = new Set(taskTests.map(base));
+  const foreign = new Set<string>();
+  for (const line of plain.split("\n")) {
+    if (!/\bFAIL\b|[❯×✗✕]/.test(line)) continue;
+    for (const m of line.matchAll(/[\w@.\/-]+\.(?:test|spec)\.[cm]?[jt]sx?/g)) {
+      if (!mine.has(base(m[0]))) foreign.add(m[0]);
+    }
+  }
+  return [...foreign];
+}

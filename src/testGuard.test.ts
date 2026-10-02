@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brokenPackageImport, packageImports, sourceOfTest, violatingTestChanges } from "./testGuard.js";
+import { brokenPackageImport, foreignFailingTests, packageImports, sourceOfTest, violatingTestChanges } from "./testGuard.js";
 
 const re = /\.(test|spec)\.[cm]?[jt]sx?$/;
 
@@ -47,5 +47,42 @@ describe("套件匯出缺失判斷", () => {
   it("尚未實作的專案函式 is not a function 不算", () => {
     expect(brokenPackageImport("TypeError: useDriverDashboard is not a function", packageImports(src))).toBeUndefined();
     expect(brokenPackageImport("TypeError: x.renderHook is not a function", packageImports(src))).toBeUndefined();
+  });
+});
+
+describe("foreignFailingTests：失敗的測試檔不是本任務寫的", () => {
+  const mine = ["src/pages/a/format.test.ts"];
+
+  it("vitest 輸出裡失敗的是別的測試檔：回傳那些檔案（去重）", () => {
+    const output = [
+      " ✓ src/pages/a/format.test.ts (53 tests) 12ms",
+      " ❯ src/pages/b/Card.reason.test.tsx (13 tests | 13 failed) 80ms",
+      "FAIL  src/pages/b/Card.reason.test.tsx > 優先序 > 顯示原因",
+      "FAIL  src/pages/b/Card.reason.test.tsx > 優先序 > 顯示未知原因",
+    ].join("\n");
+    expect(foreignFailingTests(output, mine)).toEqual(["src/pages/b/Card.reason.test.tsx"]);
+  });
+
+  it("通過的檔案（✓）不算失敗，即使不是本任務的", () => {
+    const output = " ✓ src/other.test.ts (3 tests)\n FAIL  src/pages/a/format.test.ts > x\n";
+    expect(foreignFailingTests(output, mine)).toEqual([]);
+  });
+
+  it("失敗的只有本任務的測試檔：回傳空陣列", () => {
+    expect(foreignFailingTests("FAIL  src/pages/a/format.test.ts > x\n", mine)).toEqual([]);
+  });
+
+  it("本任務與別的測試檔都失敗：仍回傳別的（基線已壞）", () => {
+    const output = "FAIL  src/pages/a/format.test.ts > x\nFAIL  src/old.spec.ts > y\n";
+    expect(foreignFailingTests(output, mine)).toEqual(["src/old.spec.ts"]);
+  });
+
+  it("輸出裡認不出任何失敗的測試檔（例如只有堆疊）：視為無法判斷，回傳空陣列", () => {
+    expect(foreignFailingTests("AssertionError: expected 1 to be 2\n    at feature.test.mjs:3:1", mine)).toEqual([]);
+  });
+
+  it("去掉 ANSI 色碼與行號後仍能比對，路徑尾端相同視為同一檔", () => {
+    const output = "\u001b[31mFAIL\u001b[39m  format.test.ts:12:5 > x\n";
+    expect(foreignFailingTests(output, mine)).toEqual([]);
   });
 });
