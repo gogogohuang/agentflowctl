@@ -42,6 +42,16 @@ export async function attachWorktree(root: string, dest: string, branch: string)
   await git(root, "worktree", "add", dest, branch);
 }
 
+/** 分支目前被哪個 worktree 簽出（含主專案）；沒被簽出時回傳 undefined */
+export async function branchCheckedOutAt(root: string, branch: string): Promise<string | undefined> {
+  const out = await git(root, "worktree", "list", "--porcelain");
+  for (const block of out.split(/\n\s*\n/)) {
+    const lines = block.split("\n");
+    if (lines.includes(`branch refs/heads/${branch}`)) return lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+  }
+  return undefined;
+}
+
 export async function removeWorktree(root: string, dest: string): Promise<void> {
   await git(root, "worktree", "remove", "--force", dest);
 }
