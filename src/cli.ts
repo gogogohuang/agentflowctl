@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { MIN_ATTEMPTS, config } from "./config.js";
-import { advance, loadRepoConfig, replanRun } from "./engine.js";
+import { advance, iterateRun, loadRepoConfig, replanRun } from "./engine.js";
+import { exec } from "./proc.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git } from "./git.js";
 import { cleanableRuns, cleanRun } from "./cleanup.js";
@@ -232,6 +233,30 @@ program
     if (opts.note && opts.noteFile) throw new Error("--note 與 --note-file 只能擇一");
     const note = opts.noteFile ? readFileSync(opts.noteFile, "utf8") : opts.note;
     await drive(saveRun(replanRun(mustGetRun(id), { note, noReview: !opts.review })));
+  });
+
+program
+  .command("iterate <id>")
+  .description("在已完成 run 的同一個 worktree 開第二輪：帶入補充需求，從 spec 重來（程式碼與 PR 沿用）")
+  .option("--req <text>", "第二輪的補充需求")
+  .option("--req-file <file>", "從檔案讀取補充需求")
+  .option("--max-agent-runs <n>", "這一輪最多再執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns，從目前已執行的次數起算）")
+  .action(async (id: string, opts: { req?: string; reqFile?: string; maxAgentRuns?: string }) => {
+    const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
+    if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供第二輪的補充需求");
+    const run = mustGetRun(id);
+    if (run.stage !== "done") throw new Error(`run 目前在 ${run.stage}，只有已完成（done）的 run 可以開下一輪`);
+    if (run.prUrl) {
+      // 讀不到狀態（沒有 gh、沒登入）就略過檢查；PR 已合併時，在同一分支追加的 commit 不會進到 PR
+      const state = await exec("gh", ["pr", "view", run.prUrl, "--json", "state", "--jq", ".state"], { cwd: worktreeDir(id) }).catch(() => undefined);
+      if (state?.code === 0 && state.stdout.trim() === "MERGED") {
+        throw new Error(`PR 已合併（${run.prUrl}），無法再更新；請用 agentflowctl run 以最新的 ${run.baseBranch} 開新的 run`);
+      }
+    }
+    if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
+    const next = await iterateRun(run, { requirement, maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : undefined });
+    console.log(`[${id}] 🔁 開始第 ${next.round} 輪，沿用 worktree 與分支 ${next.branch}`);
+    await drive(saveRun(next));
   });
 
 program

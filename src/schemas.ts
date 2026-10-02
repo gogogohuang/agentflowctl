@@ -343,6 +343,8 @@ export const FlowRun = z.object({
   /** run 為什麼失敗，供 insights 跨 run 彙總；舊 run 沒有這個欄位 */
   failureCategory: FailureCategory.optional(),
   prUrl: z.string().optional(),
+  /** 第幾輪：iterate 在同一個 worktree 開下一輪時加一；沒有此欄位視為第 1 輪（舊 state.json） */
+  round: z.number().int().min(2).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

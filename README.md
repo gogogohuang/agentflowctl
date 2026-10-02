@@ -31,6 +31,8 @@ agentflowctl replan <id> --note "T-2 要改用既有的 helper"   # 補充意見
 agentflowctl replan <id>                                    # 手改 .flow/ 的計畫檔後重新檢查
 ```
 
+run 完成後還想再改：`agentflowctl iterate <id> --req "改用既有的 helper"` 會在同一個 worktree 與分支上開第二輪（補充需求從 spec 重來，程式碼與 PR 沿用，推送後更新同一個 PR；PR 已合併則改用 `run`）。
+
 要在某階段先取用產出，用 `--stop-after <spec|plan|implement|verify|review|pr>`，之後 `resume <id>` 接續。
 
 各階段的規則見[執行流程細節](docs/workflow.md)。

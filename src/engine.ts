@@ -1015,6 +1015,51 @@ export function replanRun(run: FlowRun, opts: { note?: string; noReview?: boolea
   return { ...reset, stage: "plan_review", skipPlanReview: undefined };
 }
 
+/** 第二輪開始前要存進 .flow/round-N/ 的規格與計畫檔 */
+const ROUND_ARCHIVE_FILES = [...LOCKED_FILES, "plan-replies.md"] as const;
+
+/**
+ * 在同一個 run、worktree 與分支上開下一輪：只有 done 的 run 可以。
+ * 上一輪的規格與計畫存進 .flow/round-N/（讓這一輪的 agent 讀得到），其餘交接檔與第一輪的確認項目、
+ * 仲裁、平行審查與車道紀錄都清掉，狀態回到 spec；程式碼與 PR 連結保留，開 PR 階段只會推送更新同一個 PR。
+ */
+export async function iterateRun(run: FlowRun, opts: { requirement: string; maxAgentRuns?: number }): Promise<FlowRun> {
+  if (run.stage !== "done") throw new Error(`run 目前在 ${run.stage}，只有已完成（done）的 run 可以開下一輪`);
+  const extra = opts.requirement.trim();
+  if (!extra) throw new Error("請用 --req 或 --req-file 提供第二輪的補充需求");
+  const previous = run.round ?? 1;
+  const round = previous + 1;
+  const flow = flowDir(run.id);
+  mkdirSync(join(flow, `round-${previous}`), { recursive: true });
+  for (const f of ROUND_ARCHIVE_FILES) {
+    if (existsSync(flowFile(run, f))) cpSync(flowFile(run, f), join(flow, `round-${previous}`, f));
+  }
+  for (const entry of readdirSync(flow)) {
+    if (!/^round-\d+$/.test(entry)) rmSync(join(flow, entry), { recursive: true, force: true });
+  }
+  const root = projectRoot();
+  for (const lane of existsSync(lanesDir(run.id)) ? readdirSync(lanesDir(run.id)) : []) {
+    const lw = worktreeDir(laneId(run.id, lane));
+    if (existsSync(lw)) await removeWorktree(root, lw).catch(() => rmSync(lw, { recursive: true, force: true }));
+  }
+  rmSync(lanesDir(run.id), { recursive: true, force: true });
+  await cleanupTempWorktrees(run.id, { force: true });
+  for (const f of ["confirmations.json", "confirmation-details.json", "plan-review-state.json", "plan-arbitration.json", "diverge.json", "parallel-review", "tmp-review"]) {
+    rmSync(join(runDir(run.id), f), { recursive: true, force: true });
+  }
+  const explicit = opts.maxAgentRuns !== undefined || run.maxAgentRunsExplicit === true;
+  const quota = opts.maxAgentRuns ?? (run.maxAgentRunsExplicit ? run.maxAgentRuns : loadRepoConfig().maxAgentRuns);
+  const requirement = `${run.requirement}\n\n## 第 ${round} 輪補充需求\n\n${extra}\n\n（前一輪的規格與計畫存放在 .flow/round-${previous}/，其程式碼已在這個分支上；這一輪只處理補充需求要求的變更，以及必要的修正。）`;
+  return {
+    ...run, requirement, round, stage: "spec", stopAfter: undefined,
+    maxAgentRuns: agentRuns(run.id) + quota, maxAgentRunsExplicit: explicit ? true : undefined,
+    attempts: {}, modelRetryAttempts: {}, taskIndex: 0, taskPhase: "tests", doneTasks: undefined,
+    taskBase: undefined, testsCommit: undefined, testsRedos: undefined, lastTestsAuthor: undefined,
+    fixSource: undefined, skipPlanReview: undefined,
+    pausedStage: undefined, pauseReason: undefined, failedStage: undefined, failureReason: undefined, failureCategory: undefined,
+  };
+}
+
 /**
  * 仲裁：有第三方就由第三方判斷；只有兩家時，兩家各自在全新 context 中雙盲判斷，
  * 並且看不到誰是作者、誰是審查者。結果依 tieBreak 決定分歧時怎麼辦。
@@ -1882,6 +1927,10 @@ async function prStage(run: FlowRun): Promise<FlowRun> {
   }
   info(run, "🚀 推送分支");
   await git(repo, "push", "-u", "origin", run.branch);
+  if (run.prUrl) {
+    info(run, `✅ 已推送更新，沿用既有的 PR：${run.prUrl}`);
+    return to(run, "done");
+  }
   const title = run.requirement.split("\n")[0]!.slice(0, 72);
   const spec = existsSync(flowFile(run, "spec.md")) ? readFileSync(flowFile(run, "spec.md"), "utf8") : "";
   const bodyPath = join(runDir(run.id), "pr-body.md");

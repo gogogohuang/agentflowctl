@@ -23,6 +23,15 @@
 
 改完預設回到計畫審查（分層審查只重審有變動的群；內容沒變的審查結果直接沿用）。加 `--no-review` 則不再送審：補充意見改完直接定案，手改的只做格式檢查，不呼叫任何 agent。完成後回到 `awaiting_approval`，確認後照常 `approve`。`replan` 適用於等待核准，以及停在計畫階段（暫停或失敗）的 run。
 
+## 完成後開第二輪
+
+`agentflowctl iterate <id> --req "補充需求"`（或 `--req-file <路徑>`）適用於 `done` 的 run，在同一個 worktree 與分支上再跑一輪：
+
+- 補充需求附加在原需求後面，狀態回到 `spec`，之後照常走計畫、實作、驗證、審查。第一輪的程式碼都在分支上，agent 以它為基礎修改。
+- 上一輪的規格與計畫（`spec.md`、`acceptance.json`、`plan.md`、`tasks.json`）存進 `.flow/round-N/`，讓這一輪的 agent 讀得到；其餘交接檔、人工確認項目、仲裁與車道紀錄會清掉，任務從 T-1 重新編號。
+- agent 執行次數上限從目前已執行的次數起算，再加一份額度；可用 `--max-agent-runs <n>` 指定這一輪的額度。
+- 第一輪已開過 PR 時，這一輪只推送分支、更新同一個 PR；若 PR 已合併，`iterate` 會拒絕，請改用 `run` 從最新的基底分支開新的 run。
+
 ## 停點與專案指令偵測
 
 需要先取用某個階段的產出時，可用 `--stop-after <階段>`。可選停點是 `spec`（規格）、`plan`（計畫審查完成）、`implement`（所有任務完成）、`verify`（測試與 checks 通過）、`review`（程式碼審查完成）或 `pr`（PR 流程完成）。除了 `pr` 會照常結束外，其他停點完成後會進入 `paused`，可檢視 worktree 與 `.flow/` 檔案，再執行 `agentflowctl resume <id>` 從下一階段接續；`--manual-plan` 與 `--stop-after` 不能同時使用。
