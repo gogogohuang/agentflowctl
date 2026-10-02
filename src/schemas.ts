@@ -296,6 +296,8 @@ export const FlowRun = z.object({
   /** 目前任務寫測試前的 commit，任務審查只看這之後的變更 */
   taskBase: z.string().optional(),
   testsCommit: z.string().optional(),
+  /** 這個任務因綠燈階段無法讓測試通過、已退回測試階段重寫的次數 */
+  testsRedos: z.number().int().optional(),
   /** 目前任務的測試實際由誰撰寫（可能是代打） */
   lastTestsAuthor: z.string().optional(),
   failedStage: Stage.optional(),

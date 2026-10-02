@@ -373,6 +373,75 @@ describe("實作階段", () => {
   });
 });
 
+const greenScript = join(root, "green-implementer.mjs");
+writeFileSync(greenScript, `import { existsSync, writeFileSync } from "node:fs";
+if (existsSync(".flow/writes-code.txt")) writeFileSync("stub.mjs", \`export const n = \${Date.now()};\\n\`);
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+
+/** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
+async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number } = {}) {
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+    agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
+    cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+  }));
+  const wt = worktreeDir(id);
+  await addWorktree(root, wt, "main", `flow/${id}`);
+  const taskBase = await git(wt, "rev-parse", "HEAD");
+  writeFileSync(join(wt, "feature.test.mjs"), "process.exit(1);\n");
+  const testsCommit = (await commitAll(wt, "test(T-1): 測試 [a]"))!;
+  mkdirSync(flowDir(id), { recursive: true });
+  if (writesCode) writeFileSync(join(flowDir(id), "writes-code.txt"), "");
+  writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-2", description: "匯出 answer" }]));
+  writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+    { id: "T-1", title: "元件", description: "新增元件", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+  ]));
+  const now = new Date().toISOString();
+  const run = await advance({
+    id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+    autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts, taskIndex: 0, taskPhase: "code",
+    taskBase, testsCommit, lastTestsAuthor: "a", ...(testsRedos === undefined ? {} : { testsRedos }), createdAt: now, updatedAt: now,
+  });
+  return { run, wt, taskBase, testsCommit };
+}
+
+describe("綠燈階段無法讓測試通過時退回測試階段", () => {
+  it("實作者沒有任何變更、測試仍未通過：丟掉這輪，退回重寫測試，並把原因與舊測試 commit 交給測試作者", async () => {
+    // maxAgentRuns 為 1：退回後下一步會因額度用完而停下，所以只檢查退回的結果，不看 stage
+    const { run, wt, taskBase, testsCommit } = await greenRun("f-green-no-progress");
+    expect(run.taskPhase).toBe("tests");
+    expect(run.testsCommit).toBeUndefined();
+    expect(run.testsRedos).toBe(1);
+    expect(run.attempts["T-1:code"]).toBeUndefined();
+    expect(await git(wt, "rev-parse", "HEAD")).toBe(taskBase);
+    const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+    expect(feedback).toContain(testsCommit);
+    expect(feedback).toContain("測試本身");
+    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_invalid"]);
+  });
+
+  it("實作者有改程式但連續兩次都不通過：同樣退回測試階段", async () => {
+    const { run } = await greenRun("f-green-repeated", { writesCode: true, attempts: { "T-1:code": 1 } });
+    expect(run.taskPhase).toBe("tests");
+    expect(run.testsRedos).toBe(1);
+    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_invalid"]);
+  });
+
+  it("第一次失敗而且有改程式：照舊在綠燈階段重試，不退回", async () => {
+    const { run } = await greenRun("f-green-first-failure", { writesCode: true });
+    expect(run.taskPhase).toBe("code");
+    expect(run.attempts["T-1:code"]).toBe(1);
+    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_not_green"]);
+  });
+
+  it("同一個任務已退回測試階段達上限：不再退回，照舊重試", async () => {
+    const { run } = await greenRun("f-green-redo-limit", { testsRedos: 2 });
+    expect(run.taskPhase).toBe("code");
+    expect(run.attempts["T-1:code"]).toBe(1);
+    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_not_green"]);
+  });
+});
+
 describe("略過 TDD", () => {
   const acceptance = [{ id: "AC-2", description: "匯出 answer 為 42" }];
 
