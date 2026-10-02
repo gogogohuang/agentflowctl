@@ -34,7 +34,9 @@ export function openActions(ledger: HandoffLedger, target?: "plan" | "code"): Ha
 
 export function reviewHandoffGate(ledger: HandoffLedger, target: "plan" | "code", verdict: "approve" | "changes_requested"): string | undefined {
   if (verdict !== "approve") return undefined;
-  const pending = openActions(ledger, target);
+  // 計畫定案後，實作階段的 agent 仍可能留下目標為計畫的 action（例如計畫與實際情況矛盾）。
+  // 計畫階段不會再回來處理它們，卻會擋下開 PR，所以程式碼審查要一併結案
+  const pending = openActions(ledger, target === "code" ? undefined : target);
   return pending.length ? `審查核准與未結交接事項矛盾：${pending.map((item) => item.id).join("、")}` : undefined;
 }
 
@@ -127,7 +129,8 @@ export function mergeHandoff(
 
 /** 只把目前步驟需要處理的事項投影給 agent。 */
 export function prepareHandoff(id: string, _callKey: string, target: "plan" | "code", blind: boolean, flow = flowDir(id)): void {
-  const items = readHandoff(id).issues.filter((item) => item.targetStage === target && (
+  // 程式碼階段（計畫已定案）也要看到目標為計畫的 action：沒有別的階段會處理它們，卻會擋下開 PR
+  const items = readHandoff(id).issues.filter((item) => (item.targetStage === target || (target === "code" && item.kind === "action")) && (
     item.kind === "info" || item.status === "open" || item.status === "proposed_resolved"
   ));
   const render = (item: (typeof items)[number]) => {

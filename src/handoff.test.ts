@@ -111,12 +111,13 @@ describe("交接紀錄", () => {
     expect(() => readHandoff("f-e")).toThrow();
   });
 
-  it("下一位只看相關未結事項，匿名仲裁不會看到來源身分", () => {
+  it("下一位只看相關未結事項（程式碼階段另外會看到目標為計畫的 action），匿名仲裁不會看到來源身分", () => {
     mergeHandoff("f-f", source.callKey, source, { newIssues: [issue, { ...issue, targetStage: "plan" }], dispositions: [] }, "writer");
     prepareHandoff("f-f", "next", "code", false);
     const context = readFileSync(join(flowDir("f-f"), "handoff-context.md"), "utf8");
     expect(context).toContain("測試未涵蓋逾時");
-    expect(context.match(/測試未涵蓋逾時/g)).toHaveLength(1);
+    // 計畫已定案：目標為計畫的 action 也交給程式碼階段，否則沒有人能結案、PR 會被擋下
+    expect(context.match(/測試未涵蓋逾時/g)).toHaveLength(2);
     expect(context).toContain("codex");
     prepareHandoff("f-f", "arbiter", "plan", true);
     const blind = readFileSync(join(flowDir("f-f"), "handoff-context.md"), "utf8");
@@ -234,5 +235,36 @@ describe("指定 .flow 目錄的交接檔", () => {
     writeFileSync(join(custom, "handoff-response.json"), JSON.stringify(empty));
     expect(validateHandoffResponse("f-custom-flow-2", custom).ok).toBe(true);
     expect(validateHandoffResponse("f-custom-flow-2", join(custom, "不存在")).ok).toBe(false);
+  });
+});
+
+describe("計畫定案後，目標為計畫的 action 仍要能結案", () => {
+  const planIssue = { kind: "action" as const, summary: "T-5 的測試標籤與元件不一致", evidence: "src/Card.test.tsx:16", targetStage: "plan" as const };
+  const planInfo = { kind: "info" as const, summary: "計畫的外部契約待確認", evidence: ".flow/plan.md:31", targetStage: "plan" as const };
+
+  it("程式碼階段（target=code）的交接內容含目標為計畫的 action，但不含計畫的 info", () => {
+    mergeHandoff("f-plan-action", source.callKey, source, { newIssues: [planIssue, planInfo], dispositions: [] }, "writer");
+    prepareHandoff("f-plan-action", "review", "code", false);
+    const context = readFileSync(join(flowDir("f-plan-action"), "handoff-context.md"), "utf8");
+    expect(context).toContain("T-5 的測試標籤與元件不一致");
+    expect(context).not.toContain("計畫的外部契約待確認");
+  });
+
+  it("計畫階段（target=plan）照舊只看到計畫的事項", () => {
+    const code = { ...issue, summary: "程式碼類事項", evidence: "src/code.ts:1" };
+    mergeHandoff("f-plan-only", source.callKey, source, { newIssues: [planIssue, code], dispositions: [] }, "writer");
+    prepareHandoff("f-plan-only", "plan-review", "plan", false);
+    const context = readFileSync(join(flowDir("f-plan-only"), "handoff-context.md"), "utf8");
+    expect(context).toContain("T-5 的測試標籤與元件不一致");
+    expect(context).not.toContain("程式碼類事項");
+  });
+
+  it("程式碼審查核准時，仍未結的計畫類 action 也算矛盾；結案後放行", () => {
+    const opened = mergeHandoff("f-plan-gate", source.callKey, source, { newIssues: [planIssue], dispositions: [] }, "writer");
+    expect(reviewHandoffGate(opened, "code", "approve")).toContain("未結交接事項");
+    const id = opened.issues[0]?.id ?? "";
+    const key = `${source.callKey}:close`;
+    const closed = mergeHandoff("f-plan-gate", key, { ...source, callKey: key }, { newIssues: [], dispositions: [{ id, status: "resolved", reason: "已修正", evidence: "src/Card.test.tsx:16" }] }, "reviewer");
+    expect(reviewHandoffGate(closed, "code", "approve")).toBeUndefined();
   });
 });
