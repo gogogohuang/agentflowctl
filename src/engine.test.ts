@@ -380,7 +380,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 `);
 
 /** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
-async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number } = {}) {
+async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, testSource = "process.exit(1);\n" }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; testSource?: string } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
@@ -388,7 +388,7 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   const wt = worktreeDir(id);
   await addWorktree(root, wt, "main", `flow/${id}`);
   const taskBase = await git(wt, "rev-parse", "HEAD");
-  writeFileSync(join(wt, "feature.test.mjs"), "process.exit(1);\n");
+  writeFileSync(join(wt, "feature.test.mjs"), testSource);
   const testsCommit = (await commitAll(wt, "test(T-1): 測試 [a]"))!;
   mkdirSync(flowDir(id), { recursive: true });
   if (writesCode) writeFileSync(join(flowDir(id), "writes-code.txt"), "");
@@ -404,6 +404,42 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   });
   return { run, wt, taskBase, testsCommit };
 }
+
+describe("紅燈階段檢查測試用到的套件匯出", () => {
+  it("測試呼叫了已安裝套件沒有的匯出：直接退回測試作者，不進入綠燈", async () => {
+    const id = "f-red-missing-export";
+    mkdirSync(join(root, "node_modules", "old-lib"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "old-lib", "package.json"), JSON.stringify({ name: "old-lib", main: "index.js" }));
+    writeFileSync(join(root, "node_modules", "old-lib", "index.js"), "exports.render = () => 1;\n");
+    const script = join(root, "missing-export-tests.mjs");
+    writeFileSync(script, `import { writeFileSync } from "node:fs";
+writeFileSync("feature.test.mjs", "// import { renderHook } from 'old-lib'\\nrenderHook();\\nprocess.exit(1);\\n");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+      cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
+    }));
+    const wt = worktreeDir(id);
+    await addWorktree(root, wt, "main", `flow/${id}`);
+    const taskBase = await git(wt, "rev-parse", "HEAD");
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-2", description: "匯出 answer" }]));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "元件", description: "新增元件", dependsOn: [], acceptance: ["AC-2"], tdd: true },
+    ]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
+      autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(run.taskPhase).toBe("tests");
+    expect(run.attempts["T-1:tests"]).toBe(1);
+    expect(await git(wt, "rev-parse", "HEAD")).toBe(taskBase);
+    expect(readFileSync(join(flowDir(id), "feedback.md"), "utf8")).toContain("renderHook（來自 old-lib）");
+    expect(listRetries(id).map((item) => item.category)).toEqual(["tests_invalid"]);
+  });
+});
 
 describe("綠燈階段無法讓測試通過時退回測試階段", () => {
   it("實作者沒有任何變更、測試仍未通過：丟掉這輪，退回重寫測試，並把原因與舊測試 commit 交給測試作者", async () => {
@@ -427,6 +463,17 @@ describe("綠燈階段無法讓測試通過時退回測試階段", () => {
     expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_invalid"]);
   });
 
+  it("第一次失敗就是測試呼叫了套件沒有的匯出：不等第二次，立刻退回", async () => {
+    const { run } = await greenRun("f-green-broken-import", {
+      writesCode: true,
+      testSource: "// import { renderHook } from 'some-pkg'\nconsole.log('TypeError: renderHook is not a function');\nprocess.exit(1);\n",
+    });
+    expect(run.taskPhase).toBe("tests");
+    expect(run.testsRedos).toBe(1);
+    expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toContain("renderHook");
+    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_invalid"]);
+  });
+
   it("第一次失敗而且有改程式：照舊在綠燈階段重試，不退回", async () => {
     const { run } = await greenRun("f-green-first-failure", { writesCode: true });
     expect(run.taskPhase).toBe("code");
@@ -434,11 +481,15 @@ describe("綠燈階段無法讓測試通過時退回測試階段", () => {
     expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_not_green"]);
   });
 
-  it("同一個任務已退回測試階段達上限：不再退回，照舊重試", async () => {
-    const { run } = await greenRun("f-green-redo-limit", { testsRedos: 2 });
-    expect(run.taskPhase).toBe("code");
-    expect(run.attempts["T-1:code"]).toBe(1);
-    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_not_green"]);
+  it("同一個任務已退回測試階段達上限仍過不了：暫停等人處理，狀態回到測試階段並讓 resume 再有退回機會", async () => {
+    const { run, wt, taskBase } = await greenRun("f-green-redo-limit", { testsRedos: 2 });
+    expect(run.stage).toBe("paused");
+    expect(run.pauseReason).toContain("resume");
+    expect(run.taskPhase).toBe("tests");
+    expect(run.testsCommit).toBeUndefined();
+    expect(run.testsRedos).toBeUndefined();
+    expect(await git(wt, "rev-parse", "HEAD")).toBe(taskBase);
+    expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toContain("測試本身");
   });
 });
 
