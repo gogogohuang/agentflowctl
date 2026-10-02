@@ -1,0 +1,54 @@
+# 查看進度與處理停下來的 run
+
+`status`、`logs`、`stats`、`insights` 怎麼看，以及 run 停下來（失敗、暫停、等待核准）時怎麼接續。[回 README](../README.md)
+
+## 查看進度
+
+`run` 開始時會印出 run id，例如 `f-xxxx`。執行中預設只顯示階段進度；加 `-v`（或在 `flow.config.json` 設 `"verbose": true`）可看到 agent 文字、工具呼叫與專案指令。
+
+```bash
+agentflowctl list                  # 列出 run
+agentflowctl status f-xxxx         # 看進度、結果與下一步（任務與待人確認分區）
+agentflowctl confirmations f-xxxx  # 只列出需要人眼確認的任務
+agentflowctl logs f-xxxx           # 列出各步驟的 log
+agentflowctl logs f-xxxx --latest  # 看最新一份 log
+agentflowctl stats f-xxxx          # 各步驟耗時、執行與失敗次數
+agentflowctl insights              # 這個專案所有 run 的結果、失敗原因、用量、步驟失敗、重試原因與改善建議
+agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
+```
+
+`status` 會列出目前階段、未結的交接事項與下一步指令；失敗或暫停時也會顯示原因。任務進度與「待你確認（不進實作）」分成兩個區塊：實作任務在「任務」，`kind: confirm` 的項目在「待你確認（不進實作）」，兩邊都會列出。計畫還沒通過首次驗證時，這個區塊的標題會多帶「（計畫尚未定案，以下為草稿）」，代表清單是從尚未經檢查的草稿蒐集，項目最終可能不會定案。只想看要人眼確認的項目時，用 `confirmations <id>`。要看某一步的詳細輸出，可用 `logs <id> <編號>`；加 `--full` 看完整工具內容，或加 `--raw` 看原始輸出。
+
+`stats` 依 log 的開始與結束時間統計每個步驟的執行次數、失敗次數、總耗時與最長一次，並分開列出 agent 與專案指令（install、測試、checks）各占多少時間，最耗時的步驟排在最前面。沒有結束紀錄的 log 列為未完成，不計入耗時；總經過時間包含暫停與等待核准。紅燈階段的測試指令（`T-<n>-red`）失敗是預期結果，只有測試意外通過才計為失敗。
+
+`insights` 把所有 run 分成獨立區塊彙總：最終狀態、失敗原因（重試達上限、仲裁停止、agent 次數用完等）、用量（輸入／輸出／cache、強度占比、階段／agent，各 run 用量最高的任務）、各模型與步驟、步驟執行與失敗（與 `stats` 相同取 log 的檔頭檔尾，跨 run 不計總經過時間）、關卡重試原因。任務關卡與任務步驟不分 task id 合併計算。最後列出最多五則建議，規則由程式套門檻，不是再請 agent 分析。「輸入遠大於輸出」不計入 cache 讀取（Claude 的 cache 寫入仍計入），門檻是非 cache 的輸入與輸出合計至少 5000 tokens 且輸入佔 85% 以上；cache 讀取量另外列在說明中。合計 token 不是主指標。覆蓋不足時會先警告占比可能失真。各分組是同一批呼叫的不同切片，不要跨組相加。舊 run 沒有重試或失敗原因紀錄，不會回填。單一 run 的全量明細仍用 `status <id>` 與 `stats <id>`。
+
+執行紀錄在 `.agentflowctl/runs/<id>/`，工作分支在 `.agentflowctl/worktrees/<id>/`。不再需要某次 run 時，可用 `agentflowctl clean <id>` 清除 worktree 與紀錄；`agentflowctl clean --all` 一次清除所有 done、failed 的 run，以及沒有紀錄的 worktree（進行中、暫停、等待核准的不動）。`flow/<id>` 分支會保留。
+
+## 執行停下來時怎麼做
+
+先執行 `agentflowctl status <id>`，看「階段」與「原因」，再依情況處理：
+
+| 狀況 | 下一步 |
+| --- | --- |
+| 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
+| `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>`；有疑慮就補充意見或手改計畫檔後執行 `agentflowctl replan <id>` |
+| `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審。在仲裁途中暫停時，resume 直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，或在 `flow.config.json` 把 `planArbiter` 關掉，就改成重新審查 |
+| `paused`：已完成指定停點 | 依 `status` 顯示的下一階段檢視產出，再執行 `agentflowctl resume <id>` 接續；run 會保留原本的停點設定 |
+| `failed`：仲裁連續沒有產生有效裁決 | 仲裁者沒寫出 `.flow/plan-arbiter.json`、格式錯誤或交接無效時不會暫停，會把原因寫進 `.flow/feedback.md` 並自動重跑仲裁（不重跑計畫審查）；無效的檔案移到 `.agentflowctl/runs/<id>/reviews/plan-arbiter-<輪>-<agent>-invalid.json`。連續達重試上限才失敗，查看 log 後執行 `agentflowctl resume <id>` 會再回到仲裁 |
+| `failed`：測試、檢查、審查或 agent 執行失敗 | 依 `status` 提示查看失敗的 log，處理原因後執行 `agentflowctl resume <id>`；失敗階段會重試 |
+| `failed`：已達 agent 執行次數上限 | 用 `agentflowctl resume <id> --max-agent-runs 100` 調高上限後接續，數字須大於已執行次數 |
+
+交接事項會自動去重：agent 新回報的事項若和帳本裡還沒處理（`open`）的事項種類與目標階段相同，而且摘要完全相同，或指向同一個檔案或驗收條件、文字也夠相似，就不另開新事項，而是併進原事項並累計 `repeats`（給 agent 的交接清單會標「已重複回報 N 次」）。已提議修正、已結案或已接受的事項不會吸收新回報，審查者重新提出就是一筆新事項。
+
+寫作類步驟（規格、計畫、計畫修正、紅燈測試、綠燈實作、fix）完成且通過關卡後，若 `.flow/handoff-response.json` 不合格，會請同一家 agent 再呼叫一次，只補寫交接（不重做工作，也不換人代打）；補寫期間對其他檔案的變更與 commit 一律丟棄（規格與計畫類步驟沒有 commit，補寫者會被告知範圍為空，不會把事項標成已處理，補寫期間對規格與計畫檔的修改同樣丟棄）。補寫仍不合格或額度用完，才照舊還原這一步並重試。補寫呼叫記在原步驟名稱底下，`stats` 與 `logs` 會多一筆，也會計入 `--max-agent-runs` 的次數。
+
+例如失敗時，可照終端機列出的 log 編號查看原因：
+
+```bash
+agentflowctl status f-xxxx
+agentflowctl logs f-xxxx 7
+agentflowctl resume f-xxxx
+```
+
+若不打算接續，先用 `agentflowctl cancel <id>` 標記放棄，再用 `agentflowctl clean <id>` 清除 worktree 與執行紀錄。仍在執行中的 run，先在原終端機按 Ctrl-C。`clean` 會保留 `flow/<id>` 分支。

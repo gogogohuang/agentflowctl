@@ -40,7 +40,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu／macos × Node 22／24 跑 typeche
 
 ## 改動時注意
 
-- 每一次更動使用者看得到的行為（指令、選項、設定欄位、終端機輸出、階段流程），都要在同一個 commit 更新 `README.md`。
+- 每一次更動使用者看得到的行為（指令、選項、設定欄位、終端機輸出、階段流程），都要在同一個 commit 更新文件：`README.md` 只放簡介、快速開始與索引，細節寫在 `docs/`（`workflow.md` 流程、`monitoring.md` 進度與停下處理、`configuration.md` 指令與設定、`model-selection.md` 模型、`parallel.md` 平行、`releasing.md` 發版）。新增指令時 README 的「常用指令」表也要補。
 - 各家 CLI 的參數與事件格式變動很快。改 adapter 時，要在 `agents/adapters.test.ts` 用實際的 JSON 行補測試。
 - 新增 run 狀態欄位要改 `schemas.ts` 的 `FlowRun`。新欄位要設成 optional，進行中 run 的舊 `state.json` 才讀得進來。
 - 關卡判斷要以程式能檢查的事實為準（檔案、diff、測試結果），不要改成依賴 agent 回覆的內容。
