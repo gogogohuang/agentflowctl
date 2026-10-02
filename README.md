@@ -120,7 +120,6 @@ agentflowctl config selection mode adaptive    # 依階段與任務難度自動�
 - [設定詳解](docs/configuration.md)：指令與選項、agent、選模、專案設定欄位、平行任務與平行審查。
 - [完整指令、設定與流程說明](docs/reference.md)：角色分配、審查規則、log、額度處理與技術細節。
 - [各階段讀寫的檔案](docs/engine-stage-files.md)：`.flow/`、回饋與審查檔案如何交接。
-- [發版（維護者）](docs/release.md)
 
 ## 授權
 
