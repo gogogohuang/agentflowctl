@@ -105,4 +105,10 @@ describe("prompts", () => {
     expect(arbiter).toContain(".flow/feedback.md");
     expect(renderPrompt("plan-review", vars)).toContain(".flow/plan-replies.md");
   });
+
+  it.each(["implement-code", "implement-tests"])("%s 要求同一個指令不重複執行", (name) => {
+    const text = renderPrompt(name, vars);
+    expect(text).toContain("同一個指令");
+    expect(text).toContain("最多執行一次");
+  });
 });
