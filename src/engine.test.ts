@@ -1288,7 +1288,7 @@ if (prompt.includes("plan-review.json")) {
   writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
 } else {
   writeFileSync(".flow/plan.md", "# 計畫\\n");
-  writeFileSync(".flow/tasks.json", JSON.stringify([1, 2, 3].map((n) => ({ id: "T-" + n, title: "任務", description: "完成", dependsOn: [], acceptance: ["AC-1"] }))));
+  writeFileSync(".flow/tasks.json", JSON.stringify([1, 2, 3].map((n) => ({ id: "T-" + n, title: "任務", description: "完成", dependsOn: [], acceptance: ["AC-" + n] }))));
 }
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
@@ -1300,7 +1300,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
     await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
     mkdirSync(flowDir(id), { recursive: true });
     writeFileSync(join(flowDir(id), "spec.md"), "# 規格\n");
-    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "完成" }]));
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([1, 2, 3].map((n) => ({ id: `AC-${n}`, description: "完成" }))));
     const now = new Date().toISOString();
     return advance({
       id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "plan",
