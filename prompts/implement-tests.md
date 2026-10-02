@@ -36,6 +36,8 @@
 
 <steps>
 1. 若 .flow/feedback.md 存在，先閱讀，並依內容調整做法。
+   若回饋說上一版測試無法被實作滿足，請查看它指出的 commit，找出測試本身的錯誤後重寫。
+   寫測試前先看 package.json 的實際版本與既有測試的寫法，只用專案已安裝版本支援的 API（例如 `renderHook` 在較舊的 @testing-library/react 不存在），不要憑印象引入新工具。
 2. 依任務描述撰寫測試，檔名必須符合正規表示式 `{{testPattern}}`。
 {{redGuidance}}
 </steps>

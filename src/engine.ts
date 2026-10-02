@@ -321,6 +321,10 @@ function taskUsesTdd(task: TaskItem, framework: boolean): boolean {
 const TESTS_NOT_RED_REASON = "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。";
 /** 越界檢查只擋前兩次：任務描述的路徑只是啟發式，之後交給審查把關，避免誤判讓 run 卡死 */
 const SCOPE_GUARD_ATTEMPTS = 2;
+/** 綠燈階段連續失敗幾次（含這一次）、或實作者沒有任何變更時，懷疑是測試本身的問題而退回測試階段 */
+const TESTS_REDO_AFTER_FAILURES = 2;
+/** 同一個任務最多退回測試階段幾次，超過就照舊在綠燈階段重試到上限 */
+const TESTS_REDO_LIMIT = 2;
 const TESTS_NOT_RED_MARK = "請撰寫會因功能尚未實作而失敗的測試";
 
 /** 已定案的任務寫明不要求紅燈：仍寫測試，但通過也算完成紅燈階段。 */
@@ -1250,6 +1254,12 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const green = framework ? await runCommand(target(run, `${task.id}-green`, CMD_AGENT), testCmd) : { ok: true as const, output: "", seq: 0 };
   if (!green.ok) {
     info(run, `   ✗ 測試仍未通過${logHint(run, green.seq)}`);
+    const failures = (run.attempts[key] ?? 0) + 1;
+    // 實作者沒有任何變更、或同樣的測試一再失敗，表示問題多半出在測試本身（用了專案沒有的 API、斷言互相矛盾……），
+    // 再叫實作者重試只會原地打轉：丟掉這一輪，回到測試階段重寫
+    if (tdd && run.taskBase && (run.testsRedos ?? 0) < TESTS_REDO_LIMIT && (!codeCommit || failures >= TESTS_REDO_AFTER_FAILURES)) {
+      return redoTests(run, key, repo, run.taskBase, testsCommit, green.output, codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更");
+    }
     return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement", "tests_not_green");
   }
   const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, testsCommit);
@@ -1346,7 +1356,7 @@ async function mergeLane(ref: { run: FlowRun }, task: TaskItem): Promise<"merged
     const redo = retry({ ...lane, stage: "implement" }, `${task.id}:merge`,
       `和已合併的其他任務在這些檔案衝突：${merged.conflicts.join("、")}。分支已更新為最新，請在既有內容之上重新完成這個任務。`,
       "implement", "merge_conflict");
-    saveRun({ ...redo, taskIndex: 0, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
+    saveRun({ ...redo, taskIndex: 0, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
     if (redo.stage === "failed") return { kind: "failed", category: "retry_limit", reason: redo.failureReason ?? "合併衝突重試達上限" };
     return "redo";
   }
@@ -1418,6 +1428,35 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
   };
 }
 
+/**
+ * 綠燈階段讓不了測試通過：把測試與實作都丟掉（回到測試階段開始前的 commit），改由測試作者重寫。
+ * 舊的測試 commit 還留在 git 物件庫，feedback 附上它的 hash 讓作者可以 `git show` 參考。
+ */
+async function redoTests(
+  run: FlowRun, key: string, repo: string, taskBase: string, testsCommit: string, output: string, why: string,
+): Promise<FlowRun> {
+  await resetTo(repo, taskBase);
+  const redos = (run.testsRedos ?? 0) + 1;
+  const attempts = { ...run.attempts };
+  delete attempts[key];
+  writeFileSync(flowFile(run, "feedback.md"), [
+    `# 前次嘗試未通過：測試無法被實作滿足（第 ${redos} 次退回測試階段）`,
+    "",
+    `${why}，測試仍未通過。這表示測試本身可能有問題（例如使用專案沒有安裝的 API、匯入不存在的套件、斷言互相矛盾或與驗收條件不符），而實作階段不能修改測試。`,
+    `上一版測試已還原，commit 為 ${testsCommit}，可用 \`git show ${testsCommit}\` 查看。請重寫測試：沿用專案實際安裝版本支援的寫法（參考既有測試），並確保失敗原因是功能尚未實作，而不是測試本身寫錯。`,
+    "",
+    "測試輸出：",
+    "",
+    "```",
+    tail(output),
+    "```",
+    "",
+  ].join("\n"));
+  addRetry(run.id, { key, backTo: "implement", category: "tests_invalid", attempt: redos, final: false }, run.updatedAt);
+  info(run, `↩️  ${key} 測試無法被實作滿足（${why}），退回測試階段重寫（${redos}/${TESTS_REDO_LIMIT}）`);
+  return { ...run, attempts, stage: "implement", taskPhase: "tests", testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: redos };
+}
+
 /** 這個任務結束，下一個從寫測試開始 */
 function finishTask(run: FlowRun): FlowRun {
   return {
@@ -1427,6 +1466,7 @@ function finishTask(run: FlowRun): FlowRun {
     taskBase: undefined,
     testsCommit: undefined,
     lastTestsAuthor: undefined,
+    testsRedos: undefined,
   };
 }
 
