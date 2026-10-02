@@ -278,6 +278,8 @@ export const FlowRun = z.object({
   planWriter: z.string().optional(),
   /** 最後一個對計畫要求修改的 reviewer */
   planReviewer: z.string().optional(),
+  /** replan --no-review：計畫修訂完成後直接定案，不再送審 */
+  skipPlanReview: z.boolean().optional(),
   /** 目前的 fix 是因為 verify 失敗還是 review 要求修改 */
   fixSource: z.enum(["verify", "review"]).optional(),
   /** 各關卡的連續失敗次數 */

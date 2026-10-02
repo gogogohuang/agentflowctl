@@ -954,10 +954,52 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
     return retry(run, "plan-fix", `${feedback}\n\n另外，交接回覆不合格，本次修改已還原：${handoffError}`, "plan_fix", "handoff_invalid");
   }
   acceptPlan(run, ordered);
-  writeFileSync(flowFile(run, "feedback.md"), feedback); // 保留審查意見，讓下一輪審查者知道上次提了什麼
   const attempts = { ...run.attempts };
   delete attempts["plan-fix"];
+  if (run.skipPlanReview) {
+    // replan --no-review：人工補充意見改完就定案，不再送審
+    return planSettled({ ...run, attempts, skipPlanReview: undefined, planWriter: actual }, "plan-fix");
+  }
+  writeFileSync(flowFile(run, "feedback.md"), feedback); // 保留審查意見，讓下一輪審查者知道上次提了什麼
   return { ...run, attempts, stage: "plan_review", planWriter: actual };
+}
+
+/** replan 可以從哪些階段開始：計畫等人確認，或停在計畫階段（暫停、失敗）的 run */
+const REPLAN_STAGES: readonly Stage[] = ["plan", "plan_review", "plan_fix"];
+
+export function canReplan(run: FlowRun): boolean {
+  if (run.stage === "awaiting_approval") return true;
+  const at = run.stage === "paused" ? run.pausedStage : run.stage === "failed" ? run.failedStage : undefined;
+  return at !== undefined && REPLAN_STAGES.includes(at);
+}
+
+/**
+ * 人工介入計畫：先驗證 .flow/ 內（可能被手改過的）計畫檔，再依有沒有補充意見決定接下來走哪條路。
+ * - 有 note：寫成 feedback.md，交給計畫修訂者只改相關部分（不重寫整份計畫），之後預設回計畫審查
+ * - 沒有 note：視為使用者已手改計畫檔，直接回計畫審查（分層審查只重審有變動的群）
+ * - noReview：改完不再送審，直接定案（沒有 note 時只做格式檢查）
+ * 驗證不過時丟錯、不改 run，使用者修好檔案再下一次指令即可。
+ */
+export function replanRun(run: FlowRun, opts: { note?: string; noReview?: boolean }): FlowRun {
+  if (!canReplan(run)) throw new Error(`run 目前在 ${run.stage}，只有等待核准，或停在計畫階段的 run 可以重做計畫`);
+  const note = opts.note?.trim();
+  const ordered = validatePlan(run);
+  if (typeof ordered === "string") throw new Error(`計畫檔案沒有通過檢查，請先修正 ${flowDir(run.id)}：\n${ordered}`);
+  acceptPlan(run, ordered);
+  // 重新計輪：之前的審查、仲裁與僵持紀錄都不適用於人工改過的計畫
+  const attempts = { ...run.attempts };
+  for (const key of ["plan", "plan-review", "plan-review-run", "plan-fix", "plan-arbitration", "plan-handoff"]) delete attempts[key];
+  rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
+  rmSync(flowFile(run, "dispute.md"), { force: true });
+  rmSync(planArbitrationPath(run.id), { force: true });
+  const reset = { ...run, attempts, pausedStage: undefined, pauseReason: undefined, failedStage: undefined, failureReason: undefined, failureCategory: undefined };
+  if (note) {
+    writeFileSync(flowFile(run, "feedback.md"), `# 人工補充意見\n\n這是使用者親自寫的意見，優先處理，只修改相關的任務與段落，不要重寫整份計畫。\n\n${note}\n`);
+    return { ...reset, stage: "plan_fix", skipPlanReview: opts.noReview ? true : undefined };
+  }
+  rmSync(flowFile(run, "feedback.md"), { force: true });
+  if (opts.noReview) return planSettled({ ...reset, skipPlanReview: undefined }, "plan-review");
+  return { ...reset, stage: "plan_review", skipPlanReview: undefined };
 }
 
 /**

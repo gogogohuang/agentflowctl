@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { MIN_ATTEMPTS, config } from "./config.js";
-import { advance, loadRepoConfig } from "./engine.js";
+import { advance, loadRepoConfig, replanRun } from "./engine.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git } from "./git.js";
 import { cleanableRuns, cleanRun } from "./cleanup.js";
@@ -220,6 +220,18 @@ program
     const run = mustGetRun(id);
     if (run.stage !== "awaiting_approval") throw new Error(`run 目前在 ${run.stage}，不需要核准`);
     await drive(saveRun({ ...run, stage: "implement" }));
+  });
+
+program
+  .command("replan <id>")
+  .description("人工介入計畫：補充意見或手改 .flow/ 計畫檔後重做計畫（只修改相關部分，不重寫整份）")
+  .option("--note <文字>", "補充意見，交給計畫修訂者只改相關的任務與段落")
+  .option("--note-file <路徑>", "從檔案讀補充意見")
+  .option("--no-review", "改完直接定案，不再送審")
+  .action(async (id: string, opts: { note?: string; noteFile?: string; review: boolean }) => {
+    if (opts.note && opts.noteFile) throw new Error("--note 與 --note-file 只能擇一");
+    const note = opts.noteFile ? readFileSync(opts.noteFile, "utf8") : opts.note;
+    await drive(saveRun(replanRun(mustGetRun(id), { note, noReview: !opts.review })));
   });
 
 program
