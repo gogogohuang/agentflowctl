@@ -1,7 +1,7 @@
 import type { AcceptanceItem, TaskItem } from "./schemas.js";
 
 /** 一個任務最多對應這麼多條驗收條件：超過就要再拆（同一條驗收條件只能有一個實作任務負責，見 orderTasks） */
-export const MAX_TASK_ACCEPTANCE = 3;
+export const MAX_TASK_ACCEPTANCE = 4;
 
 /** 描述已明確放棄紅燈。新計畫必須把 tdd 標成 false；已定案的任務則仍寫測試，但不要求先失敗。 */
 const RED_WAIVED = /不要求紅燈|不必紅燈|不需紅燈|無需紅燈|不用紅燈|略過紅燈|略過紅綠燈/;

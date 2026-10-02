@@ -6,7 +6,7 @@ import { mergeStats, type RunStats, type StepStat } from "./stats.js";
 export const FindingCodes = [
   "coverage_low", "high_strength_share", "retry_waste", "input_heavy",
   "hot_stage", "hot_task", "substitution_waste", "cache_unread",
-  "hot_model_step", "hot_failing_step",
+  "hot_model_step", "hot_failing_step", "fragmented_tasks",
 ] as const;
 export type FindingCode = (typeof FindingCodes)[number];
 
@@ -21,6 +21,7 @@ export const FINDING_LABEL: Record<FindingCode, string> = {
   cache_unread: "cache 寫入多、讀取少",
   hot_model_step: "單一模型與步驟佔用量過高",
   hot_failing_step: "單一執行步驟失敗次數過多",
+  fragmented_tasks: "任務可能切太碎",
 };
 
 export interface UsageInsightsInputRun {
@@ -46,7 +47,17 @@ export interface TopTask {
   share: number;
   /** 該 run 有 token 的任務數 */
   tasks: number;
+  /** 該 run 所有任務步驟的 token 合計 */
+  taskTokens: number;
+  /** 該 run 所有任務步驟的輸出 token 合計，當作「實際做的事」的粗略指標 */
+  taskOutputTokens: number;
 }
+
+/** 任務碎片化的猜測門檻：任務數至少這麼多，而且平均每任務輸出低於這個值（輸出少代表每任務做的事少，用量多半是重讀脈絡的固定開銷）。沒有實際 run 資料校準。 */
+const FRAGMENTED_MIN_TASKS = 6;
+const FRAGMENTED_MAX_AVG_OUTPUT = 6000;
+/** 併掉一部分碎任務大約能省的任務用量比例（猜測值） */
+const FRAGMENTED_SAVING_RATIO = 0.2;
 
 export interface UsageInsights {
   total: UsageSummary;
@@ -68,7 +79,10 @@ export function topTaskOf(usage: UsageEntry[]): TopTask | undefined {
   const entries = Object.entries(summarizeUsage(usage, usageKeyTask)).filter(([key, v]) => key !== "非任務步驟" && v.tokens > 0);
   const taskTotal = entries.reduce((n, [, v]) => n + v.tokens, 0);
   const top = entries.sort((a, b) => b[1].tokens - a[1].tokens)[0];
-  return top ? { task: top[0], tokens: top[1].tokens, share: top[1].tokens / taskTotal, tasks: entries.length } : undefined;
+  const taskOutput = entries.reduce((n, [, v]) => n + v.outputTokens, 0);
+  return top
+    ? { task: top[0], tokens: top[1].tokens, share: top[1].tokens / taskTotal, tasks: entries.length, taskTokens: taskTotal, taskOutputTokens: taskOutput }
+    : undefined;
 }
 
 const pct = (part: number, whole: number) => (whole ? `${(part / whole * 100).toFixed(1)}%` : "無法計算");
@@ -148,6 +162,20 @@ export function usageFindings(input: {
     out.push({
       code: "hot_task", impactTokens: t.tokens, title: FINDING_LABEL.hot_task,
       detail: `${hotTask.id} 的 ${t.task} 佔該 run 任務用量 ${(t.share * 100).toFixed(1)}%（${t.tokens} tokens）。考慮切小任務或降低 complexity。`,
+    });
+  }
+
+  const fragmented = topTasks
+    .filter((r): r is { id: string; topTask: TopTask } => {
+      const t = r.topTask;
+      return !!t && t.tasks >= FRAGMENTED_MIN_TASKS && t.taskOutputTokens / t.tasks < FRAGMENTED_MAX_AVG_OUTPUT;
+    })
+    .sort((a, b) => b.topTask.taskTokens - a.topTask.taskTokens)[0];
+  if (fragmented) {
+    const t = fragmented.topTask;
+    out.push({
+      code: "fragmented_tasks", impactTokens: Math.round(t.taskTokens * FRAGMENTED_SAVING_RATIO), title: FINDING_LABEL.fragmented_tasks,
+      detail: `${fragmented.id} 有 ${t.tasks} 個任務，平均每任務輸出只有 ${Math.round(t.taskOutputTokens / t.tasks)} tokens（任務步驟共 ${t.taskTokens} tokens），用量多半是每個任務重讀脈絡的固定開銷。把文件、設定、型別等 tdd:false 的碎任務併進相鄰行為任務；若審查常因 AC 過多退回，再看是否需要調 MAX_TASK_ACCEPTANCE。門檻是猜的，請對照實際 run 校準。`,
     });
   }
 

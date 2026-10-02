@@ -53,8 +53,8 @@ describe("computeUsageInsights", () => {
     expect(insights.byModelStage["small / taskCode"]).toMatchObject({ tokens: 77, runs: 2 });
     expect(insights.substitutions).toBe(3);
     expect(insights.runs).toEqual([
-      { id: "f-a", tokens: 143, calls: 2, reportedCalls: 2, topTask: { task: "T-1", tokens: 33, share: 1, tasks: 1 } },
-      { id: "f-b", tokens: 44, calls: 2, reportedCalls: 1, topTask: { task: "T-1", tokens: 44, share: 1, tasks: 1 } },
+      { id: "f-a", tokens: 143, calls: 2, reportedCalls: 2, topTask: { task: "T-1", tokens: 33, share: 1, tasks: 1, taskTokens: 33, taskOutputTokens: 3 } },
+      { id: "f-b", tokens: 44, calls: 2, reportedCalls: 1, topTask: { task: "T-1", tokens: 44, share: 1, tasks: 1, taskTokens: 44, taskOutputTokens: 4 } },
     ]);
   });
 
@@ -102,7 +102,7 @@ describe("usageFindings", () => {
         review: summary({ tokens: 8000, runs: 2, reportedRuns: 2 }),
         spec: summary({ tokens: 3000, runs: 1, reportedRuns: 1 }),
       },
-      topTasks: [{ id: "f-a", topTask: { task: "T-1", tokens: 7000, share: 7000 / 9000, tasks: 2 } }],
+      topTasks: [{ id: "f-a", topTask: { task: "T-1", tokens: 7000, share: 7000 / 9000, tasks: 2, taskTokens: 7000, taskOutputTokens: 0 } }],
       retries: [retry({ category: "format_invalid" }), retry({ category: "format_invalid", attempt: 2 }), retry({ category: "tests_not_red", key: "T-1:tests" })],
       substitutions: 2,
     });
@@ -120,7 +120,7 @@ describe("usageFindings", () => {
       byStrength: {},
       byStage: {},
       retries: [retry({ category: "review_changes" }), retry({ category: "arbitration_revise" }), retry({ category: "format_invalid" })],
-      topTasks: [{ id: "f-a", topTask: { task: "T-1", tokens: 100, share: 1, tasks: 1 } }],
+      topTasks: [{ id: "f-a", topTask: { task: "T-1", tokens: 100, share: 1, tasks: 1, taskTokens: 100, taskOutputTokens: 0 } }],
       substitutions: 0,
     }).map((f) => f.code);
     expect(codes).not.toContain("retry_waste");
@@ -208,10 +208,21 @@ describe("usageFindings", () => {
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 3, reportedRuns: 3 }),
       byStrength: {},
       byStage: {},
-      topTasks: [{ id: "f-a", topTask: { task: "T-2", tokens: 50, share: 50 / 90, tasks: 2 } }],
+      topTasks: [{ id: "f-a", topTask: { task: "T-2", tokens: 50, share: 50 / 90, tasks: 2, taskTokens: 50, taskOutputTokens: 0 } }],
       retries: [],
       substitutions: 0,
     })).toContain("hot_task");
+    const fragmentedInput = (tasks: number, taskOutputTokens: number) => ({
+      total: summary({ tokens: 600, inputTokens: 500, outputTokens: 100, runs: 6, reportedRuns: 6 }),
+      byStrength: {},
+      byStage: {},
+      topTasks: [{ id: "f-a", topTask: { task: "T-1", tokens: 100, share: 100 / 600, tasks, taskTokens: 600, taskOutputTokens } }],
+      retries: [],
+      substitutions: 0,
+    });
+    expect(codes(fragmentedInput(6, 6 * 5999))).toContain("fragmented_tasks");
+    expect(codes(fragmentedInput(6, 6 * 6000))).not.toContain("fragmented_tasks");
+    expect(codes(fragmentedInput(5, 0))).not.toContain("fragmented_tasks");
     expect(codes({
       total: summary({ tokens: 100, inputTokens: 50, outputTokens: 50, runs: 2, reportedRuns: 2 }),
       byStrength: {},

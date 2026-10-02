@@ -27,10 +27,10 @@ describe("orderTasks", () => {
     expect(orderTasks([task("T-1"), task("T-1", [], ["AC-2"])], new Set(["AC-1", "AC-2"]))).toContain("重複");
   });
 
-  it("一個任務最多對應三條驗收條件", () => {
-    const acs = new Set(["AC-1", "AC-2", "AC-3", "AC-4"]);
-    expect(Array.isArray(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3"]), task("T-2", [], ["AC-4"])], acs))).toBe(true);
-    expect(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3", "AC-4"])], acs)).toContain("T-1 對應 4 條驗收條件");
+  it("一個任務最多對應四條驗收條件", () => {
+    const acs = new Set(["AC-1", "AC-2", "AC-3", "AC-4", "AC-5"]);
+    expect(Array.isArray(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3", "AC-4"]), task("T-2", [], ["AC-5"])], acs))).toBe(true);
+    expect(orderTasks([task("T-1", [], ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5"])], acs)).toContain("T-1 對應 5 條驗收條件");
   });
 
   it("同一條驗收條件只能由一個實作任務負責", () => {
