@@ -1,6 +1,6 @@
 # agentflowctl 詳細參考
 
-本文件保留完整的指令、設定與流程規則。初次使用請先看 [README](../README.md)；各階段的檔案輸入與產出另見 [各階段檔案](engine-stage-files.md)。
+本文件保留完整的指令、設定與流程規則。初次使用請先看 [README](../README.md)，細節見 [執行流程](workflow.md)、[查看進度](monitoring.md)、[設定詳解](configuration.md)；各階段的檔案輸入與產出另見 [各階段檔案](engine-stage-files.md)。
 
 讓 Claude Code、Codex、Gemini CLI（或任何 agent CLI）在同一條流程裡輪流寫規格、寫計畫、寫測試、寫實作、互相審查、互相修正，一路做到開 PR。
 
