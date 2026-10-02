@@ -21,18 +21,25 @@ export function violatingTestChanges(changed: string[], deleted: string[], testR
   });
 }
 
-/** 從測試檔原始碼取出「由套件（非相對路徑、非別名）匯入」的具名符號 */
-export function packageImports(source: string): Set<string> {
-  const names = new Set<string>();
+/** 從測試檔原始碼取出「由套件（非相對路徑、非別名）匯入」的具名符號，依套件名分組 */
+export function packageImportMap(source: string): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
   for (const m of source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
     const [, list = "", spec = ""] = m;
     if (/^[./~]|^@\//.test(spec)) continue;
+    const names = map.get(spec) ?? new Set<string>();
     for (const part of list.split(",")) {
       const name = part.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop()?.trim();
       if (name) names.add(name);
     }
+    map.set(spec, names);
   }
-  return names;
+  return map;
+}
+
+/** 由套件匯入的具名符號（不分套件） */
+export function packageImports(source: string): Set<string> {
+  return new Set([...packageImportMap(source).values()].flatMap((names) => [...names]));
 }
 
 /**

@@ -10,6 +10,7 @@ import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff
 import { confirmationDetailsPath, confirmationsPath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
 import { exec } from "./proc.js";
+import { missingPackageExports } from "./packageExports.js";
 import { arbiterPanel, availableAgent, fixAgent, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid, type StoredCall } from "./parallelReview.js";
 import { cleanupTempWorktrees, withTempWorktree, type Workspace } from "./tempWorktree.js";
@@ -73,6 +74,9 @@ export class QuotaPause extends Error {
     super(message);
   }
 }
+
+/** 測試一再被退回仍過不了而停下等人：沿用 QuotaPause 的暫停流程（run 與車道都會存成 paused，resume 接續） */
+export class TestsStuckPause extends QuotaPause {}
 
 /** 這次執行中已確認額度用完的 agent；程序結束即清空，resume 時會重新嘗試 */
 const exhausted = new Set<string>();
@@ -1190,6 +1194,16 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, TESTS_NOT_RED_REASON, "implement", "tests_not_red");
     }
+    // 紅燈只看得出「失敗」，看不出失敗的原因：測試呼叫了套件沒有的匯出時，實作者再怎麼改都不會綠，現在就退回給測試作者
+    const missing = await missingPackageExports(repo, changed.filter((f) => testRe.test(f)));
+    if (missing.length) {
+      await resetTo(repo, before);
+      return retry(
+        run, key,
+        `測試呼叫了已安裝套件沒有的匯出：${missing.map((m) => `${m.name}（來自 ${m.spec}）`).join("、")}。請先看 package.json 的實際版本與既有測試的寫法，改用該版本支援的 API。`,
+        "implement", "tests_invalid",
+      );
+    }
     const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, before);
     if (handoffError) {
       await resetTo(repo, before);
@@ -1259,7 +1273,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     // 再叫實作者重試只會原地打轉：丟掉這一輪，回到測試階段重寫
     // 失敗是「測試呼叫了套件沒有的匯出」時與實作無關，不必等第二次就退回
     const brokenImport = tdd && run.taskBase ? brokenPackageImport(green.output, await testPackageImports(repo, run.taskBase, testsCommit, testRe)) : undefined;
-    if (tdd && run.taskBase && (run.testsRedos ?? 0) < TESTS_REDO_LIMIT && (brokenImport || !codeCommit || failures >= TESTS_REDO_AFTER_FAILURES)) {
+    const suspectTests = Boolean(brokenImport) || !codeCommit || failures >= TESTS_REDO_AFTER_FAILURES;
+    if (tdd && run.taskBase && (run.testsRedos ?? 0) >= TESTS_REDO_LIMIT && suspectTests) {
+      // 已退回測試階段達上限仍然過不了：再自動重試只會燒用量，停下來等人處理（改依賴、補充意見或 replan 之後 resume）
+      await redoTests(run, key, repo, run.taskBase, testsCommit, green.output, brokenImport ? `測試用了已安裝套件沒有的匯出 ${brokenImport}` : codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更", true);
+      throw new TestsStuckPause(`${key} 已退回測試階段 ${TESTS_REDO_LIMIT} 次，測試仍無法被實作滿足；請檢查測試依賴與 .flow/feedback.md 後 resume（resume 會再給 ${TESTS_REDO_LIMIT} 次退回機會）`);
+    }
+    if (tdd && run.taskBase && (run.testsRedos ?? 0) < TESTS_REDO_LIMIT && suspectTests) {
       return redoTests(
         run, key, repo, run.taskBase, testsCommit, green.output,
         brokenImport ? `測試用了已安裝套件沒有的匯出 ${brokenImport}` : codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更",
@@ -1338,7 +1358,7 @@ async function driveLane(parent: FlowRun, task: TaskItem, offset: number, tasks:
   } catch (err) {
     if (err instanceof QuotaPause) {
       info(lane, `⏸️  暫停：${err.message}`);
-      saveRun({ ...lane, stage: "paused", pausedStage: "implement", pauseReason: err.message });
+      saveRun({ ...(getRun(lane.id) ?? lane), stage: "paused", pausedStage: "implement", pauseReason: err.message });
       return { kind: "paused", reason: err.message };
     }
     saveRun({ ...lane, stage: "failed", failedStage: "implement", failureCategory: "error", failureReason: (err as Error).message });
@@ -1448,10 +1468,10 @@ async function testPackageImports(repo: string, from: string, to: string, testRe
  * 舊的測試 commit 還留在 git 物件庫，feedback 附上它的 hash 讓作者可以 `git show` 參考。
  */
 async function redoTests(
-  run: FlowRun, key: string, repo: string, taskBase: string, testsCommit: string, output: string, why: string,
+  run: FlowRun, key: string, repo: string, taskBase: string, testsCommit: string, output: string, why: string, pause = false,
 ): Promise<FlowRun> {
   await resetTo(repo, taskBase);
-  const redos = (run.testsRedos ?? 0) + 1;
+  const redos = pause ? 1 : (run.testsRedos ?? 0) + 1;
   const attempts = { ...run.attempts };
   delete attempts[key];
   writeFileSync(flowFile(run, "feedback.md"), [
@@ -1468,6 +1488,8 @@ async function redoTests(
     "",
   ].join("\n"));
   addRetry(run.id, { key, backTo: "implement", category: "tests_invalid", attempt: redos, final: false }, run.updatedAt);
+  // 暫停時退回次數歸零：resume 後從測試階段重來，再給一輪退回機會
+  if (pause) return saveRun({ ...run, attempts, stage: "implement", taskPhase: "tests", testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined });
   info(run, `↩️  ${key} 測試無法被實作滿足（${why}），退回測試階段重寫（${redos}/${TESTS_REDO_LIMIT}）`);
   return { ...run, attempts, stage: "implement", taskPhase: "tests", testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: redos };
 }
