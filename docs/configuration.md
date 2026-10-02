@@ -6,7 +6,7 @@
 
 ## 指令分層
 
-指令分三層：**執行**（`run`、`approve`、`replan`、`resume`、`cancel`、`clean`）、**檢視**（`status`、`confirmations`、`list`、`logs`、`stats`、`insights`），以及全部放在 `config` 底下的**設定**：
+指令分三層：**執行**（`run`、`approve`、`replan`、`iterate`、`resume`、`cancel`、`clean`）、**檢視**（`status`、`confirmations`、`list`、`logs`、`stats`、`insights`），以及全部放在 `config` 底下的**設定**：
 
 ```
 config agent list | add | set | remove | cycle | setup   管理 agent 與參與名單
@@ -23,6 +23,7 @@ config doctor                                             檢查 CLI 是否可�
 | --- | --- |
 | `run --req "..."` / `--req-file <檔案>` | 二選一，直接輸入需求或讀取檔案 |
 | `replan <id> --note <文字>`／`--note-file <路徑>`／`--no-review` | 補充意見或手改計畫檔後重做計畫，見[執行流程細節](workflow.md#計畫有疑慮時不必整份重寫)；`--no-review` 改完不再送審 |
+| `iterate <id> --req <文字>`／`--req-file <檔案>`／`--max-agent-runs <n>` | 已完成的 run 帶入補充需求，在同一個 worktree 開第二輪，見[執行流程細節](workflow.md#完成後開第二輪) |
 | `run --manual-plan` | 計畫通過審查後等待你確認，再用 `approve <id>` 繼續 |
 | `run --stop-after <階段>` | 在 `spec`、`plan`、`implement`、`verify` 或 `review` 完成後暫停；`pr` 會完成 PR 流程並結束。與 `--manual-plan` 互斥 |
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |

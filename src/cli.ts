@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { MIN_ATTEMPTS, config } from "./config.js";
-import { advance, loadRepoConfig, replanRun } from "./engine.js";
+import { advance, iterateRun, loadRepoConfig, replanRun } from "./engine.js";
+import { exec } from "./proc.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git } from "./git.js";
 import { cleanableRuns, cleanRun } from "./cleanup.js";
@@ -21,7 +22,7 @@ import { confirmationLines, confirmationTasks } from "./tasks.js";
 import { padDisplay, readJsonFile, type JsonResult } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
 import { stopReport } from "./stopReport.js";
-import { dumpRun } from "./dump.js";
+import { dumpRun, restoreRun } from "./dump.js";
 import { runSetup, SETUP_ADAPTERS, type Detected } from "./setup.js";
 import { addAgent, readRawConfig, removeAgent, setAgent, setCycle, writeRawConfig, type Edit } from "./agentConfig.js";
 import { addModel, removeModel, setModelMode, setModelStrength, setStageStrength } from "./modelConfig.js";
@@ -235,6 +236,30 @@ program
   });
 
 program
+  .command("iterate <id>")
+  .description("在已完成 run 的同一個 worktree 開第二輪：帶入補充需求，從 spec 重來（程式碼與 PR 沿用）")
+  .option("--req <text>", "第二輪的補充需求")
+  .option("--req-file <file>", "從檔案讀取補充需求")
+  .option("--max-agent-runs <n>", "這一輪最多再執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns，從目前已執行的次數起算）")
+  .action(async (id: string, opts: { req?: string; reqFile?: string; maxAgentRuns?: string }) => {
+    const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
+    if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供第二輪的補充需求");
+    const run = mustGetRun(id);
+    if (run.stage !== "done") throw new Error(`run 目前在 ${run.stage}，只有已完成（done）的 run 可以開下一輪`);
+    if (run.prUrl) {
+      // 讀不到狀態（沒有 gh、沒登入）就略過檢查；PR 已合併時，在同一分支追加的 commit 不會進到 PR
+      const state = await exec("gh", ["pr", "view", run.prUrl, "--json", "state", "--jq", ".state"], { cwd: worktreeDir(id) }).catch(() => undefined);
+      if (state?.code === 0 && state.stdout.trim() === "MERGED") {
+        throw new Error(`PR 已合併（${run.prUrl}），無法再更新；請用 agentflowctl run 以最新的 ${run.baseBranch} 開新的 run`);
+      }
+    }
+    if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
+    const next = await iterateRun(run, { requirement, maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : undefined });
+    console.log(`[${id}] 🔁 開始第 ${next.round} 輪，沿用 worktree 與分支 ${next.branch}`);
+    await drive(saveRun(next));
+  });
+
+program
   .command("resume <id>")
   .description("從暫停、中斷或失敗的階段接續")
   .option("--max-agent-runs <n>", "調整 agent 執行次數上限")
@@ -365,6 +390,14 @@ program
     const dest = outDir ?? join(projectRoot(), ".agentflowctl", "dumps", `${id}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     await dumpRun(id, dest);
     console.log(`✅ 已輸出到 ${dest}`);
+  });
+
+program
+  .command("restore <dumpDir>", { hidden: true })
+  .description("把 dump 的資料還原成可以 resume 的 run（沿用原 id，用既有分支重建 worktree）")
+  .action(async (dumpDir: string) => {
+    const run = await restoreRun(dumpDir);
+    console.log(`✅ 已還原 ${run.id}（階段 ${run.stage}，分支 ${run.branch}）；worktree 不含 node_modules，接續前請先在裡面安裝相依套件，再用 agentflowctl resume ${run.id}`);
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────

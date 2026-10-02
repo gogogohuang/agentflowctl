@@ -30,7 +30,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enable
 }));
 
 const { addWorktree, commitAll, git } = await import("./git.js");
-const { advance, canReplan, replanRun, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
+const { advance, canReplan, iterateRun, replanRun, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
 const { addRetry, agentRuns, getRun, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
@@ -1389,6 +1389,77 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
       expect(next.stage).toBe("awaiting_approval");
       expect(agentRuns(run.id)).toBe(before);
     });
+  });
+});
+
+describe("iterate：在同一個 worktree 開第二輪", () => {
+  async function doneRun(id: string, extra: Partial<FlowRun> = {}) {
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    for (const f of ["spec.md", "plan.md", "tasks.json", "tasks.ordered.json", "acceptance.json", "feedback.md", "review.json"]) writeFileSync(join(flowDir(id), f), `第一輪 ${f}`);
+    mkdirSync(runDir(id), { recursive: true });
+    for (const f of ["confirmations.json", "plan-arbitration.json", "diverge.json"]) writeFileSync(join(runDir(id), f), "[]");
+    mkdirSync(join(runDir(id), "parallel-review", "r1"), { recursive: true });
+    mkdirSync(join(runDir(id), "lanes", "T-1"), { recursive: true });
+    const now = new Date().toISOString();
+    return saveRun({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能\n第二行", stage: "done", autopilot: true,
+      maxAgentRuns: 40, cycle: ["a", "b"], attempts: { review: 1 }, taskIndex: 3, taskPhase: "review",
+      doneTasks: ["T-1"], taskBase: "abc", testsCommit: "def", testsRedos: 1, lastTestsAuthor: "a", fixSource: "review",
+      prUrl: "https://github.com/x/y/pull/1", stopAfter: "pr", createdAt: now, updatedAt: now, ...extra,
+    });
+  }
+
+  it("只有 done 的 run 可以開下一輪，補充需求不能是空的", async () => {
+    const run = await doneRun("f-iter-guard");
+    await expect(iterateRun({ ...run, stage: "failed" }, { requirement: "補充" })).rejects.toThrow("只有已完成");
+    await expect(iterateRun(run, { requirement: "  \n" })).rejects.toThrow("補充需求");
+  });
+
+  it("回到 spec：需求附加補充、輪次加一、任務進度與確認項目清空，PR 連結保留", async () => {
+    const run = await doneRun("f-iter-reset");
+    const next = await iterateRun(run, { requirement: "改用既有的 helper" });
+    expect(next.stage).toBe("spec");
+    expect(next.round).toBe(2);
+    expect(next.requirement.split("\n")[0]).toBe("測試功能");
+    expect(next.requirement).toContain("第 2 輪補充需求");
+    expect(next.requirement).toContain("改用既有的 helper");
+    expect(next.requirement).toContain(".flow/round-1/");
+    expect(next.attempts).toEqual({});
+    expect([next.taskIndex, next.taskPhase, next.doneTasks]).toEqual([0, "tests", undefined]);
+    expect([next.taskBase, next.testsCommit, next.testsRedos, next.lastTestsAuthor, next.fixSource, next.stopAfter]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(next.prUrl).toBe(run.prUrl);
+    for (const f of ["confirmations.json", "plan-arbitration.json", "diverge.json", "parallel-review", "lanes"]) expect(existsSync(join(runDir(run.id), f))).toBe(false);
+  });
+
+  it("第一輪的規格與計畫存進 .flow/round-1/，其餘交接檔清掉", async () => {
+    const run = await doneRun("f-iter-archive");
+    await iterateRun(run, { requirement: "補充" });
+    const flow = flowDir(run.id);
+    expect(readFileSync(join(flow, "round-1", "spec.md"), "utf8")).toBe("第一輪 spec.md");
+    expect(readFileSync(join(flow, "round-1", "tasks.json"), "utf8")).toBe("第一輪 tasks.json");
+    expect(readdirSync(flow).sort()).toEqual(["round-1"]);
+  });
+
+  it("第三輪把第二輪存成 round-2，round-1 保留", async () => {
+    const run = await doneRun("f-iter-third", { round: 2 });
+    mkdirSync(join(flowDir(run.id), "round-1"));
+    writeFileSync(join(flowDir(run.id), "round-1", "spec.md"), "更早");
+    const next = await iterateRun(run, { requirement: "補充" });
+    expect(next.round).toBe(3);
+    expect(readdirSync(flowDir(run.id)).sort()).toEqual(["round-1", "round-2"]);
+    expect(readFileSync(join(flowDir(run.id), "round-1", "spec.md"), "utf8")).toBe("更早");
+  });
+
+  it("agent 次數上限：預設從目前已執行次數再給一份額度；明確指定的就視為使用者定的額度", async () => {
+    const run = await doneRun("f-iter-budget");
+    const used = agentRuns(run.id);
+    const auto = await iterateRun(run, { requirement: "補充" });
+    expect(auto.maxAgentRuns).toBeGreaterThan(used);
+    expect(auto.maxAgentRunsExplicit).toBeUndefined();
+    const explicit = await iterateRun(await doneRun("f-iter-budget2"), { requirement: "補充", maxAgentRuns: 7 });
+    expect(explicit.maxAgentRuns).toBe(agentRuns("f-iter-budget2") + 7);
+    expect(explicit.maxAgentRunsExplicit).toBe(true);
   });
 });
 

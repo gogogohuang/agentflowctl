@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,9 +8,10 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-dump-"));
 execFileSync("git", ["init", "-q", "-b", "main", root]);
 execFileSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "init"]);
 process.chdir(root);
-const { runDir, flowDir, projectRoot } = await import("./paths.js");
-const { saveRun } = await import("./store.js");
-const { dumpRun } = await import("./dump.js");
+const { runDir, flowDir, projectRoot, worktreeDir } = await import("./paths.js");
+const { getRun, saveRun } = await import("./store.js");
+const { dumpRun, restoreRun } = await import("./dump.js");
+const { addWorktree, removeWorktree } = await import("./git.js");
 
 const now = new Date().toISOString();
 const run = (id: string) => ({
@@ -61,5 +62,59 @@ describe("dumpRun", () => {
     await dumpRun("d-c", out);
     expect(existsSync(join(out, "run", "parallel-review"))).toBe(false);
     expect(existsSync(join(out, "run", "tmp-review"))).toBe(false);
+  });
+});
+
+describe("restoreRun", () => {
+  /** 建立 run、分支與 worktree 並 dump，再把 run 與 worktree 清掉，模擬在乾淨的環境復原 */
+  async function dumped(id: string, opts: { keepBranch?: boolean } = {}): Promise<string> {
+    saveRun({ ...run(id), stage: "plan_review" });
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(join(runDir(id), "logs"), { recursive: true });
+    writeFileSync(join(runDir(id), "logs", "001-spec.log"), "log");
+    writeFileSync(join(runDir(id), "confirmations.json"), "[]");
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "spec.md"), "# spec");
+    const out = join(root, `restore-${id}`);
+    await dumpRun(id, out);
+    await removeWorktree(root, worktreeDir(id));
+    rmSync(runDir(id), { recursive: true, force: true });
+    if (opts.keepBranch === false) execFileSync("git", ["-C", root, "branch", "-D", `flow/${id}`]);
+    return out;
+  }
+
+  it("還原 run 紀錄、.flow 與用既有分支重建 worktree，狀態原樣保留", async () => {
+    const out = await dumped("r-a");
+    const restored = await restoreRun(out);
+    expect(restored.id).toBe("r-a");
+    expect(getRun("r-a")?.stage).toBe("plan_review");
+    expect(readFileSync(join(runDir("r-a"), "logs", "001-spec.log"), "utf8")).toBe("log");
+    expect(readFileSync(join(flowDir("r-a"), "spec.md"), "utf8")).toBe("# spec");
+    expect(execFileSync("git", ["-C", worktreeDir("r-a"), "branch", "--show-current"], { encoding: "utf8" }).trim()).toBe("flow/r-a");
+  });
+
+  it("不覆蓋專案現有的 flow.config.json", async () => {
+    const out = await dumped("r-b");
+    writeFileSync(join(projectRoot(), "flow.config.json"), '{"maxAttempts":9}');
+    await restoreRun(out);
+    expect(readFileSync(join(projectRoot(), "flow.config.json"), "utf8")).toBe('{"maxAttempts":9}');
+  });
+
+  it("run 已存在時拒絕，不動現有資料", async () => {
+    const out = await dumped("r-c");
+    saveRun(run("r-c"));
+    await expect(restoreRun(out)).rejects.toThrow("已存在");
+    expect(getRun("r-c")?.stage).toBe("spec");
+  });
+
+  it("分支不在時拒絕，也不留下半成品", async () => {
+    const out = await dumped("r-d", { keepBranch: false });
+    await expect(restoreRun(out)).rejects.toThrow("flow/r-d");
+    expect(getRun("r-d")).toBeUndefined();
+    expect(existsSync(runDir("r-d"))).toBe(false);
+  });
+
+  it("不是 dump 目錄時丟錯", async () => {
+    await expect(restoreRun(join(root, "not-a-dump"))).rejects.toThrow("dump");
   });
 });
