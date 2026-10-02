@@ -80,6 +80,7 @@ export function stopReport(i: StopReportInput): string[] {
   } else if (run.stage === "awaiting_approval") {
     actions.push(cmd(`less ${join(i.worktree, ".flow", "plan.md")}`, "檢視計畫"));
     actions.push(cmd(`agentflowctl approve ${run.id}`, "核准並開始實作"));
+    actions.push(cmd(`agentflowctl replan ${run.id} --note "…"`, "有疑慮：補充意見或手改計畫檔後重做"));
   } else {
     if (shown) actions.push(cmd(`agentflowctl logs ${run.id} ${shown.seq}`, "看上一步的完整 log"));
     actions.push(cmd(`agentflowctl resume ${run.id}`, `從 ${run.stage} 接續`));

@@ -73,6 +73,7 @@ describe("run 停下時的結果與下一步", () => {
     const out = stopReport({ run: run({ stage: "awaiting_approval" }), worktree: "/wt", open: [], read, logs: [] }).join("\n");
     expect(out).toContain("/wt/.flow/plan.md");
     expect(out).toContain("agentflowctl approve f-1");
+    expect(out).toContain("agentflowctl replan f-1");
     expect(stopReport({ run: run({ stage: "done" }), worktree: "/wt", open: [issue], read, logs: [] })).toEqual([]);
   });
 

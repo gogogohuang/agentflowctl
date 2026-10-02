@@ -29,10 +29,10 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({
 }));
 
 const { addWorktree, commitAll, git } = await import("./git.js");
-const { advance, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
+const { advance, canReplan, replanRun, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
 const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
-const { agentRuns, listRetries, listSubstitutions, listUsage } = await import("./store.js");
+const { agentRuns, getRun, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
 
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
 beforeEach(() => resetQuotaState());
@@ -1000,7 +1000,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
     expect(existsSync(join(flowDir(id), "tasks.ordered.json"))).toBe(true);
   });
 
-  async function planSettledRun(id: string, extra: { maxAgentRuns: number; maxAgentRunsExplicit?: boolean }, config: object = {}) {
+  async function planSettledRun(id: string, extra: { maxAgentRuns: number; maxAgentRunsExplicit?: boolean; autopilot?: boolean; stopAfter?: undefined }, config: object = {}) {
     const script = join(root, `${id}.mjs`);
     writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
 const prompt = readFileSync(0, "utf8");
@@ -1048,6 +1048,67 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
     const run = await planSettledRun(id, { maxAgentRuns: 10, maxAgentRunsExplicit: true });
     expect(run.stage).toBe("paused");
     expect(run.maxAgentRuns).toBe(10);
+  });
+
+  describe("replan：人工介入計畫", () => {
+    const awaiting = (id: string) => planSettledRun(id, { maxAgentRuns: 50, autopilot: false, stopAfter: undefined });
+
+    it("只有等待核准或停在計畫階段的 run 可以重做", async () => {
+      const run = await awaiting("f-replan-stage");
+      expect(run.stage).toBe("awaiting_approval");
+      expect(canReplan(run)).toBe(true);
+      expect(canReplan({ ...run, stage: "paused", pausedStage: "plan_fix" })).toBe(true);
+      expect(canReplan({ ...run, stage: "failed", failedStage: "implement" })).toBe(false);
+      expect(() => replanRun({ ...run, stage: "done" }, {})).toThrow("只有等待核准");
+    });
+
+    it("手改後的計畫檔沒通過檢查時丟錯，不改 run", async () => {
+      const run = await awaiting("f-replan-invalid");
+      writeFileSync(join(flowDir(run.id), "tasks.json"), "壞掉了");
+      expect(() => replanRun(run, { note: "補充" })).toThrow("計畫檔案沒有通過檢查");
+      expect(getRun(run.id)?.stage).toBe("awaiting_approval");
+    });
+
+    it("補充意見：寫成人工補充意見，交給 plan-fix 修訂後回計畫審查", async () => {
+      const run = await awaiting("f-replan-note");
+      const before = agentRuns(run.id);
+      const next = replanRun(run, { note: "T-2 要改用既有的 helper" });
+      expect(next.stage).toBe("plan_fix");
+      const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+      expect(feedback).toContain("人工補充意見");
+      expect(feedback).toContain("T-2 要改用既有的 helper");
+      const done = await advance(saveRun(next));
+      expect(done.stage).toBe("awaiting_approval");
+      expect(agentRuns(run.id) - before).toBe(2); // 一次修訂 + 一次審查
+    });
+
+    it("補充意見加 noReview：修訂完直接定案，不再送審", async () => {
+      const run = await awaiting("f-replan-note-noreview");
+      const before = agentRuns(run.id);
+      const done = await advance(saveRun(replanRun(run, { note: "補充", noReview: true })));
+      expect(done.stage).toBe("awaiting_approval");
+      expect(done.skipPlanReview).toBeUndefined();
+      expect(agentRuns(run.id) - before).toBe(1);
+    });
+
+    it("手改計畫、沒有補充意見：回計畫審查，不呼叫修訂者", async () => {
+      const run = await awaiting("f-replan-hand");
+      writeFileSync(join(flowDir(run.id), "plan.md"), "# 計畫\n\n手動補了一段說明\n");
+      const before = agentRuns(run.id);
+      const next = replanRun(run, {});
+      expect(next.stage).toBe("plan_review");
+      const done = await advance(saveRun(next));
+      expect(done.stage).toBe("awaiting_approval");
+      expect(agentRuns(run.id) - before).toBe(1);
+    });
+
+    it("手改計畫加 noReview：只做格式檢查就定案，零 agent 呼叫", async () => {
+      const run = await awaiting("f-replan-hand-noreview");
+      const before = agentRuns(run.id);
+      const next = replanRun(run, { noReview: true });
+      expect(next.stage).toBe("awaiting_approval");
+      expect(agentRuns(run.id)).toBe(before);
+    });
   });
 });
 

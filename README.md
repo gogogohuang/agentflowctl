@@ -44,6 +44,13 @@ npx agentflowctl run --req-file ./requirement.md
 
 流程預設會自動往下走。想在計畫通過審查後親自確認，可加 `--manual-plan`；確認後執行 `agentflowctl approve <id>`。
 
+**計畫有疑慮時不必整份重寫。** 兩種方式可以並用：
+
+- **補充意見**：`agentflowctl replan <id> --note "T-2 要改用既有的 helper"`（長的意見用 `--note-file <路徑>`）。意見會以「人工補充意見」交給計畫修訂者，只改相關的任務與段落，其餘原樣保留，比重跑計畫省 token。
+- **手改計畫檔**：直接編輯 `.agentflowctl/worktrees/<id>/.flow/` 的 `spec.md`、`acceptance.json`、`plan.md`、`tasks.json`，再執行 `agentflowctl replan <id>`。程式會重新檢查格式、驗收條件對應與任務相依；沒通過就印出原因、不改 run，修好再執行一次即可。
+
+改完預設回到計畫審查（分層審查只重審有變動的群；內容沒變的審查結果直接沿用）。加 `--no-review` 則不再送審：補充意見改完直接定案，手改的只做格式檢查，不呼叫任何 agent。完成後回到 `awaiting_approval`，確認後照常 `approve`。`replan` 適用於等待核准，以及停在計畫階段（暫停或失敗）的 run。
+
 需要先取用某個階段的產出時，可用 `--stop-after <階段>`。可選停點是 `spec`（規格）、`plan`（計畫審查完成）、`implement`（所有任務完成）、`verify`（測試與 checks 通過）、`review`（程式碼審查完成）或 `pr`（PR 流程完成）。除了 `pr` 會照常結束外，其他停點完成後會進入 `paused`，可檢視 worktree 與 `.flow/` 檔案，再執行 `agentflowctl resume <id>` 從下一階段接續；`--manual-plan` 與 `--stop-after` 不能同時使用。
 
 agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。偵測到的 `lint` 與 `typecheck`（`type-check`）檢查只在最後整支分支的驗證才跑，每個任務的驗證不跑；`lint` 只檢查整支分支相對基底分支改過的程式檔（排除 `.flow/`，沒有可檢查的檔案就略過；一律沿用專案原本的 lint 設定，agentflowctl 不會修改任何 eslint 設定檔，只在指令列略過自己產生的 `.flow/`、`.agentflowctl/`），型別檢查仍是整個專案（`tsc` 無法只檢查部分檔案）。`package.json` 沒有對應 script 時直接略過，不會退回 `npx eslint .` 或 `npx tsc --noEmit`；要沿用舊行為，請在 `flow.config.json` 自行寫 `checks`。同一次驗證裡，install 先跑完，其餘檢查預設同時執行（`checksConcurrency` 可限制同時數量，`1` 為一次一個）；結果與 log 仍照設定順序列出。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。
@@ -78,7 +85,7 @@ agentflowctl resume f-xxxx         # 從暫停、中斷或失敗處接續
 | 狀況 | 下一步 |
 | --- | --- |
 | 按 Ctrl-C，或終端機意外關閉 | 執行 `agentflowctl resume <id>`；沒有結束紀錄的步驟會重跑 |
-| `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>` |
+| `awaiting_approval`：計畫等你確認 | 閱讀 `.agentflowctl/worktrees/<id>/.flow/plan.md`，確認後執行 `agentflowctl approve <id>`；有疑慮就補充意見或手改計畫檔後執行 `agentflowctl replan <id>` |
 | `paused`：agent 額度用完 | 等額度恢復後執行 `agentflowctl resume <id>`；審查步驟不會換 agent 代審。在仲裁途中暫停時，resume 直接回到仲裁，不重跑計畫審查；暫停期間若改了計畫檔，或在 `flow.config.json` 把 `planArbiter` 關掉，就改成重新審查 |
 | `paused`：已完成指定停點 | 依 `status` 顯示的下一階段檢視產出，再執行 `agentflowctl resume <id>` 接續；run 會保留原本的停點設定 |
 | `failed`：仲裁連續沒有產生有效裁決 | 仲裁者沒寫出 `.flow/plan-arbiter.json`、格式錯誤或交接無效時不會暫停，會把原因寫進 `.flow/feedback.md` 並自動重跑仲裁（不重跑計畫審查）；無效的檔案移到 `.agentflowctl/runs/<id>/reviews/plan-arbiter-<輪>-<agent>-invalid.json`。連續達重試上限才失敗，查看 log 後執行 `agentflowctl resume <id>` 會再回到仲裁 |
@@ -105,7 +112,7 @@ agentflowctl resume f-xxxx
 
 ### 指令分層
 
-指令分三層：**執行**（`run`、`approve`、`resume`、`cancel`、`clean`）、**檢視**（`status`、`confirmations`、`list`、`logs`、`stats`、`insights`），以及全部放在 `config` 底下的**設定**：
+指令分三層：**執行**（`run`、`approve`、`replan`、`resume`、`cancel`、`clean`）、**檢視**（`status`、`confirmations`、`list`、`logs`、`stats`、`insights`），以及全部放在 `config` 底下的**設定**：
 
 ```
 config agent list | add | set | remove | cycle | setup   管理 agent 與參與名單
@@ -121,6 +128,7 @@ config doctor                                             檢查 CLI 是否可�
 | 指令或選項 | 怎麼設定 |
 | --- | --- |
 | `run --req "..."` / `--req-file <檔案>` | 二選一，直接輸入需求或讀取檔案 |
+| `replan <id> --note <文字>`／`--note-file <路徑>`／`--no-review` | 補充意見或手改計畫檔後重做計畫，見「計畫有疑慮時不必整份重寫」；`--no-review` 改完不再送審 |
 | `run --manual-plan` | 計畫通過審查後等待你確認，再用 `approve <id>` 繼續 |
 | `run --stop-after <階段>` | 在 `spec`、`plan`、`implement`、`verify` 或 `review` 完成後暫停；`pr` 會完成 PR 流程並結束。與 `--manual-plan` 互斥 |
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
