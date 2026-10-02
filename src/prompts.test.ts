@@ -105,4 +105,10 @@ describe("prompts", () => {
     expect(arbiter).toContain(".flow/feedback.md");
     expect(renderPrompt("plan-review", vars)).toContain(".flow/plan-replies.md");
   });
+
+  it.each(["implement-code", "implement-tests"])("%s 要求沒修改時不重跑同一個指令，修改後仍可重跑", (name) => {
+    const text = renderPrompt(name, vars);
+    expect(text).toContain("沒有修改任何檔案時，不要重跑同一個指令");
+    expect(text).toContain("修改後可以再跑一次確認");
+  });
 });
