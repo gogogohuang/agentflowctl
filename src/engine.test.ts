@@ -35,6 +35,9 @@ const { mergeHandoff, readHandoff } = await import("./handoff.js");
 const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
 const { addRetry, agentRuns, getRun, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
 
+// 會連續啟動多個 node 子程序的測試，本機約 2 到 3 秒；CI 的 macOS 較慢，預設 5 秒不夠
+const SLOW_TEST_MS = 30_000;
+
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
 beforeEach(() => resetQuotaState());
 
@@ -2096,7 +2099,7 @@ ${APPROVE}
     expect(models.filter((m) => m === "plan-review:small")).toHaveLength(1);
     expect(models.filter((m) => m === "plan-review-group:small")).toHaveLength(2); // G-1 與 G-2 的第一次
     expect(models.filter((m) => m === "plan-review-group:large")).toHaveLength(1); // 只有 G-2 的重審升級
-  });
+  }, SLOW_TEST_MS);
 });
 
 describe("lint 與型別檢查只在最後驗證", () => {
@@ -2176,7 +2179,7 @@ describe("lint 與型別檢查只在最後驗證", () => {
     const run = await concurrentRun("f-chk-serial", { checksConcurrency: 1 });
     const report = await runChecks(run);
     expect(report).toContain("one 失敗");
-  });
+  }, SLOW_TEST_MS);
 
   it("withFiles：npm run 用 -- 轉給 script，檔名加引號", () => {
     expect(withFiles("pnpm run lint", ["src/a.ts"])).toBe("pnpm run lint 'src/a.ts'");
