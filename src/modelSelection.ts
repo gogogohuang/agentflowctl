@@ -60,7 +60,7 @@ export function stageOfStep(step: string): ModelStage | undefined {
   if (task) return ({ tests: "taskTests", code: "taskCode", review: "taskReview", fix: "taskFix" } as const)[task[1] as "tests" | "code" | "review" | "fix"];
   if (/^T-\d+-diverge(?:-[a-z]+)?$/.test(step)) return "diverge";
   const stage: Record<string, ModelStage> = {
-    spec: "spec", plan: "plan", "plan-review": "planReview", "plan-review-group": "planReview", "plan-fix": "planFix",
+    spec: "spec", detect: "spec", plan: "plan", "plan-review": "planReview", "plan-review-group": "planReview", "plan-fix": "planFix",
     "plan-arbiter": "planArbiter", fix: "fix", review: "review",
   };
   return stage[step];

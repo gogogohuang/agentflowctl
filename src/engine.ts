@@ -613,56 +613,53 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
   if (detectProjectDefaults(root).ecosystem !== "unknown") return;
   const fingerprint = detectFingerprint(root);
   if (readDetected(root)?.fingerprint === fingerprint) return;
-  const agent = specAgent(run.cycle, run.id);
-  info(run, `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查`);
-  let outcome: StepOutcome;
   try {
-    outcome = await agentStep(run, agent, "detect", renderPrompt("detect", {}), { kind: "write" });
-  } catch (error) {
-    if (error instanceof QuotaPause || error instanceof AgentBudgetError) {
-      info(run, `⚠️  ${error.message}；略過動態偵測`);
-      return;
+    const agent = specAgent(run.cycle, run.id);
+    info(run, `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查`);
+    const outcome = await agentStep(run, agent, "detect", renderPrompt("detect", {}), { kind: "write", pinned: true });
+    await discardChanges(worktreeDir(run.id)); // 只允許寫 .flow/
+    let proposal: DetectionProposal = { checks: [] };
+    const dropped: { field: string; reason: string }[] = [];
+    if (!outcome.r.ok) {
+      dropped.push({ field: "proposal", reason: `Agent 執行失敗：${outcome.r.summary}` });
+    } else {
+      const read = readJsonFile(flowFile(run, "detect-proposal.json"), DetectionProposal);
+      if (read.ok) proposal = read.data;
+      else dropped.push({ field: "proposal", reason: read.error });
     }
-    throw error;
-  }
-  await discardChanges(worktreeDir(run.id)); // 只允許寫 .flow/
-  let proposal: DetectionProposal = { checks: [] };
-  const dropped: { field: string; reason: string }[] = [];
-  if (!outcome.r.ok) {
-    dropped.push({ field: "proposal", reason: `Agent 執行失敗：${outcome.r.summary}` });
-  } else {
-    const read = readJsonFile(flowFile(run, "detect-proposal.json"), DetectionProposal);
-    if (read.ok) proposal = read.data;
-    else dropped.push({ field: "proposal", reason: read.error });
-  }
-  const validated = await withTempWorktree(run.id, "detect", async (ws) => {
-    const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
-    return validateProposal(proposal, {
-      files,
-      hasExecutable: (bin) => {
-        try {
-          execFileSync("sh", ["-c", 'command -v "$1"', "sh", bin], { cwd: ws.dir, stdio: "ignore" });
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      run: async (cmd) => {
-        try {
-          const r = await execShell(cmd, { cwd: ws.dir, timeoutMs: DETECT_COMMAND_TIMEOUT_MS });
-          return { ok: r.code === 0, output: `${r.stdout}\n${r.stderr}`.trim() };
-        } catch (error) {
-          return { ok: false, output: errorMessage(error) };
-        }
-      },
+    const validated = await withTempWorktree(run.id, "detect", async (ws) => {
+      const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
+      return validateProposal(proposal, {
+        files,
+        hasExecutable: (bin) => {
+          try {
+            execFileSync("sh", ["-c", 'command -v "$1"', "sh", bin], { cwd: ws.dir, stdio: "ignore" });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        run: async (cmd) => {
+          try {
+            const r = await execShell(cmd, { cwd: ws.dir, timeoutMs: DETECT_COMMAND_TIMEOUT_MS });
+            return { ok: r.code === 0, output: `${r.stdout}\n${r.stderr}`.trim() };
+          } catch (error) {
+            return { ok: false, output: errorMessage(error) };
+          }
+        },
+      });
     });
-  });
-  const allDropped = [...dropped, ...validated.dropped];
-  writeDetected(root, { ...validated, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
-  const kept = [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
-    ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`].filter(Boolean);
-  info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}` : "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈");
-  for (const d of allDropped) info(run, `   ✗ ${d.field}：${d.reason}（可在 flow.config.json 手動設定）`);
+    const allDropped = [...dropped, ...validated.dropped];
+    writeDetected(root, { ...validated, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
+    const kept = [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
+      ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`].filter(Boolean);
+    info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}` : "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈");
+    for (const d of allDropped) info(run, `   ✗ ${d.field}：${d.reason}（可在 flow.config.json 手動設定）`);
+  } catch (error) {
+    // 選配功能：任何失敗都只警告，不寫指紋（下次 run 會再試）；額度或次數不足則安靜略過
+    const skip = error instanceof QuotaPause || error instanceof AgentBudgetError;
+    info(run, `⚠️  ${skip ? "" : "動態偵測失敗："}${errorMessage(error)}${skip ? "；略過動態偵測" : ""}`);
+  }
 }
 
 async function specStage(run: FlowRun): Promise<FlowRun> {
