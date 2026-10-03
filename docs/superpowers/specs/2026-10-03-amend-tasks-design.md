@@ -29,13 +29,13 @@
 - 格式通過 `AmendRequest`。
 - `target` 在已合併集合（`doneSet`）內，且不是請求者自己，也不是尚在進行的修補任務。
 - 該 target 已被修補的次數小於 `maxAmendments`（`flow.config.json`，預設 2）。
-- 預算足夠：修補任務計入 `maxAgentRuns`（定案時的「已執行次數＋任務數×`agentRunsPerTask`」規則）。
+- 套用時預算加碼：`maxAgentRuns` 加上 `agentRunsPerTask`（run／resume 明確指定過上限、即 `maxAgentRunsExplicit` 為真時不加）。
 
-不通過時用 `retry()` 把原因寫進 `feedback.md`，請求者重寫；連續超過 `maxAttempts` 照舊讓 run 失敗。達到修補上限則丟新的 `AmendLimitPause`，run 暫停，`stopReport` 印出被修補多次的任務與請求原因，並提示 `resume` 或 `replan`。
+不通過時用 `retry()` 把原因寫進 `feedback.md`，請求者重寫；連續超過 `maxAttempts` 照舊讓 run 失敗。達到修補上限則丟既有的 `QuotaPause`，訊息說明被修補的任務與下一步，run 暫停，`stopReport` 印出被修補多次的任務與請求原因，並提示 `resume` 或 `replan`。
 
 ### 3. 插入修補任務
 
-產生 `TaskItem`：`id` 為 `<target>-A<n>`、`kind` 為 `amend`（`TaskItem.kind` 新增此值）、`dependsOn: [target]`，驗收條件取自請求的 `acceptance`。寫入 `.flow/tasks.ordered.json`，並把請求者的 `dependsOn` 加上修補任務。`tasks.json` 不動；修補紀錄存 run 目錄的 `amendments.json`（`dump.ts` 的 `RUN_ENTRIES` 同步）。
+產生 `TaskItem`：`id` 為下一個編號 `T-<最大編號+1>`（`TaskItem.id` 規則為 `^T-\d+$`）、`kind` 為 `amend`（`TaskItem.kind` 新增此值）、新增 `amendOf` 欄位記 target、`dependsOn: [target]`。驗收條件：請求的 `acceptance` 文字由引擎追加到 `acceptance.json` 成為新的 AC 項目（相同描述重用既有 id），任務的 `acceptance` 寫這些 AC id。寫入 `.flow/tasks.ordered.json`，並把請求者的 `dependsOn` 加上修補任務。`tasks.json` 不動；修補次數記在 `FlowRun.amendments`。
 
 `tasks.ordered.json` 已在 `LOCKED_FILES`，agent 直接改仍會被還原，只有引擎的插入路徑能改。
 
@@ -53,14 +53,15 @@
 ## 錯誤與邊界
 
 - 請求無效：`retry()` 寫進 `feedback.md`。
-- 達修補上限：`AmendLimitPause`。
+- 達修補上限：丟既有的 `QuotaPause`。
 - 修補任務自己失敗：沿用既有的任務失敗流程。
 - 修補任務又提出請求：可指向更早的任務，不可指向修補中的任務本身（避免環）。
-- 中斷與 resume：順序固定為「寫 `amendments.json` → 改 `tasks.ordered.json` → 重置請求者車道」；插入以修補 id 是否已存在做冪等判斷，任一步之後中斷都不會重複插入。
+- 中斷與 resume：順序固定為「改 `tasks.ordered.json` → 記 `FlowRun.amendments` → 重置請求者車道」；以「kind 為 amend、amendOf 與 description 都相同的任務是否已存在」判斷是否已套用，任一步之後中斷都不會重複插入。
 
 ## 測試（vitest，與原始碼同目錄）
 
 - `schemas.test.ts`：`AmendRequest` 驗證；沒有 `amendments` 的舊 `state.json` 可讀入。
+- `amend.test.ts`：`decideAmend` 的各種判斷。
 - `lanes.test.ts`：插入修補任務後 `readyTasks` 讓它先就緒，請求者被擋到它合併之後。
 - engine 層：請求被接受、各種拒絕原因、達上限暫停、冪等 resume；用真的 git repo 驗證請求者車道重置。
 - `roles.test.ts`：修補任務的作者與審查者輪替和順序執行一致（`taskPosition`）。
