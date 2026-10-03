@@ -30,15 +30,15 @@
 ## 內建偵測
 | 類型 | 辨識 | install／test／checks | testPattern |
 |---|---|---|---|
-| Node | `package.json` | 現有（含 PR #71：非 Vite 無 build script 就略過 build） | 現有 |
-| Python | `pyproject.toml`、`requirements*.txt`、`setup.py` | 依 `uv.lock`／`poetry.lock`／pip 選套件管理器；`pytest`；ruff／mypy 只在 pyproject 有設定時加為最後驗證 | `(^\|/)(test_[^/]*\|[^/]*_test)\.py$` |
+| Node | `package.json`，或任一 Node lockfile | 現有（含 PR #71：非 Vite 無 build script 就略過 build） | 現有 |
+| Python | `pyproject.toml`、`requirements*.txt`、`setup.py` | 依 `uv.lock`／`poetry.lock`／pip 選套件管理器；`pytest`；ruff 只在 pyproject（或 ruff.toml）有設定時加為最後驗證（mypy 先不做：`changedOnly` 目前只認 JS/TS 檔） | `(^\|/)(test_[^/]*\|[^/]*_test)\.py$` |
 | Go | `go.mod` | `go mod download`／`go test ./...`／`go vet ./...`（最後驗證）／`go build ./...` | `_test\.go$` |
 | Rust | `Cargo.toml` | `cargo fetch`／`cargo test`／`cargo clippy`（最後驗證）／`cargo build` | `(^\|/)tests/.*\.rs$\|_test\.rs$` |
 
 已知限制：Rust 單元測試寫在原始碼內時，紅燈可能被判定沒寫測試；之後另案處理。
 
 ## 動態產生（僅在專案類型未知時）
-「未知」＝沒有 `package.json`，也不是 Python／Go／Rust。
+「未知」＝沒有 `package.json` 與 Node lockfile，也不是 Python／Go／Rust（含空資料夾）。未知專案在動態結果出現前，install 為 no-op（`true`）、checks 為空、不走紅綠燈。
 
 **時機**：run 建立後、第一個階段前（`cli.ts` 印出偵測結果處）。條件：`detected.json` 不存在，或指紋改變。
 **指紋**：特徵檔內容的雜湊，特徵檔為 `Makefile`、`justfile`、`CMakeLists.txt`、`pom.xml`、`build.gradle*`、`*.sln`／`*.csproj`、`Gemfile`、`composer.json`、`mix.exs`、`.github/workflows/*.yml`。
