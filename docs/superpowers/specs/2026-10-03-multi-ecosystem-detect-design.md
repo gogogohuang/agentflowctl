@@ -67,6 +67,6 @@
 - `README.md`、`docs/workflow.md`、`docs/configuration.md`：同步說明。
 - 測試：`detect.test.ts` 各類型與判定、`generateDetected.test.ts`（以注入的假 agent 與假指令驗證各欄位的保留與丟棄）。
 
-## 實作順序（建議拆成獨立 PR）
+## 實作順序（同一個 PR，依序提交）
 1. 內建 Python／Go／Rust 偵測＋測試框架判定＋ testPattern 偵測（純函式，不花用量）。
 2. 動態產生與驗證＋ `detected.json`。
