@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectFingerprint, effectiveDefaults, overlayGenerated, readDetected, writeDetected } from "./detectedFile.js";
-import { detectProjectDefaults, NO_INSTALL } from "./detect.js";
+import { detectProjectDefaults, NO_INSTALL, withProjectDefaults } from "./detect.js";
 import type { DetectedFile } from "./schemas.js";
 
 const project = (files: Record<string, string>) => {
@@ -34,6 +34,15 @@ describe("detectFingerprint", () => {
   });
 });
 
+describe("detectFingerprint 容錯", () => {
+  it(".github/workflows 是檔案時不丟例外", () => {
+    const dir = project({});
+    mkdirSync(join(dir, ".github"));
+    writeFileSync(join(dir, ".github", "workflows"), "不是目錄");
+    expect(() => detectFingerprint(dir)).not.toThrow();
+  });
+});
+
 describe("readDetected／writeDetected", () => {
   it("寫入後讀得回來；沒有檔案或格式不合回傳 undefined", () => {
     const dir = project({});
@@ -46,6 +55,16 @@ describe("readDetected／writeDetected", () => {
 });
 
 describe("effectiveDefaults", () => {
+  it("overlayGenerated：沒有 test 時不走紅綠燈，其餘檢查照常保留", () => {
+    const dir = project({ Makefile: "x" });
+    const g = file(dir, { checks: [{ name: "unit-tests", cmd: "make test" }] });
+    const d = overlayGenerated(detectProjectDefaults(dir), g);
+    expect(d.testFramework).toBe(false);
+    expect(d.checks).toEqual([{ name: "unit-tests", cmd: "make test" }]);
+    const kept = withProjectDefaults({}, d) as { checks: { name: string }[] };
+    expect(kept.checks.map((c) => c.name)).toEqual(["unit-tests"]);
+  });
+
   it("未知類型且指紋相符時疊上動態結果：有 test 就走紅綠燈", () => {
     const dir = project({ Makefile: "test:\n\ttrue\n" });
     writeDetected(dir, file(dir, { install: "make deps", test: "make test", checks: [{ name: "lint", cmd: "make lint", finalOnly: true }], testPattern: "_spec\\.rb$" }));

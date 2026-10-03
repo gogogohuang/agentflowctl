@@ -1,3 +1,4 @@
+import { tail } from "./util.js";
 import type { DetectedFile, DetectionProposal } from "./schemas.js";
 
 export interface ValidateDeps {
@@ -28,7 +29,9 @@ async function tryCommand(cmd: string, deps: ValidateDeps): Promise<Verdict> {
   const bin = firstExecutable(cmd);
   if (!bin || !deps.hasExecutable(bin)) return { ok: false, reason: `找不到可執行檔：${bin ?? cmd}` };
   const result = await deps.run(cmd);
-  return result.ok ? { ok: true } : { ok: false, reason: `在基底上沒有通過：${cmd}` };
+  if (result.ok) return { ok: true };
+  const output = tail(result.output, 400).trim();
+  return { ok: false, reason: `在基底上沒有通過：${cmd}${output ? `\n${output}` : ""}` };
 }
 
 /**
@@ -43,9 +46,10 @@ export async function validateProposal(p: DetectionProposal, deps: ValidateDeps)
     if (v.ok) out.install = p.install;
     else dropped.push({ field: "install", reason: v.reason });
   }
+  let passedTest: string | undefined;
   if (p.test !== undefined) {
     const v = await tryCommand(p.test, deps);
-    if (v.ok) out.test = p.test;
+    if (v.ok) passedTest = p.test;
     else dropped.push({ field: "test", reason: v.reason });
   }
   for (const check of p.checks ?? []) {
@@ -64,6 +68,15 @@ export async function validateProposal(p: DetectionProposal, deps: ValidateDeps)
       }
     } catch {
       dropped.push({ field: "testPattern", reason: `不是合法的正規表示式：${p.testPattern}` });
+    }
+  }
+  if (passedTest !== undefined) {
+    if (out.testPattern !== undefined) {
+      out.test = passedTest;
+    } else {
+      // 沒有 testPattern 就無法要求測試檔命名，走紅綠燈會卡死；改當每個任務都跑的一般檢查
+      dropped.push({ field: "test", reason: "沒有可用的 testPattern，無法走紅綠燈；改當一般檢查執行" });
+      if (!out.checks.some((c) => c.name === "unit-tests")) out.checks.unshift({ name: "unit-tests", cmd: passedTest });
     }
   }
   return out;

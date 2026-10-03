@@ -29,6 +29,8 @@ describe("dumpRun", () => {
     mkdirSync(flowDir("d-a"), { recursive: true });
     writeFileSync(join(flowDir("d-a"), "spec.md"), "# spec");
     writeFileSync(join(projectRoot(), "flow.config.json"), '{"maxAttempts":4}');
+    mkdirSync(join(projectRoot(), ".agentflowctl"), { recursive: true });
+    writeFileSync(join(projectRoot(), ".agentflowctl", "detected.json"), '{"checks":[]}');
 
     const out = join(root, "out-a");
     await dumpRun("d-a", out);
@@ -37,6 +39,7 @@ describe("dumpRun", () => {
     expect(existsSync(join(out, "run", "state.json"))).toBe(true);
     expect(readFileSync(join(out, "flow", "spec.md"), "utf8")).toBe("# spec");
     expect(readFileSync(join(out, "flow.config.json"), "utf8")).toBe('{"maxAttempts":4}');
+    expect(readFileSync(join(out, "detected.json"), "utf8")).toBe('{"checks":[]}');
     const meta = JSON.parse(readFileSync(join(out, "meta.json"), "utf8"));
     expect(meta.runId).toBe("d-a");
     expect(meta.node).toBe(process.version);

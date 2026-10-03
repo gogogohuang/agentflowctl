@@ -25,6 +25,35 @@ describe("isTrivialCommand／firstExecutable", () => {
   });
 });
 
+describe("validateProposal：沒有可用 testPattern 的 test", () => {
+  const reason = "沒有可用的 testPattern，無法走紅綠燈；改當一般檢查執行";
+
+  it("test 通過但沒給 testPattern：不當 test，改放進 checks 的 unit-tests", async () => {
+    const out = await validateProposal({ test: "bundle exec rspec", checks: [{ name: "lint", cmd: "make lint" }] }, deps());
+    expect(out.test).toBeUndefined();
+    expect(out.checks).toEqual([{ name: "unit-tests", cmd: "bundle exec rspec" }, { name: "lint", cmd: "make lint" }]);
+    expect(out.dropped).toEqual([{ field: "test", reason }]);
+  });
+
+  it("testPattern 被驗證丟掉時同樣降級", async () => {
+    const out = await validateProposal({ test: "make test", testPattern: "([" }, deps());
+    expect(out.test).toBeUndefined();
+    expect(out.checks).toEqual([{ name: "unit-tests", cmd: "make test" }]);
+    expect(out.dropped.map((d) => d.field)).toEqual(["testPattern", "test"]);
+  });
+});
+
+describe("validateProposal 失敗輸出", () => {
+  it("丟棄原因附上輸出尾巴（限制長度）", async () => {
+    const output = "x".repeat(1000) + "FINAL-ERROR";
+    const out = await validateProposal({ test: "make test", testPattern: "a" }, deps({ fail: ["make test"], run: async () => ({ ok: false, output }) }));
+    const r = out.dropped[0].reason;
+    expect(r.startsWith("在基底上沒有通過：make test")).toBe(true);
+    expect(r).toContain("FINAL-ERROR");
+    expect(r.length).toBeLessThan(600);
+  });
+});
+
 describe("validateProposal", () => {
   it("全部通過時原樣保留，且先 install 再 test 再 checks", async () => {
     const d = deps();
@@ -59,7 +88,7 @@ describe("validateProposal", () => {
 
   it("install 沒通過仍會嘗試 test（有些專案不需要安裝）", async () => {
     const d = deps({ fail: ["make deps"] });
-    const out = await validateProposal({ install: "make deps", test: "make test" }, d);
+    const out = await validateProposal({ install: "make deps", test: "make test", testPattern: "_spec\\.rb$" }, d);
     expect(out.install).toBeUndefined();
     expect(out.test).toBe("make test");
     expect(d.ran).toEqual(["make deps", "make test"]);

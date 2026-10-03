@@ -610,10 +610,13 @@ const DETECT_COMMAND_TIMEOUT_MS = 5 * 60_000;
  */
 export async function detectWithAgent(run: FlowRun): Promise<void> {
   const root = projectRoot();
-  if (detectProjectDefaults(root).ecosystem !== "unknown") return;
-  const fingerprint = detectFingerprint(root);
-  if (readDetected(root)?.fingerprint === fingerprint) return;
   try {
+    if (detectProjectDefaults(root).ecosystem !== "unknown") return;
+    // 手寫設定已經四個欄位都有：偵測結果用不到，不花 agent 次數
+    const rawConfig = existsSync(join(root, "flow.config.json")) ? readJsonFile(join(root, "flow.config.json"), z.record(z.string(), z.unknown())) : undefined;
+    if (rawConfig?.ok && ["install", "test", "checks", "testPattern"].every((k) => k in rawConfig.data)) return;
+    const fingerprint = detectFingerprint(root);
+    if (readDetected(root)?.fingerprint === fingerprint) return;
     const agent = specAgent(run.cycle, run.id);
     info(run, `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查`);
     const outcome = await agentStep(run, agent, "detect", renderPrompt("detect", {}), { kind: "write", pinned: true });
@@ -627,6 +630,10 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       if (read.ok) proposal = read.data;
       else dropped.push({ field: "proposal", reason: read.error });
     }
+    // 提案的指令會在主機上直接執行（不在 agent 沙箱內），先印出來讓使用者看得到
+    const proposed = [proposal.install && `install：${proposal.install}`, proposal.test && `test：${proposal.test}`,
+      ...(proposal.checks ?? []).map((c) => `checks.${c.name}：${c.cmd}`)].filter(Boolean);
+    if (proposed.length) info(run, `🔎 agent 提出的指令（將在主機上驗證執行）：${proposed.join("；")}`);
     const validated = await withTempWorktree(run.id, "detect", async (ws) => {
       const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
       return validateProposal(proposal, {
@@ -653,7 +660,7 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
     writeDetected(root, { ...validated, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
     const kept = [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
       ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`].filter(Boolean);
-    info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}` : "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈");
+    info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}（可複製進 flow.config.json 固定下來）` : "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈");
     for (const d of allDropped) info(run, `   ✗ ${d.field}：${d.reason}（可在 flow.config.json 手動設定）`);
   } catch (error) {
     // 選配功能：任何失敗都只警告，不寫指紋（下次 run 會再試）；額度或次數不足則安靜略過

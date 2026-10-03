@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectProjectDefaults, NO_INSTALL, type ProjectDefaults } from "./detect.js";
+import { detectedPathIn } from "./paths.js";
 import { DetectedFile } from "./schemas.js";
 
 /** 判斷未知類型專案「有沒有變」的特徵檔：內容都納入指紋 */
 const FINGERPRINT_FILES = ["Makefile", "justfile", "CMakeLists.txt", "pom.xml", "Gemfile", "composer.json", "mix.exs"];
 const FINGERPRINT_PATTERNS = [/^build\.gradle/, /\.sln$/, /\.csproj$/];
 
-const detectedFile = (root: string) => join(root, ".agentflowctl", "detected.json");
 
 function readText(path: string): string {
   try {
@@ -27,15 +27,17 @@ export function detectFingerprint(root: string): string {
   }
   const parts = [...names].sort().map((name) => `${name}\n${readText(join(root, name))}`);
   const workflows = join(root, ".github", "workflows");
-  if (existsSync(workflows)) {
+  try {
     for (const f of readdirSync(workflows).filter((f) => /\.ya?ml$/.test(f)).sort()) parts.push(`.github/workflows/${f}\n${readText(join(workflows, f))}`);
+  } catch {
+    // 沒有這個目錄、或它是檔案／不可讀：不納入指紋
   }
   return createHash("sha1").update(parts.join("\n--\n")).digest("hex");
 }
 
 export function readDetected(root: string): DetectedFile | undefined {
   try {
-    const parsed = DetectedFile.safeParse(JSON.parse(readFileSync(detectedFile(root), "utf8")));
+    const parsed = DetectedFile.safeParse(JSON.parse(readFileSync(detectedPathIn(root), "utf8")));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
@@ -44,7 +46,7 @@ export function readDetected(root: string): DetectedFile | undefined {
 
 /** 原子寫入：先寫暫存檔再改名，中斷時不會留下半份 JSON */
 export function writeDetected(root: string, file: DetectedFile): void {
-  const path = detectedFile(root);
+  const path = detectedPathIn(root);
   mkdirSync(join(root, ".agentflowctl"), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n");

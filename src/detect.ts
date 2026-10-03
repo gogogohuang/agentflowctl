@@ -222,12 +222,12 @@ function detectPython(root: string): ProjectDefaults {
     : has("poetry.lock")
       ? ["poetry", "poetry.lock", "poetry install --no-interaction", "poetry run "]
       : has("requirements.txt")
-        ? ["pip", "requirements.txt", "pip install -r requirements.txt", ""]
-        : ["pip", "pyproject.toml／setup.py", "pip install -e .", ""];
+        ? ["pip", "requirements.txt", "python3 -m pip install -r requirements.txt", ""]
+        : ["pip", "pyproject.toml／setup.py", "python3 -m pip install -e .", ""];
   const pytest = /\bpytest\b/.test(config) || has("pytest.ini") || has("conftest.py");
   const unittest = /\bunittest\b/.test(config);
   const testFiles = findFiles(root, new RegExp(PYTHON_TEST_PATTERN));
-  const test = `${run}${pytest ? "pytest" : "python -m unittest discover"}`;
+  const test = `${run}${pytest ? "pytest" : "python3 -m unittest discover"}`;
   const checks: Check[] = [{ name: "test", cmd: test }];
   if (/\[tool\.ruff/.test(text("pyproject.toml")) || has("ruff.toml") || has(".ruff.toml")) {
     checks.push({ name: "lint", cmd: `${run}ruff check .`, finalOnly: true });
@@ -257,17 +257,25 @@ export function withProjectDefaults(raw: unknown, detected: ProjectDefaults): un
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
   const { install, test } = detected;
   // 沒有測試框架也沒手動設定 test 時，預設的檢查不含 test
-  const checks = usesTestFramework(raw, detected) ? detected.checks : detected.checks.filter((c) => c.name !== "test");
+  let checks = usesTestFramework(raw, detected) ? detected.checks : detected.checks.filter((c) => c.name !== "test");
+  // 未知專案沒有偵測到任何檢查：手寫了 test 卻沒寫 checks 時，verify 也要跑它
+  const hand = raw as Record<string, unknown>;
+  if (detected.ecosystem === "unknown" && typeof hand.test === "string" && !("checks" in hand)) checks = [{ name: "test", cmd: hand.test }];
   return { install, test, checks, ...(detected.testPattern ? { testPattern: detected.testPattern } : {}), ...raw };
 }
 
 /** run 開始時印出的說明：只列出這次用了偵測結果的欄位 */
 export function describeDetected(raw: Record<string, unknown>, detected: ProjectDefaults): string[] {
-  if (detected.ecosystem === "unknown" && !("install" in raw) && !("test" in raw) && !("checks" in raw)) {
-    return ["ℹ️  未辨識專案類型（沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等），略過安裝、檢查與紅綠燈；在 flow.config.json 設定 install、test、checks 可改回來"];
+  const nothingDetected = detected.ecosystem === "unknown"
+    || (detected.ecosystem === "generated" && detected.install === NO_INSTALL && !detected.testFramework && !detected.checks.length && !detected.testPattern);
+  const framework = usesTestFramework(raw, detected);
+  if (nothingDetected) {
+    // 沒有任何偵測結果可說明：只有在手動設定也沒給出測試時才提醒
+    if (framework || "checks" in raw) return [];
+    const why = detected.ecosystem === "generated" ? "動態偵測沒有可用結果" : "沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等";
+    return [`ℹ️  未辨識專案類型（${why}），略過安裝、檢查與紅綠燈；在 flow.config.json 設定 install、test、checks 可改回來`];
   }
   const lines: string[] = [];
-  const framework = usesTestFramework(raw, detected);
   if (!("install" in raw)) lines.push(`   install：${detected.install}`);
   if (!("test" in raw) && framework) lines.push(`   test：${detected.test}`);
   if (!("checks" in raw)) lines.push(...detected.checks.filter((c) => framework || c.name !== "test").map((c) => `   checks.${c.name}：${c.cmd}${c.finalOnly ? "（只在最後驗證，" + (c.changedOnly ? "只檢查改過的檔案）" : "整個專案）") : ""}`));

@@ -211,14 +211,14 @@ describe("detectProjectDefaults：Python", () => {
     const d = detectProjectDefaults(project({ "requirements.txt": "pytest>=8\n" }));
     expect(d.ecosystem).toBe("python");
     expect(d.manager).toBe("pip");
-    expect(d.install).toBe("pip install -r requirements.txt");
+    expect(d.install).toBe("python3 -m pip install -r requirements.txt");
     expect(d.test).toBe("pytest");
     expect(d.checks).toEqual([{ name: "test", cmd: "pytest" }]);
     expect(d.testFramework).toBe(true);
   });
 
   it("只有 pyproject.toml 時用 pip install -e .", () => {
-    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).install).toBe("pip install -e .");
+    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).install).toBe("python3 -m pip install -e .");
   });
 
   it("uv 與 poetry：依 lockfile 選安裝與執行前綴", () => {
@@ -228,7 +228,7 @@ describe("detectProjectDefaults：Python", () => {
     expect(uv.test).toBe("uv run pytest");
     const poetry = detectProjectDefaults(project({ ...pyproject("[tool.poetry]\n"), "poetry.lock": "", "test_a.py": "" }));
     expect(poetry.install).toBe("poetry install --no-interaction");
-    expect(poetry.test).toBe("poetry run python -m unittest discover");
+    expect(poetry.test).toBe("poetry run python3 -m unittest discover");
   });
 
   it("沒有測試框架字樣也沒有測試檔時視為沒有測試框架；有 test_*.py 就有", () => {
@@ -249,6 +249,20 @@ describe("detectProjectDefaults：Python", () => {
     expect(re.test("tests/test_a.py")).toBe(true);
     expect(re.test("pkg/a_test.py")).toBe(true);
     expect(re.test("pkg/a.py")).toBe(false);
+  });
+});
+
+describe("withProjectDefaults：未知專案手寫 test", () => {
+  const unknown = detectProjectDefaults(project({}));
+
+  it("手寫 test、沒寫 checks 時補一個 test 檢查", () => {
+    const out = withProjectDefaults({ test: "make test" }, unknown) as { checks: unknown[] };
+    expect(out.checks).toEqual([{ name: "test", cmd: "make test" }]);
+  });
+
+  it("有手寫 checks 時以手寫為準", () => {
+    const out = withProjectDefaults({ test: "make test", checks: [] }, unknown) as { checks: unknown[] };
+    expect(out.checks).toEqual([]);
   });
 });
 
@@ -317,6 +331,21 @@ describe("describeDetected", () => {
 
   it("三個欄位都手動設定時不輸出", () => {
     expect(describeDetected({ install: "x", test: "y", checks: [] }, detected)).toEqual([]);
+  });
+
+  it("未知類型：什麼都沒設時印未辨識訊息；只手設部分欄位時不印偵測標頭", () => {
+    const unknown = detectProjectDefaults(project({}));
+    expect(describeDetected({}, unknown)[0]).toContain("未辨識專案類型");
+    const partial = describeDetected({ test: "make test" }, unknown).join("\n");
+    expect(partial).not.toContain("（未辨識）");
+    expect(partial).not.toContain("沒有可辨識的專案檔");
+  });
+
+  it("動態偵測全被丟掉時印未辨識訊息，不印 install：true", () => {
+    const generated = { ...detectProjectDefaults(project({})), ecosystem: "generated" as const, manager: "動態偵測", source: ".agentflowctl/detected.json", testFramework: false };
+    const lines = describeDetected({}, generated);
+    expect(lines.join("\n")).toContain("未辨識專案類型");
+    expect(lines.join("\n")).not.toContain("install：true");
   });
 
   it("非 Node 專案會列出偵測到的 testPattern", () => {
