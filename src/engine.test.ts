@@ -35,10 +35,10 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enable
 }));
 
 const { addWorktree, commitAll, git } = await import("./git.js");
-const { advance, canReplan, iterateRun, NO_WRITER_CONTEXT, replanRun, resetQuotaState, runChecks, TASK_RESET, withFiles } = await import("./engine.js");
+const { advance, canReplan, commitAgentWork, iterateRun, NO_WRITER_CONTEXT, replanRun, resetQuotaState, runChecks, TASK_RESET, withFiles } = await import("./engine.js");
 const { mergeHandoff, prepareHandoff, readHandoff } = await import("./handoff.js");
 const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
-const { addRetry, agentRuns, getRun, listFlaky, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
+const { addRetry, agentRuns, getRun, listFlaky, listRetries, listSideEffects, listSubstitutions, listUsage, saveRun } = await import("./store.js");
 
 // 會連續啟動多個 node 子程序的測試，本機約 2 到 3 秒；CI 的 macOS 較慢，預設 5 秒不夠
 const SLOW_TEST_MS = 30_000;
@@ -2807,7 +2807,7 @@ describe("lint 與型別檢查只在最後驗證", () => {
     const run = await concurrentRun("f-chk-parallel");
     expect(await runChecks(run)).toBeUndefined();
     const results = JSON.parse(readFileSync(join(flowDir(run.id), "verify.json"), "utf8")) as { name: string }[];
-    expect(results.map((r) => r.name)).toEqual(["install", "one", "two"].filter((n) => n !== "install"));
+    expect(results.map((r) => r.name).filter((n) => n !== "worktree-side-effects")).toEqual(["one", "two"]);
     const logs = readdirSync(logDir(run.id)).filter((f) => /-(one|two)-/.test(f));
     expect(logs).toHaveLength(2);
     expect(new Set(logs.map((f) => f.slice(0, 3))).size).toBe(2);
@@ -2819,12 +2819,45 @@ describe("lint 與型別檢查只在最後驗證", () => {
     expect(report).toContain("one 失敗");
   }, SLOW_TEST_MS);
 
+  describe("檢查指令改動工作樹的副作用", () => {
+    // 模擬「測試會覆寫專案檔案」：覆寫已追蹤的 base.txt、產生一個未追蹤檔
+    const polluting = `node -e "const fs=require('fs');fs.writeFileSync('base.txt','clobbered\\n');fs.writeFileSync('scratch.out','x')"`;
+
+    it("記進 side-effects.json、在 verify.json 註明且不擋關", async () => {
+      const run = await concurrentRun("f-chk-side", { checks: [{ name: "pollute", cmd: polluting }] });
+      expect(await runChecks(run)).toBeUndefined();
+      expect(listSideEffects(run.id).sort()).toEqual(["base.txt", "scratch.out"]);
+      const results = JSON.parse(readFileSync(join(flowDir(run.id), "verify.json"), "utf8")) as { name: string; ok: boolean; output: string }[];
+      expect(results.at(-1)).toMatchObject({ name: "worktree-side-effects", ok: true });
+      expect(results.at(-1)!.output).toContain("base.txt");
+    });
+
+    it("commit agent 的修改時，副作用路徑還原成基底內容、其他修改照常帶進去", async () => {
+      const run = await concurrentRun("f-chk-commit", { checks: [{ name: "pollute", cmd: polluting }] });
+      await runChecks(run);
+      const wt = worktreeDir(run.id);
+      writeFileSync(join(wt, "feature.txt"), "real work\n");
+      expect(await commitAgentWork(run, "feat: x")).toBeDefined();
+      expect(await git(wt, "show", "--name-only", "--format=", "HEAD")).toBe("feature.txt");
+      expect(readFileSync(join(wt, "base.txt"), "utf8")).toBe("base\n");
+      expect(existsSync(join(wt, "scratch.out"))).toBe(false);
+    });
+
+    it("沒有副作用就不加註記", async () => {
+      const run = await concurrentRun("f-chk-clean", { checks: [{ name: "ok", cmd: "true" }] });
+      await runChecks(run);
+      expect(listSideEffects(run.id)).toEqual([]);
+      const results = JSON.parse(readFileSync(join(flowDir(run.id), "verify.json"), "utf8")) as { name: string }[];
+      expect(results.map((r) => r.name)).toEqual(["ok"]);
+    });
+  });
+
   describe("失敗的檢查先原樣重跑一次", () => {
-    const counter = (id: string) => join(worktreeDir(id), "runs.txt");
+    const counter = (id: string) => join(flowDir(id), "runs.txt");
     const runs = (id: string) => readFileSync(counter(id), "utf8").trim().split("\n").length;
     /** 每次執行先記一筆；failTimes 次以內失敗 */
     const failing = (failTimes: number) =>
-      `node -e "const fs=require('fs');fs.appendFileSync('runs.txt','x\\n');const n=fs.readFileSync('runs.txt','utf8').trim().split('\\n').length;if(n<=${failTimes})process.exit(1)"`;
+      `node -e "const fs=require('fs');fs.appendFileSync('.flow/runs.txt','x\\n');const n=fs.readFileSync('.flow/runs.txt','utf8').trim().split('\\n').length;if(n<=${failTimes})process.exit(1)"`;
 
     it("第一次失敗、重跑通過：視為 flaky，放行並記進 flaky.jsonl", async () => {
       const run = await concurrentRun("f-chk-flaky", { checks: [{ name: "flaky", cmd: failing(1) }] });

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { addWorktree, changedFiles, commitAll, discardChanges, headCommit, removeWorktree, resetTo } from "./git.js";
+import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, headCommit, removeWorktree, resetTo, restorePaths } from "./git.js";
 
 let root: string;
 let wt: string;
@@ -23,6 +23,16 @@ describe("git 工具", () => {
     expect(existsSync(join(wt, "a.ts"))).toBe(true);
     expect(execFileSync("git", ["-C", root, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
     expect(readFileSync(join(root, ".git", "info", "exclude"), "utf8")).toContain(".agentflowctl/");
+  });
+
+  it("dirtyPaths 列出修改、新增與未追蹤的路徑；restorePaths 取回或刪除", async () => {
+    writeFileSync(join(wt, "a.ts"), "clobbered\n");
+    writeFileSync(join(wt, "new.txt"), "x\n");
+    expect((await dirtyPaths(wt)).sort()).toEqual(["a.ts", "new.txt"]);
+    await restorePaths(wt, "HEAD", ["a.ts", "new.txt"]);
+    expect(readFileSync(join(wt, "a.ts"), "utf8")).toBe("export const a = 1;\n");
+    expect(existsSync(join(wt, "new.txt"))).toBe(false);
+    expect(await dirtyPaths(wt)).toEqual([]);
   });
 
   it(".flow/ 不會被 commit，也不會被 reset 清掉", async () => {
