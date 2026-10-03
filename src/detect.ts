@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
@@ -10,16 +10,25 @@ import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./sche
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type Check = { name: string; cmd: string; finalOnly?: boolean; changedOnly?: boolean };
 
+export type Ecosystem = "node" | "python" | "go" | "rust" | "unknown" | "generated";
+
 export interface ProjectDefaults {
-  manager: PackageManager;
-  /** 判斷套件管理器的依據，給人看 */
+  ecosystem: Ecosystem;
+  /** 套件管理器或建置工具（npm、uv、go、cargo…） */
+  manager: string;
+  /** 判斷的依據，給人看 */
   source: string;
   install: string;
   test: string;
   checks: Check[];
-  /** package.json 看得出有測試框架；沒有就不做紅綠燈 */
+  /** 看得出有測試框架；沒有就不做紅綠燈 */
   testFramework: boolean;
+  /** 這類專案的測試檔命名；Node 不填，沿用 schema 預設 */
+  testPattern?: string;
 }
+
+/** 不需要安裝時的指令：install 在 `&&` 串接裡也要是合法的 shell */
+export const NO_INSTALL = "true";
 
 const LOCKFILES: [string, PackageManager][] = [
   ["pnpm-lock.yaml", "pnpm"],
@@ -105,7 +114,7 @@ const withExec = (cmd: string, manager: PackageManager) => cmd.replace(/^npx /, 
 const withArgs = (run: string, args: string, manager: PackageManager) =>
   `${run}${manager === "npm" ? " --" : ""} ${args}`;
 
-export function detectProjectDefaults(root: string): ProjectDefaults {
+function detectNode(root: string): ProjectDefaults {
   const pkg = readPackageJson(root);
   const { manager, source } = detectManager(root, pkg);
   const defaults = RepoConfig.parse({});
@@ -133,7 +142,46 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
   const testScript = scripts.test;
   const hasRealScript = typeof testScript === "string" && !/no test specified/i.test(testScript);
   const test = hasRealScript ? (checks.find((c) => c.name === "test")?.cmd ?? withExec(defaults.test, manager)) : withExec(defaults.test, manager);
-  return { manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg) };
+  return { ecosystem: "node", manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg) };
+}
+
+const SKIP_DIRS = new Set(["node_modules", ".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "venv", ".venv", "target", "dist", "build", "__pycache__"]);
+
+/** 有界遞迴找出符合的檔案（深度 6、最多看 5000 個檔），略過依賴與建置產物目錄 */
+export function findFiles(root: string, re: RegExp, max = 5000): string[] {
+  const found: string[] = [];
+  let visited = 0;
+  const walk = (dir: string, rel: string, depth: number) => {
+    if (depth > 6 || visited >= max) return;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (visited >= max) return;
+      const path = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name), path, depth + 1);
+      } else {
+        visited++;
+        if (re.test(path)) found.push(path);
+      }
+    }
+  };
+  walk(root, "", 0);
+  return found;
+}
+
+function detectUnknown(): ProjectDefaults {
+  return { ecosystem: "unknown", manager: "（未辨識）", source: "沒有可辨識的專案檔", install: NO_INSTALL, test: NO_INSTALL, checks: [], testFramework: false };
+}
+
+export function detectProjectDefaults(root: string): ProjectDefaults {
+  const has = (name: string) => existsSync(join(root, name));
+  if (has("package.json") || LOCKFILES.some(([file]) => has(file))) return detectNode(root);
+  return detectUnknown();
 }
 
 /** 手動設定 test 指令就當作有測試框架 */
@@ -151,6 +199,9 @@ export function withProjectDefaults(raw: unknown, detected: ProjectDefaults): un
 
 /** run 開始時印出的說明：只列出這次用了偵測結果的欄位 */
 export function describeDetected(raw: Record<string, unknown>, detected: ProjectDefaults): string[] {
+  if (detected.ecosystem === "unknown" && !("install" in raw) && !("test" in raw) && !("checks" in raw)) {
+    return ["ℹ️  未辨識專案類型（沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等），略過安裝、檢查與紅綠燈；在 flow.config.json 設定 install、test、checks 可改回來"];
+  }
   const lines: string[] = [];
   const framework = usesTestFramework(raw, detected);
   if (!("install" in raw)) lines.push(`   install：${detected.install}`);

@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { describeDetected, detectProjectDefaults, withProjectDefaults } from "./detect.js";
+import { describeDetected, detectProjectDefaults, findFiles, NO_INSTALL, withProjectDefaults } from "./detect.js";
 import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
 function project(files: Record<string, string | object>): string {
@@ -36,10 +36,10 @@ describe("detectProjectDefaults", () => {
     expect(names({ "package.json": {}, "index.html": "" })).toContain("build");
   });
 
-  it("有 build script 時一律跑它；沒有 package.json 的全新專案維持預設 build", () => {
+  it("有 build script 時一律跑它；空資料夾是未知類型，不跑任何檢查", () => {
     const d = detectProjectDefaults(project({ "package.json": { scripts: { build: "tsc" } } }));
     expect(d.checks.find((c) => c.name === "build")?.cmd).toBe("npm run build");
-    expect(detectProjectDefaults(project({})).checks.some((c) => c.name === "build")).toBe(true);
+    expect(detectProjectDefaults(project({})).checks).toEqual([]);
   });
 
   it("依依賴與 test script 判斷有沒有測試框架", () => {
@@ -52,8 +52,8 @@ describe("detectProjectDefaults", () => {
     expect(detectProjectDefaults(project({ "package.json": { scripts: { test: placeholder } } })).testFramework).toBe(false);
   });
 
-  it("沒有 package.json 時仍回傳 npm 的預設值", () => {
-    const d = detectProjectDefaults(project({}));
+  it("只有 lockfile 沒有 package.json 時仍回傳 npm 的預設值", () => {
+    const d = detectProjectDefaults(project({ "package-lock.json": "{}" }));
     expect(d.manager).toBe("npm");
     expect(d.install).toBe(RepoConfig.parse({}).install);
   });
@@ -140,6 +140,27 @@ describe("detectProjectDefaults", () => {
   it("package.json 不是合法 JSON 時退回 lockfile 判斷", () => {
     const d = detectProjectDefaults(project({ "package.json": "{", "pnpm-lock.yaml": "" }));
     expect(d.manager).toBe("pnpm");
+  });
+  it("沒有任何可辨識的專案檔（含空資料夾）時是未知類型：不安裝、沒有檢查、不走紅綠燈", () => {
+    const d = detectProjectDefaults(project({ "README.md": "# hi" }));
+    expect(d.ecosystem).toBe("unknown");
+    expect(d.install).toBe(NO_INSTALL);
+    expect(d.checks).toEqual([]);
+    expect(d.testFramework).toBe(false);
+    expect(d.testPattern).toBeUndefined();
+  });
+
+  it("只有 Node lockfile 沒有 package.json 仍視為 Node 專案", () => {
+    expect(detectProjectDefaults(project({ "pnpm-lock.yaml": "" })).ecosystem).toBe("node");
+  });
+
+  it("findFiles 略過 node_modules、.git、.agentflowctl 等目錄，並回傳以 / 分隔的相對路徑", () => {
+    const dir = project({ "a_test.go": "" });
+    mkdirSync(join(dir, "pkg"));
+    writeFileSync(join(dir, "pkg", "b_test.go"), "");
+    mkdirSync(join(dir, "node_modules"));
+    writeFileSync(join(dir, "node_modules", "c_test.go"), "");
+    expect(findFiles(dir, /_test\.go$/).sort()).toEqual(["a_test.go", "pkg/b_test.go"]);
   });
 });
 
