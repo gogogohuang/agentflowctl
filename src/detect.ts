@@ -145,6 +145,9 @@ function detectNode(root: string): ProjectDefaults {
   return { ecosystem: "node", manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg) };
 }
 
+const GO_TEST_PATTERN = String.raw`_test\.go$`;
+const RUST_TEST_PATTERN = String.raw`(^|/)tests/.*\.rs$|_test\.rs$`;
+
 const SKIP_DIRS = new Set(["node_modules", ".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "venv", ".venv", "target", "dist", "build", "__pycache__"]);
 
 /** 有界遞迴找出符合的檔案（深度 6、最多看 5000 個檔），略過依賴與建置產物目錄 */
@@ -174,6 +177,34 @@ export function findFiles(root: string, re: RegExp, max = 5000): string[] {
   return found;
 }
 
+function detectGo(root: string): ProjectDefaults {
+  return {
+    ecosystem: "go", manager: "go", source: "go.mod",
+    install: "go mod download", test: "go test ./...",
+    checks: [
+      { name: "test", cmd: "go test ./..." },
+      { name: "vet", cmd: "go vet ./...", finalOnly: true },
+      { name: "build", cmd: "go build ./..." },
+    ],
+    testFramework: findFiles(root, new RegExp(GO_TEST_PATTERN)).length > 0,
+    testPattern: GO_TEST_PATTERN,
+  };
+}
+
+function detectRust(root: string): ProjectDefaults {
+  return {
+    ecosystem: "rust", manager: "cargo", source: "Cargo.toml",
+    install: "cargo fetch", test: "cargo test",
+    checks: [
+      { name: "test", cmd: "cargo test" },
+      { name: "clippy", cmd: "cargo clippy", finalOnly: true },
+      { name: "build", cmd: "cargo build" },
+    ],
+    testFramework: findFiles(root, new RegExp(RUST_TEST_PATTERN)).length > 0,
+    testPattern: RUST_TEST_PATTERN,
+  };
+}
+
 function detectUnknown(): ProjectDefaults {
   return { ecosystem: "unknown", manager: "（未辨識）", source: "沒有可辨識的專案檔", install: NO_INSTALL, test: NO_INSTALL, checks: [], testFramework: false };
 }
@@ -181,6 +212,8 @@ function detectUnknown(): ProjectDefaults {
 export function detectProjectDefaults(root: string): ProjectDefaults {
   const has = (name: string) => existsSync(join(root, name));
   if (has("package.json") || LOCKFILES.some(([file]) => has(file))) return detectNode(root);
+  if (has("go.mod")) return detectGo(root);
+  if (has("Cargo.toml")) return detectRust(root);
   return detectUnknown();
 }
 

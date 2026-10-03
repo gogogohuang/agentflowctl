@@ -164,6 +164,46 @@ describe("detectProjectDefaults", () => {
   });
 });
 
+describe("detectProjectDefaults：Go 與 Rust", () => {
+  it("Go：go.mod 加上既有的 *_test.go 視為有測試框架", () => {
+    const d = detectProjectDefaults(project({ "go.mod": "module x\n", "a_test.go": "" }));
+    expect(d.ecosystem).toBe("go");
+    expect(d.install).toBe("go mod download");
+    expect(d.test).toBe("go test ./...");
+    expect(d.checks).toEqual([
+      { name: "test", cmd: "go test ./..." },
+      { name: "vet", cmd: "go vet ./...", finalOnly: true },
+      { name: "build", cmd: "go build ./..." },
+    ]);
+    expect(d.testFramework).toBe(true);
+    expect(new RegExp(d.testPattern!).test("pkg/a_test.go")).toBe(true);
+    expect(new RegExp(d.testPattern!).test("pkg/a.go")).toBe(false);
+  });
+
+  it("Go：還沒有任何 *_test.go 時視為沒有測試框架（不走紅綠燈）", () => {
+    expect(detectProjectDefaults(project({ "go.mod": "module x\n" })).testFramework).toBe(false);
+  });
+
+  it("Rust：Cargo.toml 加上 *_test.rs 視為有測試框架，沒有測試檔就沒有", () => {
+    const d = detectProjectDefaults(project({ "Cargo.toml": "[package]\n", "a_test.rs": "" }));
+    expect(d.ecosystem).toBe("rust");
+    expect(d.install).toBe("cargo fetch");
+    expect(d.checks).toEqual([
+      { name: "test", cmd: "cargo test" },
+      { name: "clippy", cmd: "cargo clippy", finalOnly: true },
+      { name: "build", cmd: "cargo build" },
+    ]);
+    expect(d.testFramework).toBe(true);
+    expect(new RegExp(d.testPattern!).test("tests/api.rs")).toBe(true);
+    expect(new RegExp(d.testPattern!).test("src/lib.rs")).toBe(false);
+    expect(detectProjectDefaults(project({ "Cargo.toml": "[package]\n" })).testFramework).toBe(false);
+  });
+
+  it("package.json 優先於其他專案檔（混合專案以 Node 為準）", () => {
+    expect(detectProjectDefaults(project({ "package.json": {}, "go.mod": "module x\n" })).ecosystem).toBe("node");
+  });
+});
+
 describe("withProjectDefaults", () => {
   const detected = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { devDependencies: { vitest: "^3" } } }));
 
