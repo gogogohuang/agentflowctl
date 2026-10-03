@@ -588,6 +588,67 @@ describe("綠燈階段無法讓測試通過時退回測試階段", () => {
   });
 });
 
+describe("綠燈階段：失敗的是前面任務的測試", () => {
+  const OLD_FAIL = "console.log(' FAIL  src/old.test.ts > 舊行為');\nprocess.exit(1);\n";
+
+  it("第一次：不退回測試階段，改告訴實作者別動既有測試、必要時提 amend", async () => {
+    const { run } = await greenRun("f-green-regress-first", { writesCode: true, testSource: OLD_FAIL });
+    expect(run.taskPhase).toBe("code");
+    expect(run.testsRedos).toBeUndefined();
+    expect(run.attempts["T-1:code"]).toBe(1);
+    const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+    expect(feedback).toContain("old.test.ts");
+    expect(feedback).toContain("amend-request.json");
+    expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_not_green"]);
+  });
+
+  it("連續第二次：暫停等人處理，不重寫測試，resume 再有機會", async () => {
+    const { run } = await greenRun("f-green-regress-second", { writesCode: true, testSource: OLD_FAIL, attempts: { "T-1:code": 1 } });
+    expect(run.stage).toBe("paused");
+    expect(run.pauseReason).toContain("old.test.ts");
+    expect(run.pauseReason).toContain("resume");
+    expect(run.taskPhase).toBe("code");
+    expect(run.testsRedos).toBeUndefined();
+    expect(run.attempts["T-1:code"]).toBeUndefined();
+    expect(listRetries(run.id)).toEqual([]);
+  });
+});
+
+describe("任務級審查／修正來回圈數上限", () => {
+  async function verifyFailing(id: string, taskRounds: number | undefined, extra: Record<string, unknown> = {}) {
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+      agents: { a: { adapter: "command", command: ["node", script] } }, cycle: ["a"], install: "true",
+      checks: [{ name: "test", cmd: "false" }], rerunFailedChecks: false, ...extra,
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "x" }]));
+    writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
+      { id: "T-1", title: "元件", description: "新增元件", dependsOn: [], acceptance: ["AC-1"], tdd: false },
+    ]));
+    const now = new Date().toISOString();
+    return advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "x", stage: "implement",
+      autopilot: true, maxAgentRuns: 10, cycle: ["a"], attempts: {}, taskIndex: 0, taskPhase: "verify",
+      ...(taskRounds === undefined ? {} : { taskRounds }), createdAt: now, updatedAt: now,
+    });
+  }
+
+  it("已經來回 maxTaskRounds 圈又驗證失敗：暫停，狀態停在修正階段並寫好 feedback，圈數歸零", async () => {
+    const run = await verifyFailing("f-rounds-cap", 3);
+    expect(run.stage).toBe("paused");
+    expect(run.pauseReason).toContain("3 圈");
+    expect(run.taskPhase).toBe("fix");
+    expect(run.taskRounds).toBeUndefined();
+    expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toContain("test 失敗");
+  });
+
+  it("maxTaskRounds 可以調整", async () => {
+    const run = await verifyFailing("f-rounds-cap-1", 1, { maxTaskRounds: 1 });
+    expect(run.stage).toBe("paused");
+  });
+});
+
 describe("重試前短發散", () => {
   const divergeScript = join(root, "diverge-implementer.mjs");
   writeFileSync(divergeScript, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -2750,9 +2811,9 @@ describe("lint 與型別檢查只在最後驗證", () => {
 
 describe("任務級狀態重置", () => {
   it("TASK_RESET 涵蓋所有任務級欄位，套在髒的 run 上全部歸零", () => {
-    expect(Object.keys(TASK_RESET).sort()).toEqual(["lastTestsAuthor", "taskBase", "taskPhase", "testsCommit", "testsRedos"]);
-    const dirty = { taskPhase: "review" as const, taskBase: "a", testsCommit: "b", lastTestsAuthor: "x", testsRedos: 2, lastWriter: "w", fixSource: "verify" as const };
-    expect({ ...dirty, ...TASK_RESET }).toMatchObject({ taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, lastWriter: "w" });
+    expect(Object.keys(TASK_RESET).sort()).toEqual(["lastTestsAuthor", "taskBase", "taskPhase", "taskRounds", "testsCommit", "testsRedos"]);
+    const dirty = { taskPhase: "review" as const, taskBase: "a", testsCommit: "b", lastTestsAuthor: "x", testsRedos: 2, taskRounds: 2, lastWriter: "w", fixSource: "verify" as const };
+    expect({ ...dirty, ...TASK_RESET }).toMatchObject({ taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, taskRounds: undefined, lastWriter: "w" });
     expect({ ...dirty, ...TASK_RESET, ...NO_WRITER_CONTEXT }).toMatchObject({ lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
   });
 });
