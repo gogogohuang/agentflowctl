@@ -36,6 +36,17 @@
 
 ## 停點與專案指令偵測
 
+## 快速流程（`--fast`）
+
+小改動走完整流程，大半成本花在計畫審查。`run --fast` 把規格、計畫與計畫審查換成一次 agent 呼叫：
+
+1. 一個 agent 一次寫出 `spec.md`、`acceptance.json`、`plan.md`、`tasks.json`，任務最多 2 個（`kind: confirm` 的不算）。超過、或任何計畫檔驗證不過（與完整流程用同一套 `validatePlan`），就退回同一個 agent 重寫。
+2. 同一次呼叫還要寫 `.flow/fast-check.json`：跨模組、動到公開介面或儲存格式、碰到信任邊界、有未決的重要設計，四項各填 true 或 false。任何一項為 true，或計畫帶著未結的計畫交接事項，程式就丟掉這份計畫、清掉 `fast`，回到完整流程重新產生規格。判斷由程式裁決，agent 只回報事實。
+3. 通過後直接定案（與 `replan --no-review` 同一條 `planSettled` 路徑）：確認項目分離、依任務數改算 agent 執行次數上限，`--manual-plan` 時進 `awaiting_approval`。
+4. 實作照舊：每個任務依 `tdd` 走紅綠燈，但沒有任務審查，寫完直接驗證；全部完成後仍有整體驗證與程式碼審查。
+
+`--stop-after spec` 與 `--stop-after plan` 都在定案後暫停。fast 的 run 沒有計畫審查階段，所以 `replan` 不適用；`iterate` 開的下一輪沿用 fast。
+
 需要先取用某個階段的產出時，可用 `--stop-after <階段>`。可選停點是 `spec`（規格）、`plan`（計畫審查完成）、`implement`（所有任務完成）、`verify`（測試與 checks 通過）、`review`（程式碼審查完成）或 `pr`（PR 流程完成）。除了 `pr` 會照常結束外，其他停點完成後會進入 `paused`，可檢視 worktree 與 `.flow/` 檔案，再執行 `agentflowctl resume <id>` 從下一階段接續；`--manual-plan` 與 `--stop-after` 不能同時使用。
 
 agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。偵測到的 `lint` 與 `typecheck`（`type-check`）檢查只在最後整支分支的驗證才跑，每個任務的驗證不跑；`lint` 只檢查整支分支相對基底分支改過的程式檔（排除 `.flow/`，沒有可檢查的檔案就略過；一律沿用專案原本的 lint 設定，agentflowctl 不會修改任何 eslint 設定檔；`lint` script 含 `eslint` 時，偵測到的指令會在指令列加上 `--ignore-pattern` 略過自己產生的 `.flow/`、`.agentflowctl/`，以及本機 git worktree `.worktree/`、`.worktrees/`，避免 `eslint .` 掃到交接檔或別的工作目錄而一直驗證失敗）。只檢查改過的檔案時，這四個目錄也不會被放進檔案清單。預設的測試指令，以及 `test` script 內容含 `vitest` 時，會附加 `--exclude '**/.worktree/**' --exclude '**/.worktrees/**'`（加在專案既有的 exclude 後面，不蓋掉 `node_modules` 等預設，也不改寫 script）。不是 vitest 的測試指令維持原樣。型別檢查仍是整個專案：`tsc` 沒有目錄排除的參數，agentflowctl 也不改寫專案的 tsconfig。`vite build` 同樣無法在不改設定檔時排除目錄，所以 build 指令不加參數。`package.json` 沒有對應 script 時直接略過，不會退回 `npx eslint .` 或 `npx tsc --noEmit`；要沿用舊行為，請在 `flow.config.json` 自行寫 `checks`。同一次驗證裡，install 先跑完，其餘檢查預設同時執行（`checksConcurrency` 可限制同時數量，`1` 為一次一個）；結果與 log 仍照設定順序列出。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。

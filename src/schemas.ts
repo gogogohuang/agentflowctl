@@ -103,6 +103,15 @@ export const TaskItem = z.object({
 });
 export type TaskItem = z.infer<typeof TaskItem>;
 
+/** fast 計畫階段 agent 一併回報的事實 .flow/fast-check.json；任何一項為 true 就改走完整流程，由程式裁決而不是 agent */
+export const FastCheck = z.strictObject({
+  crossModule: z.boolean(),
+  publicOrStoredContract: z.boolean(),
+  trustBoundary: z.boolean(),
+  unresolvedDecision: z.boolean(),
+});
+export type FastCheck = z.infer<typeof FastCheck>;
+
 /** agent 發現必須改變已合併任務的行為時寫的 .flow/amend-request.json */
 export const AmendRequest = z.object({
   target: z.string().regex(/^T-\d+$/, "target 格式必須是 T-<數字>"),
@@ -319,6 +328,8 @@ export const FlowRun = z.object({
   /** 完成這個公開階段後暫停；舊 run 沒有此欄位時一路跑完。 */
   stopAfter: StopAfterStage.optional(),
   autopilot: z.boolean(),
+  /** --fast：一次 agent 呼叫寫完規格與計畫、略過計畫審查與任務審查；計畫標出複雜度時清掉，改走完整流程（舊 state.json 沒有此欄位） */
+  fast: z.boolean().optional(),
   /** 單一 run 最多執行幾次 agent */
   maxAgentRuns: z.number().int().positive(),
   /** 使用者用 --max-agent-runs 明確指定過上限：計畫定案時不再依任務數改算（舊 state.json 沒有此欄位） */

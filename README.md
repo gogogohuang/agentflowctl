@@ -24,6 +24,8 @@ npx agentflowctl run --req "登入表單加入驗證與錯誤訊息"
 
 需求 → 規格 → 計畫與計畫審查 → 逐任務寫測試、寫實作、審查、驗證 → 整體檢查與程式碼審查 → 推送分支並建立 PR（沒有 `origin` 時，分支留在本機）。
 
+範圍小的需求可以加 `--fast`：一次 agent 呼叫寫完規格與計畫（任務最多 2 個），略過計畫審查與任務審查，其餘（紅綠燈、驗證、整體程式碼審查、PR）照舊。agent 會一併回報這個需求是否跨模組、動到公開介面或儲存格式、碰到信任邊界、有未決的重要設計；任何一項成立，或計畫帶著未結的交接事項，就丟掉這份計畫改走完整流程（多花一次 agent 呼叫）。
+
 流程預設自動往下走。想在計畫通過審查後先確認，加 `--manual-plan`，確認後執行 `agentflowctl approve <id>`。計畫有疑慮時：
 
 ```bash
@@ -77,6 +79,7 @@ agentflowctl clean f-xxxx          # 清除 worktree 與紀錄（clean --all 清
 | --- | --- |
 | `run --req "..."` / `--req-file <檔案>` | 二選一，直接輸入需求或讀取檔案 |
 | `run --manual-plan` | 計畫通過審查後等你確認，再 `approve <id>` |
+| `run --fast` | 快速流程：一次寫完規格與計畫、略過計畫審查與任務審查；計畫標出複雜度時自動改走完整流程 |
 | `run --stop-after <階段>` | 在指定階段完成後暫停；與 `--manual-plan` 互斥 |
 | `run --cycle claude,codex` | 指定這次參與的 agent |
 | `run --model-mode balanced\|adaptive` | 只覆蓋這次的模型模式 |

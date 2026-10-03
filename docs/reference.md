@@ -123,6 +123,7 @@ agentflowctl clean --all           # 清掉所有已結束的 run 與中斷留�
 | `--base` | 基底分支，預設為目前分支 |
 | `--cycle` | 這次 run 參與的 agent，例如 `claude,codex,gemini`；順序不影響分工；建立後就固定，`resume` 沿用 |
 | `--max-agent-runs` | 這次 run 的 agent 執行次數上限 |
+| `--fast` | 快速流程：一次 agent 呼叫寫完規格與計畫（任務最多 2 個）、略過計畫審查與任務審查；計畫標出複雜度時改走完整流程。見[執行流程細節](workflow.md#快速流程--fast) |
 | `--manual-plan` | 計畫通過審查後進入 `awaiting_approval`，等 `approve` 才開始實作 |
 | `--stop-after <階段>` | 完成 `spec`、`plan`、`implement`、`verify` 或 `review` 後進入 `paused`，用 `resume` 接續；`pr` 照常完成。與 `--manual-plan` 互斥，`resume` 不能更改停點 |
 | `-v` / `--verbose` | 執行時印出 agent 的文字、工具呼叫與專案指令；`run`、`resume`、`approve` 都適用，也可在 `flow.config.json` 設 `"verbose": true` |

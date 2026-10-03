@@ -75,6 +75,7 @@ function printSummary(run: FlowRun, interrupted = false): void {
   console.log(`run      ${run.id}`);
   console.log(`階段     ${run.stage}`);
   if (run.stopAfter) console.log(`停點     ${run.stopAfter}`);
+  if (run.fast) console.log("流程     fast（略過計畫審查與任務審查）");
   console.log(`用量     agent 執行 ${agentRuns(run.id)} / ${run.maxAgentRuns} 次`);
   console.log(`agent    ${run.cycle.join("、")}${run.lastWriter ? `（最後作者：${run.lastWriter}）` : ""}`);
   console.log(`分支     ${run.branch}`);
@@ -165,10 +166,11 @@ program
   .option("--max-agent-runs <n>", "單一 run 最多執行幾次 agent（預設：計畫定案前取 maxAgentRuns，定案後改為已執行次數加上任務數 × agentRunsPerTask；指定後不再改算）")
   .option("--max-attempts <n>", "同一關連續失敗幾次後停止（預設取 flow.config.json 的 maxAttempts，未設定為 5）")
   .option("--manual-plan", "計畫通過 AI 審查後，仍停下來等你確認", false)
+  .option("--fast", "快速流程：一次 agent 呼叫寫完規格與計畫（任務最多 2 個），略過計畫審查與任務審查；計畫標出複雜度時自動改走完整流程", false)
   .option("--stop-after <stage>", "完成公開階段後暫停：spec、plan、implement、verify、review 或 pr")
   .option("--cycle <agents>", "參與的 agent，例如 claude,codex,gemini（順序不影響分工）")
   .option("--model-mode <mode>", "這次 run 的模型模式：balanced 或 adaptive")
-  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; maxAttempts?: string; manualPlan: boolean; stopAfter?: string; cycle?: string; modelMode?: string }) => {
+  .action(async (opts: { req?: string; reqFile?: string; base?: string; maxAgentRuns?: string; maxAttempts?: string; manualPlan: boolean; fast: boolean; stopAfter?: string; cycle?: string; modelMode?: string }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供需求");
     const stopAfter = parseStopAfter(opts.stopAfter);
@@ -196,6 +198,7 @@ program
       stage: "spec",
       stopAfter,
       autopilot: !opts.manualPlan,
+      fast: opts.fast ? true : undefined,
       maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : cfg.maxAgentRuns,
       maxAgentRunsExplicit: opts.maxAgentRuns ? true : undefined,
       maxAttempts: opts.maxAttempts ? positiveInt(opts.maxAttempts, "--max-attempts", MIN_ATTEMPTS) : undefined,
