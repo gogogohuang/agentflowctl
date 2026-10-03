@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -5,14 +6,15 @@ import { config } from "./config.js";
 import { decideAmend } from "./amend.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
-import { effectiveDefaults } from "./detectedFile.js";
+import { detectFingerprint, effectiveDefaults, readDetected, writeDetected } from "./detectedFile.js";
+import { validateProposal } from "./generateDetected.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
 import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
 import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
 import { confirmationDetailsPath, confirmationsPath, confirmationsRestoredPath, divergePath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
-import { exec } from "./proc.js";
+import { exec, execShell } from "./proc.js";
 import { missingPackageExports } from "./packageExports.js";
 import { divergeExclude, divergeStamp, formatDivergeFeedback, selectFrames, shouldDiverge } from "./diverge.js";
 import { arbiterPanel, availableAgent, divergeCritic, fixAgent, pick, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
@@ -26,6 +28,7 @@ import {
   ConsistentReviewResult,
   DivergeBranch,
   DivergePick,
+  DetectionProposal,
   DivergeRecord,
   FastCheck,
   type DivergeFrame,
@@ -594,6 +597,72 @@ async function fastPlanStage(run: FlowRun): Promise<FlowRun> {
   rmSync(flowFile(run, "fast-check.json"), { force: true });
   rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
   return planSettled({ ...run, planWriter: actual }, "spec");
+}
+
+/** 每個驗證用的指令最多跑 5 分鐘 */
+const DETECT_COMMAND_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * 認不出專案類型時（沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等），請一位 agent 讀專案提出
+ * install／test／checks／testPattern，再由程式在基底 commit 的臨時 worktree 逐欄位驗證，通過的存進 detected.json。
+ * 這只是選配的偵測：額度不足、agent 失敗、格式不合都只印警告，不讓 run 失敗；
+ * 指紋沒變就不重做，全部無效也會記錄（避免每個 run 重複花用量）。
+ */
+export async function detectWithAgent(run: FlowRun): Promise<void> {
+  const root = projectRoot();
+  if (detectProjectDefaults(root).ecosystem !== "unknown") return;
+  const fingerprint = detectFingerprint(root);
+  if (readDetected(root)?.fingerprint === fingerprint) return;
+  const agent = specAgent(run.cycle, run.id);
+  info(run, `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查`);
+  let outcome: StepOutcome;
+  try {
+    outcome = await agentStep(run, agent, "detect", renderPrompt("detect", {}), { kind: "write" });
+  } catch (error) {
+    if (error instanceof QuotaPause || error instanceof AgentBudgetError) {
+      info(run, `⚠️  ${error.message}；略過動態偵測`);
+      return;
+    }
+    throw error;
+  }
+  await discardChanges(worktreeDir(run.id)); // 只允許寫 .flow/
+  let proposal: DetectionProposal = { checks: [] };
+  const dropped: { field: string; reason: string }[] = [];
+  if (!outcome.r.ok) {
+    dropped.push({ field: "proposal", reason: `Agent 執行失敗：${outcome.r.summary}` });
+  } else {
+    const read = readJsonFile(flowFile(run, "detect-proposal.json"), DetectionProposal);
+    if (read.ok) proposal = read.data;
+    else dropped.push({ field: "proposal", reason: read.error });
+  }
+  const validated = await withTempWorktree(run.id, "detect", async (ws) => {
+    const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
+    return validateProposal(proposal, {
+      files,
+      hasExecutable: (bin) => {
+        try {
+          execFileSync("sh", ["-c", 'command -v "$1"', "sh", bin], { cwd: ws.dir, stdio: "ignore" });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      run: async (cmd) => {
+        try {
+          const r = await execShell(cmd, { cwd: ws.dir, timeoutMs: DETECT_COMMAND_TIMEOUT_MS });
+          return { ok: r.code === 0, output: `${r.stdout}\n${r.stderr}`.trim() };
+        } catch (error) {
+          return { ok: false, output: errorMessage(error) };
+        }
+      },
+    });
+  });
+  const allDropped = [...dropped, ...validated.dropped];
+  writeDetected(root, { ...validated, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
+  const kept = [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
+    ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`].filter(Boolean);
+  info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}` : "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈");
+  for (const d of allDropped) info(run, `   ✗ ${d.field}：${d.reason}（可在 flow.config.json 手動設定）`);
 }
 
 async function specStage(run: FlowRun): Promise<FlowRun> {

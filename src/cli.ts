@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { MIN_ATTEMPTS, config } from "./config.js";
-import { advance, iterateRun, loadRepoConfig, replanRun } from "./engine.js";
+import { advance, detectWithAgent, iterateRun, loadRepoConfig, replanRun } from "./engine.js";
 import { exec } from "./proc.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, git } from "./git.js";
@@ -211,9 +211,10 @@ program
       createdAt: now,
       updatedAt: now,
     });
+    await detectWithAgent(run);
     for (const line of describeDetected(readRawConfig(configPath()), effectiveDefaults(root))) console.log(`[${id}] ${line}`);
     // 先裝好相依套件：有些 agent 的沙箱不能連網，無法自己安裝
-    const install = await runCommand({ runId: id, cwd: worktreeDir(id), logFile: nextLogFile(logDir(id), "setup", "install", CMD_AGENT), stage: "setup", step: "install" }, cfg.install);
+    const install = await runCommand({ runId: id, cwd: worktreeDir(id), logFile: nextLogFile(logDir(id), "setup", "install", CMD_AGENT), stage: "setup", step: "install" }, loadRepoConfig().install);
     if (!install.ok) console.log(`[${id}] ⚠️  安裝相依套件失敗，稍後 verify 階段會再試一次（agentflowctl logs ${id} ${install.seq}）`);
     await drive(run);
   });

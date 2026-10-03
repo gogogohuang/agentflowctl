@@ -70,3 +70,20 @@ agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scri
 | Rust | 已有 `tests/` 目錄下的 `.rs` 檔或 `*_test.rs` |
 
 已知限制：Rust 單元測試寫在原始碼內（`#[cfg(test)]`）時不會被看到，專案可能被判定沒有測試框架；這種情況請在 `flow.config.json` 設定 `test`。Python、Go、Rust 的測試檔搜尋最多深入 6 層，並略過 `node_modules`、`venv`、`target` 等依賴與建置目錄。
+
+### 動態偵測
+
+內建偵測認不出類型（未辨識）的專案，`agentflowctl run` 建立 worktree 後、顯示偵測結果與安裝之前，會請一位 agent 讀專案的 `Makefile`、`justfile`、`CMakeLists.txt`、`pom.xml`、`build.gradle*`、`*.sln`／`*.csproj`、`Gemfile`、`composer.json`、`mix.exs`、`.github/workflows/*.yml` 與 README，提出 `install`、`test`、`checks`、`testPattern`，寫成 `.flow/detect-proposal.json`。agent 只能寫 `.flow/`，其他變更會被捨棄。已辨識的類型（Node、Python、Go、Rust）不會觸發。
+
+這是選配功能，不會讓 run 失敗：agent 額度用完或次數上限已到時略過（不找人代打），agent 執行失敗或提案格式不合只印警告。
+
+提案由程式在基底 commit 的臨時 worktree 逐欄位驗證，原則是基底上必須是綠的，不通過的欄位丟掉並印出原因；順序為 install、test、checks（test 與 checks 可能需要先安裝）：
+
+| 欄位 | 驗證 | 不通過時 |
+|---|---|---|
+| `install`、`test`、`checks[].cmd` | 不是空指令或永遠成功的指令（`true`、`:`、`exit 0`、`echo ...`）；第一個可執行檔存在；在基底上執行成功（每個指令最多 5 分鐘） | 該欄位（或該項檢查）丟掉 |
+| `testPattern` | 是合法的正規表示式；專案已有名稱含 test 或 spec 的追蹤檔時，至少要符合其中一個 | 丟掉 |
+
+通過的欄位存進主專案的 `.agentflowctl/detected.json`（不進版控），連同丟掉的原因與指紋。指紋是上述特徵檔與 `.github/workflows/*.yml` 內容的雜湊：指紋沒變就不再呼叫 agent（即使全部欄位都被丟掉也一樣），特徵檔改變後的下一次 `run` 才會重新偵測，指紋不符的 `detected.json` 也不會生效。沒有可用的 `test` 時視為沒有測試框架，不走紅綠燈。
+
+`flow.config.json` 手動設定的 `install`、`test`、`checks`、`testPattern` 一律優先於動態偵測；想固定某個結果，把 `detected.json` 裡的值抄進 `flow.config.json` 即可。
