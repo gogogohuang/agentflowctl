@@ -258,7 +258,7 @@ export function withProjectDefaults(raw: unknown, detected: ProjectDefaults): un
   const { install, test } = detected;
   // 沒有測試框架也沒手動設定 test 時，預設的檢查不含 test
   const checks = usesTestFramework(raw, detected) ? detected.checks : detected.checks.filter((c) => c.name !== "test");
-  return { install, test, checks, ...raw };
+  return { install, test, checks, ...(detected.testPattern ? { testPattern: detected.testPattern } : {}), ...raw };
 }
 
 /** run 開始時印出的說明：只列出這次用了偵測結果的欄位 */
@@ -271,6 +271,7 @@ export function describeDetected(raw: Record<string, unknown>, detected: Project
   if (!("install" in raw)) lines.push(`   install：${detected.install}`);
   if (!("test" in raw) && framework) lines.push(`   test：${detected.test}`);
   if (!("checks" in raw)) lines.push(...detected.checks.filter((c) => framework || c.name !== "test").map((c) => `   checks.${c.name}：${c.cmd}${c.finalOnly ? "（只在最後驗證，" + (c.changedOnly ? "只檢查改過的檔案）" : "整個專案）") : ""}`));
+  if (!("testPattern" in raw) && detected.testPattern) lines.push(`   testPattern：${detected.testPattern}`);
   if (!framework) lines.push("ℹ️  未偵測到測試框架，所有任務略過紅綠燈，也不跑 test 檢查（在 flow.config.json 設定 test 可改回來）");
   if (!lines.length) return [];
   const why = detected.source === "預設" ? "預設" : `依 ${detected.source}`;

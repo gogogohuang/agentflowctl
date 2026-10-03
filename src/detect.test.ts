@@ -283,6 +283,14 @@ describe("withProjectDefaults", () => {
     expect(withProjectDefaults([], detected)).toEqual([]);
     expect(withProjectDefaults(null, detected)).toBeNull();
   });
+
+  it("偵測有 testPattern 時補上，手寫的 testPattern 優先", () => {
+    const go = detectProjectDefaults(project({ "go.mod": "module x\n" }));
+    expect((withProjectDefaults({}, go) as { testPattern?: string }).testPattern).toBe(go.testPattern);
+    expect((withProjectDefaults({ testPattern: "x" }, go) as { testPattern?: string }).testPattern).toBe("x");
+    const node = detectProjectDefaults(project({ "package.json": {} }));
+    expect("testPattern" in (withProjectDefaults({}, node) as object)).toBe(false);
+  });
 });
 
 describe("describeDetected", () => {
@@ -309,5 +317,11 @@ describe("describeDetected", () => {
 
   it("三個欄位都手動設定時不輸出", () => {
     expect(describeDetected({ install: "x", test: "y", checks: [] }, detected)).toEqual([]);
+  });
+
+  it("非 Node 專案會列出偵測到的 testPattern", () => {
+    const go = detectProjectDefaults(project({ "go.mod": "module x\n" }));
+    expect(describeDetected({}, go).some((l) => l.includes("testPattern") && l.includes("_test"))).toBe(true);
+    expect(describeDetected({ testPattern: "x" }, go).some((l) => l.includes("testPattern"))).toBe(false);
   });
 });
