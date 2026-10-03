@@ -337,8 +337,10 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 
 - 套件管理器：先看 `package.json` 的 `packageManager`，再看 lockfile（`pnpm-lock.yaml`、`yarn.lock`、`bun.lock`／`bun.lockb`、`package-lock.json`），都沒有就用 npm。
 - `install`：`pnpm install`、`yarn install`、`bun install` 或 `npm install --no-audit --no-fund`。不鎖 lockfile，因為實作時 agent 可能新增依賴。
-- `checks`：typecheck、lint、test、build 四項。`package.json` 有對應的 script（`typecheck`／`type-check`、`lint`、`test`、`build`）就用 `<pm> run <script>`，否則用 `tsc --noEmit`、`eslint .`、`vitest run`、`vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`。
-- `test`：`vitest run`，前綴同上。
+- `checks`：typecheck、lint、test、build 四項。`package.json` 有對應的 script（`typecheck`／`type-check`、`lint`、`test`、`build`）就用 `<pm> run <script>`，否則用 `tsc --noEmit`、`eslint .`、`vitest run`、`vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`。沒有 lint 或 typecheck script 就略過該項，不退回預設指令。
+- `lint` script 含 `eslint` 時，指令列加上 `--ignore-pattern`，略過 `.flow/**`、`.agentflowctl/**`、`.worktree/**`、`.worktrees/**`。不是 eslint（例如 biome）則不改指令。`changedOnly` 交給 lint 的檔案清單也會拿掉這四個目錄。
+- `test`：預設是 `vitest run`，並附加 `--exclude '**/.worktree/**' --exclude '**/.worktrees/**'`。這個 `--exclude` 加在專案 vitest 設定與內建 exclude 之後，不會拿掉 `node_modules`。`test` script 的內容含 `vitest` 時同樣附加；其他測試指令不改。
+- 型別檢查（`tsc`）與 `vite build` 不加目錄排除：`tsc` 沒有這種參數，也不改寫專案 tsconfig；vite 無法在不改設定檔時排除目錄。
 - 測試框架：`package.json` 的 `dependencies`／`devDependencies` 有 `vitest`、`jest`、`mocha`、`ava`、`jasmine`、`tap`、`uvu`、`@playwright/test`、`cypress` 之一，或 `test` script 存在且不是 `npm init` 的佔位（`no test specified`），就算有測試框架；在 `flow.config.json` 手動設定 `test` 也算。沒有測試框架時：所有任務略過紅綠燈（見「任務的 `tdd` 標記」），預設 `checks` 不含 `test`，`run` 會印出「未偵測到測試框架」。手動設定的 `checks` 一律照設定。
 
 `run` 建立 worktree 後會印出這次偵測到的指令：

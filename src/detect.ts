@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { RepoConfig } from "./schemas.js";
+import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
 /**
  * 依專案現況推出 install、test、checks 的預設指令。
@@ -48,9 +48,6 @@ const CHECK_SCRIPTS: Record<string, string[]> = {
   build: ["build"],
 };
 
-/** agentflowctl 自己產生的資料夾，eslint 不該檢查（.flow/ 的 JSON 格式不符專案規則，agent 也修不掉） */
-const ESLINT_IGNORES = ["'.flow/**'", "'.agentflowctl/**'"].map((p) => `--ignore-pattern ${p}`).join(" ");
-
 /** 每個任務不跑、最後才跑的檢查 */
 const FINAL_CHECKS = new Set(["typecheck", "lint"]);
 
@@ -96,6 +93,10 @@ function detectManager(root: string, pkg: PackageJson): { manager: PackageManage
 
 const withExec = (cmd: string, manager: PackageManager) => cmd.replace(/^npx /, `${EXEC[manager]} `);
 
+/** npm run 要用 -- 才會把參數轉給 script；pnpm、yarn、bun 直接接在後面 */
+const withArgs = (run: string, args: string, manager: PackageManager) =>
+  `${run}${manager === "npm" ? " --" : ""} ${args}`;
+
 export function detectProjectDefaults(root: string): ProjectDefaults {
   const pkg = readPackageJson(root);
   const { manager, source } = detectManager(root, pkg);
@@ -107,12 +108,16 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
     if (FINAL_CHECKS.has(name)) {
       if (!script) return [];
       if (name !== "lint") return [{ name, cmd: `${manager} run ${script}`, finalOnly: true }];
-      // lint script 若是 eslint（常見寫法 eslint .）會掃到 worktree 裡的 .flow/，所以在指令列補上略過
+      // lint script 若是 eslint（常見寫法 eslint .）會掃到 .flow/ 與本機 worktree，所以在指令列補上略過
       const eslint = /\beslint\b/.test(String(scripts[script]));
       const run = `${manager} run ${script}`;
-      return [{ name, cmd: eslint ? `${run}${manager === "npm" ? " --" : ""} ${ESLINT_IGNORES}` : run, finalOnly: true, changedOnly: true }];
+      return [{ name, cmd: eslint ? withArgs(run, ESLINT_IGNORE_ARGS, manager) : run, finalOnly: true, changedOnly: true }];
     }
-    return [{ name, cmd: script ? `${manager} run ${script}` : withExec(cmd, manager) }];
+    if (!script) return [{ name, cmd: withExec(cmd, manager) }];
+    const run = `${manager} run ${script}`;
+    // 專案 script 已是 vitest 時只附加排除，不改寫 script 本身；其他測試指令維持原樣
+    const scriptCmd = name === "test" && /\bvitest\b/.test(String(scripts[script])) ? withArgs(run, VITEST_WORKTREE_EXCLUDES, manager) : run;
+    return [{ name, cmd: scriptCmd }];
   });
   return { manager, source, install: INSTALL[manager], test: withExec(defaults.test, manager), checks, testFramework: hasTestFramework(pkg) };
 }
