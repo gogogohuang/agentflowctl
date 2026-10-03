@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, r
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
+import { decideAmend } from "./amend.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
@@ -1254,6 +1255,68 @@ async function maybeDiverge(run: FlowRun, task: TaskItem, cfg: RepoConfig): Prom
   return run;
 }
 
+// ── 修補請求：後面的任務發現必須改變已合併任務的行為 ──
+
+type AmendApplied = { kind: "invalid"; reason: string } | { kind: "limit"; reason: string } | { kind: "applied"; run: FlowRun };
+
+/**
+ * 判斷請求並套用：追加驗收條件、插入修補任務、記次數並加碼預算。
+ * 只動 run 層級的檔案與狀態，請求者的重置由呼叫端負責（順序與車道的做法不同）。
+ * 寫檔順序固定為 acceptance → tasks → run 狀態，decideAmend 以任務是否已存在判斷冪等，所以中途中斷後重做不會重複插入。
+ */
+function applyAmendRequest(run: FlowRun, raw: string, requesterId: string, tasks: TaskItem[], done: ReadonlySet<string>): AmendApplied {
+  const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  if (!acceptance.ok) throw new Error(acceptance.error);
+  const cfg = loadRepoConfig();
+  const decision = decideAmend({
+    raw, requesterId, tasks, done, acceptance: acceptance.data, counts: run.amendments ?? {}, max: cfg.maxAmendments,
+    usedIds: loadConfirmations(run).map((t) => t.id),
+  });
+  if (decision.kind === "invalid" || decision.kind === "limit") return decision;
+  if (decision.kind === "applied") return { kind: "applied", run };
+  writeFileSync(flowFile(run, "acceptance.json"), JSON.stringify(decision.acceptance, null, 2));
+  writeFileSync(flowFile(run, "tasks.ordered.json"), JSON.stringify(decision.tasks, null, 2));
+  const budget = run.maxAgentRunsExplicit ? run.maxAgentRuns : run.maxAgentRuns + cfg.agentRunsPerTask;
+  const next = saveRun({
+    ...run,
+    amendments: { ...run.amendments, [decision.target]: (run.amendments?.[decision.target] ?? 0) + 1 },
+    maxAgentRuns: budget,
+  });
+  info(next, `🩹 ${requesterId} 要求修補 ${decision.target}，已插入 ${decision.task.id}（${decision.task.title}）`);
+  return { kind: "applied", run: next };
+}
+
+/** 修補達上限時給請求者的指示：停止要求修補，改在自己的任務內完成 */
+const amendLimitFeedback = (reason: string) =>
+  `${reason}。不要再提出修補請求：請在自己的任務內完成，或把問題寫進 .flow/handoff-response.json 的 newIssues 交給人決定。`;
+
+/**
+ * 順序模式：請求者是目前的任務。有 .flow/amend-request.json 就處理，回傳新的 run；沒有請求回傳 undefined。
+ * 套用後請求者回到紅燈（半成品丟棄），修補任務排在它的位置，所以 taskIndex 不變就會先做修補任務。
+ */
+async function amendIfRequested(run: FlowRun, tasks: TaskItem[], task: TaskItem): Promise<FlowRun | undefined> {
+  const file = flowFile(run, "amend-request.json");
+  if (!existsSync(file)) return undefined;
+  const raw = readFileSync(file, "utf8");
+  const result = applyAmendRequest(run, raw, task.id, tasks, doneSet(tasks, run.taskIndex, run.doneTasks));
+  rmSync(file, { force: true });
+  if (result.kind === "invalid") return retry(run, `${task.id}:amend`, result.reason, "implement", "amend_invalid");
+  if (result.kind === "limit") {
+    const reason = amendLimitFeedback(result.reason);
+    mkdirSync(flowDir(run.id), { recursive: true });
+    writeFileSync(flowFile(run, "feedback.md"), `# 修補請求未被接受\n\n${reason}\n`);
+    throw new QuotaPause(`${task.id} 的修補請求被拒絕：${result.reason}；請檢查 .flow/feedback.md 後 resume，或用 replan 調整計畫`);
+  }
+  const repo = worktreeDir(run.id);
+  if (run.taskPhase === "tests" || !run.taskBase) await discardChanges(repo);
+  else await resetTo(repo, run.taskBase);
+  const attempts = Object.fromEntries(Object.entries(result.run.attempts).filter(([key]) => !key.startsWith(`${task.id}:`)));
+  return {
+    ...result.run, attempts, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined,
+    testsRedos: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined,
+  };
+}
+
 async function implementStage(run: FlowRun): Promise<FlowRun> {
   const tasks = loadOrderedTasks(run);
   const task = tasks[run.taskIndex];
@@ -1261,6 +1324,10 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     info(run, "✅ 所有任務完成");
     announceConfirmations(run);
     return to(run, "verify");
+  }
+  if (!inLane(run)) {
+    const amended = await amendIfRequested(run, tasks, task);
+    if (amended) return amended;
   }
   const cfg = loadRepoConfig();
   // 兩個以上的任務同時可以開始（或平行模式已經開始），改由車道同時執行；只有相依鏈、或 taskConcurrency 為 1 時照舊一個一個做
