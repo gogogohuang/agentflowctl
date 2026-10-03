@@ -168,6 +168,24 @@ export function resetAgentRunReservations(): void {
   reservations.clear();
 }
 
+/** 檢查第一次失敗、原樣重跑後通過（視為 flaky）；只 append */
+export interface FlakyEntry {
+  /** task＝任務驗證，final＝整體驗證 */
+  scope: "task" | "final";
+  check: string;
+}
+
+const flakyPath = (id: string) => join(sharedRunDir(id), "flaky.jsonl");
+
+export function addFlaky(id: string, entry: FlakyEntry): void {
+  mkdirSync(sharedRunDir(id), { recursive: true });
+  appendFileSync(flakyPath(id), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+}
+
+export function listFlaky(id: string): (FlakyEntry & { at: string })[] {
+  return readJsonl(flakyPath(id));
+}
+
 export interface Substitution {
   step: string;
   planned: string;

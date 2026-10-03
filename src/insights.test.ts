@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeInsights, failureLabel, gateOf, RETRY_LABEL, retryLabel } from "./insights.js";
+import { computeInsights, failureLabel, gateOf, RETRY_LABEL, RETRY_RULES, retryLabel } from "./insights.js";
+import { RetryCategories } from "./store.js";
 import type { RetryEntry } from "./store.js";
 
 const retry = (partial: Partial<RetryEntry> & Pick<RetryEntry, "category">): RetryEntry => ({
@@ -15,6 +16,8 @@ describe("computeInsights", () => {
       byCategory: [],
       byGate: [],
       runs: [],
+      hotspots: [],
+      flaky: [],
     });
   });
 
@@ -73,5 +76,39 @@ describe("RETRY_LABEL", () => {
   it("每個分類都有繁中標籤", () => {
     expect(RETRY_LABEL.format_invalid).toBe("輸出格式錯誤");
     expect(RETRY_LABEL.tests_not_red).toBe("紅燈測試未失敗");
+  });
+});
+
+describe("反覆出現的失敗與對應規則", () => {
+  const run = (id: string, categories: RetryEntry["category"][]) => ({ id, stage: "done", retries: categories.map((category) => retry({ category })) });
+
+  it("同一類至少 3 次且分散在 2 個以上的 run 才算反覆出現，附上對應規則，依次數排序", () => {
+    const insights = computeInsights([
+      run("f-a", ["tests_not_red", "tests_not_red", "out_of_scope"]),
+      run("f-b", ["tests_not_red", "out_of_scope", "out_of_scope"]),
+      run("f-c", ["format_invalid", "format_invalid", "format_invalid"]), // 次數夠但只在一個 run
+    ]);
+    expect(insights.hotspots.map((h) => [h.category, h.count, h.runs])).toEqual([["tests_not_red", 3, 2], ["out_of_scope", 3, 2]]);
+    expect(insights.hotspots[0]).toMatchObject({ rules: RETRY_RULES.tests_not_red.rules, hint: RETRY_RULES.tests_not_red.hint });
+  });
+
+  it("次數不足時沒有熱點", () => {
+    expect(computeInsights([run("f-a", ["tests_not_red"]), run("f-b", ["tests_not_red"])]).hotspots).toEqual([]);
+  });
+
+  it("每個重試類別都有對應的規則與說明", () => {
+    for (const category of RetryCategories) {
+      expect(RETRY_RULES[category].rules.length, category).toBeGreaterThan(0);
+      expect(RETRY_RULES[category].hint, category).not.toBe("");
+    }
+  });
+
+  it("不穩定的檢查依名稱加總", () => {
+    const insights = computeInsights([
+      { id: "f-a", stage: "done", retries: [], flaky: [{ check: "test" }, { check: "lint" }] },
+      { id: "f-b", stage: "done", retries: [], flaky: [{ check: "test" }] },
+      { id: "f-c", stage: "done", retries: [] },
+    ]);
+    expect(insights.flaky).toEqual([{ check: "test", count: 2 }, { check: "lint", count: 1 }]);
   });
 });

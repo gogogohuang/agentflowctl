@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TaskItem } from "./schemas.js";
-import { confirmationChecklist, splitHumanItems, confirmationLines, confirmationTasks, describedDirs, describedPaths, orderTasks, outOfScopeFiles, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { confirmationChecklist, splitHumanItems, confirmationLines, confirmationTasks, describedDirs, describedPaths, orderTasks, overlappingParallelTasks, parallelOverlapMessage, outOfScopeFiles, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 
 const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
   TaskItem.parse({ id, title: id, description: id, dependsOn, acceptance });
@@ -212,5 +212,30 @@ describe("範圍守衛認得目錄與根目錄檔案", () => {
   it("後面任務描述的根目錄檔案也受保護；沒有任何任務提到的檔案放行", () => {
     const tasks = [mk("T-1", "新增 src/a.ts"), mk("T-2", "更新 package.json")];
     expect(outOfScopeFiles(tasks, 0, ["package.json", "src/helper.ts"])).toEqual([{ file: "package.json", owner: "T-2" }]);
+  });
+});
+
+describe("overlappingParallelTasks", () => {
+  const mk = (id: string, description: string, dependsOn: string[] = [], kind?: "confirm") => ({ id, title: id, description, dependsOn, acceptance: ["AC-1"], kind });
+
+  it("沒有相依關係卻描述同一個檔案的任務會被挑出來", () => {
+    const found = overlappingParallelTasks([mk("T-1", "改 src/index.ts 與 src/a.ts"), mk("T-2", "改 src/index.ts 與 src/b.ts")]);
+    expect(found).toEqual([{ a: "T-1", b: "T-2", paths: ["src/index.ts"] }]);
+    expect(parallelOverlapMessage(found)).toContain("T-1 與 T-2 沒有相依關係，但都描述了 src/index.ts");
+  });
+
+  it("直接或間接相依的任務會依序執行，不算", () => {
+    const tasks = [mk("T-1", "改 src/index.ts"), mk("T-2", "新增 src/b.ts", ["T-1"]), mk("T-3", "改 src/index.ts", ["T-2"])];
+    expect(overlappingParallelTasks(tasks)).toEqual([]);
+  });
+
+  it("目錄與其底下的檔案、兩個重疊的目錄也算重疊", () => {
+    expect(overlappingParallelTasks([mk("T-1", "整理 src/auth/"), mk("T-2", "改 src/auth/login.ts")]).map((f) => f.paths)).toEqual([["src/auth/login.ts"]]);
+    expect(overlappingParallelTasks([mk("T-1", "整理 src/auth/"), mk("T-2", "整理 src/auth/oauth/")]).map((f) => f.paths)).toEqual([["src/auth/"]]);
+  });
+
+  it("沒有重疊、或其中一個是人工確認的任務，都不算", () => {
+    expect(overlappingParallelTasks([mk("T-1", "改 src/a.ts"), mk("T-2", "改 src/b.ts")])).toEqual([]);
+    expect(overlappingParallelTasks([mk("T-1", "改 src/a.ts"), mk("T-2", "改 src/a.ts", [], "confirm")])).toEqual([]);
   });
 });

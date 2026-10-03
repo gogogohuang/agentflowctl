@@ -4,7 +4,7 @@
 
 ## 處理進度
 
-A 類已在 PR #65（分支 `fix/review-gates`）處理，B 到 F 類尚未動。各項的細節在下面對應章節的「修改結果」。
+A 類已在 PR #65（分支 `fix/review-gates`）處理；C1、D1、D4、E2、E5、F1 在下一個分支（`feat/flow-hardening`）處理；其餘項目尚未動。各項的細節在下面對應章節的「修改結果」。
 
 | 項目 | 狀態 |
 |---|---|
@@ -15,6 +15,12 @@ A 類已在 PR #65（分支 `fix/review-gates`）處理，B 到 F 類尚未動�
 | A5 範圍守衛 | 已修：認得目錄與根目錄檔案；守衛達次數上限放行時印警告。沒有任何任務提到的檔案仍不受限，這是刻意保留 |
 | A6 仲裁分歧 | 已修：不改預設值，沒核准的意見記成程式碼類 `action`，最終審查必須結案 |
 | A7 reviewQuorum 預設 1 | 只補文件警語，**沒有改預設值**（改成 2 會讓每次審查成本加倍，需要你決定） |
+| C1 平行任務路徑重疊 | 已修（`feat/flow-hardening`）：計畫檢查擋下沒有相依關係卻描述同一批檔案的任務 |
+| D1 flaky 檢查 | 已修：失敗的檢查先原樣重跑一次，第二次通過視為 flaky 放行並記錄；`rerunFailedChecks` 可關 |
+| D4 任務級狀態 | 部分：**沒有收成子物件**（要遷移 schema，風險過大），改用 `TASK_RESET` 常數集中重置 |
+| E2 Minimality | 已修：審查 prompt 新增「最小化」，只靠 prompt，沒有程式檢查 |
+| E5 作者疑慮 | 已修：疑慮記成交接帳本的 `info`，審查者讀得到 |
+| F1 失敗回饋 | 部分：**不自動改規則**，改做失敗類別 ↔ 規則對照表與 `insights` 的反覆失敗提示 |
 
 驗證：`pnpm run typecheck`、`pnpm test`（636 個）、`pnpm run build` 在本機通過。PR 推送後的 CI 結果沒有記在這裡。
 
@@ -183,6 +189,13 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 - 與 A5 相關：事前的範圍守衛抓不到「沒被描述提到的共用檔案」，所以衝突在最晚的時間點才被發現。
 - 建議：計畫階段（`validatePlan`）檢查平行任務的描述路徑是否重疊，重疊就加上 `dependsOn`；或衝突時先嘗試讓原作者 agent 在最新分支上 rebase／解衝突，而不是丟棄。
 
+**修改結果（`feat/flow-hardening`）**
+
+- `tasks.ts` 新增 `overlappingParallelTasks`：兩個任務沒有相依關係（任一方向的直接或間接相依都連不到對方）、卻描述了同一個檔案，或一個寫的檔案在另一個寫的目錄底下、或兩個目錄互相包含，就挑出來；人工確認的任務不算。`validatePlan` 在 `taskConcurrency` 不是 1 時呼叫它，不通過就退回計畫，訊息指出哪兩個任務、哪些路徑，並要求用 `dependsOn` 排出先後或合併。
+- `taskConcurrency` 為 1 時不檢查（任務本來就一個一個做）。`fast-plan.md` 補上同樣的規則（`plan.md`、`plan-fix.md` 原本就有寫）。
+- 限制：只認得任務描述裡寫明的路徑；沒寫路徑卻會動到同一檔案的任務仍然抓不到，衝突照舊在合併時才發現。重疊時只能要求排先後或合併，不會自動判斷哪個任務該先做。
+- 副作用：既有的分層計畫審查測試夾具（8 個任務共用同兩個檔案）會被擋下，那組測試測的是計畫審查而非車道，所以我把它的 `taskConcurrency` 設成 1。
+
 ### C2. 合併後每次都跑全套測試【已確認，屬成本取捨】
 
 - `mergeLane` 每合併一個車道就 `runCommand(... cfg.test)` 全套。N 個任務合併 N 次，測試時間線性累加，且合併是序列的，會成為平行化的瓶頸。
@@ -204,6 +217,15 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 - 失敗若是 flaky 測試、port 被占用、網路、暫時性環境問題，fix agent 會去「修」不存在的 bug，可能改壞正常程式碼，並消耗 `maxAttempts`。
 - 建議：失敗後先**原樣重跑失敗的檢查一次**；第二次通過就記錄為 `flaky` 並放行（同時留下紀錄供 `insights` 統計）；兩次都失敗才叫 fix agent。成本最低、收益明確。
 
+**修改結果（`feat/flow-hardening`）**
+
+- 新設定 `rerunFailedChecks`（預設 `true`）。`runChecks` 在檢查失敗時，只把失敗的那幾項原樣重跑一次（`install` 不重跑；log 步驟名加 `-rerun`）。第二次通過視為 flaky：放行、verify.json 記為通過、`flaky.jsonl` 記一筆（`scope` 為 task 或 final、檢查名稱）；兩次都失敗才照舊交給修正者，回報的是重跑那次的輸出。任務驗證與整體驗證都適用。
+- 沒有寫進 `retries.jsonl`：`maybeDiverge` 會數那個檔案的筆數，flaky 不是重試，混進去會誤觸發發散。
+- `insights` 會列出各檢查的 flaky 次數；`config doctor` 顯示這個設定。
+- 代價：真的失敗時每次多跑一次檢查；耗時長的測試可以設 `rerunFailedChecks: false`。
+- 限制：只重跑一次，若 flaky 的機率不低，兩次都失敗的情況仍會進修正；不會判斷「失敗輸出看起來像環境問題」。
+- 測試：第一次失敗重跑通過、兩次都失敗、只重跑失敗的那幾項、關閉設定，各一個案例；既有「checksConcurrency 為 1」案例靠兩個檢查互等來證明序列執行，重跑會讓它誤過，所以它關掉重跑。
+
 ### D2. `resume` 一次清空全部重試計數【已確認】
 
 - `cli.ts` 的 `resume`：`failed` 時 `attempts: {}`、`modelRetryAttempts: {}`。
@@ -221,6 +243,13 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 - 這種「多處手寫重置」很容易漏一個欄位，造成車道重做時帶著舊狀態（例如 `testsRedos` 沒清）。目前測試覆蓋看起來不錯，但這是未來改動最容易出 bug 的地方。
 - 建議：把「任務級狀態」收成一個子物件（`task: {index, phase, base, testsCommit, ...}`），整體重置。
 
+**修改結果（`feat/flow-hardening`）：沒有照建議把任務級狀態收成子物件**
+
+- 沒做子物件的原因：那會改 `FlowRun` 的 schema 形狀，舊 `state.json` 要能讀，得寫遷移，風險遠大於收益。
+- 實際做法：`engine.ts` 新增並匯出 `TASK_RESET`（`taskPhase`、`taskBase`、`testsCommit`、`lastTestsAuthor`、`testsRedos`）與 `NO_WRITER_CONTEXT`（`lastWriter`、`lastReviewer`、`fixSource`）。`finishTask`、車道重做、修補請求、`redoTests`（暫停與非暫停）、非 TDD 任務起點、`iterate`、`planSettled`、平行任務全部完成時，都改成展開這兩個常數，不再各自挑欄位清。欄位仍是平的，schema 沒變。
+- 查過的結果：原本八個重置點彼此是一致的，並沒有實際漏清欄位的 bug；這是預防性的整理，不是修 bug。
+- 測試：一個守門測試，確認 `TASK_RESET` 的欄位集合，並確認套在髒的 run 上全部歸零。新增任務級欄位時要加進 `TASK_RESET`，這條規則寫在 `AGENTS.md`。
+
 ---
 
 ## E. 審查品質與成本（中、低）
@@ -234,6 +263,12 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 
 - `review.md`、`task-review.md` 的 `review_focus` 沒有「能否刪減、合併或重用既有行為」。測試抓不到過度實作，審查 prompt 也沒要求。
 - 只改 prompt 即可，成本最低。
+
+**修改結果（`feat/flow-hardening`）**
+
+- `review.md`、`task-review.md` 的審查重點新增「最小化」：逐一嘗試刪掉、合併或改用既有行為；有沒有驗收條件都不需要的程式碼（多餘的參數、分支、設定、匯出、抽象）、有沒有重寫專案已有的函式或元件。能刪或重用而所有驗收條件仍成立的，列為額外發現，`evidence` 要同時寫出多餘程式碼的位置與可重用的既有位置。
+- 和 A2 的關係：A2 禁止把「有更小的做法」寫成額外發現（避免範圍膨脹）。這裡改成只允許有具體證據的過度實作，單純「換一種寫法」仍不算；兩處 prompt 的文字已對齊。額外發現仍受 A2 的限制，只在第一次審查能擋關。
+- 限制：只改了 prompt，沒有程式檢查。這一項靠審查者判斷，不是程式能驗證的事實。
 
 ### E3. 沒有針對信任邊界的安全審查【已確認】
 
@@ -251,6 +286,13 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 - 審查輸入是 diff、AC、spec、`verify.json`。沒有提供作者的 `<result>` 摘要與 `concerns`（它「只給人看，不影響關卡」）。
 - 這是刻意的獨立審查，但也代表作者標明的疑慮不會進到審查。若作者在 `<concerns>` 寫了風險，目前只有交接帳本（`handoff-response.json`）會被帶到審查。確認作者是否一致把重要疑慮寫進 handoff 而不是只寫 `<concerns>`；prompt 已要求，但沒有程式檢查。
 
+**修改結果（`feat/flow-hardening`）**
+
+- 作者在回覆 `<result><concerns>` 寫的疑慮，在關卡通過後由 `settleHandoff` 的 `recordConcerns` 記成交接帳本的 `info`（「作者回報的疑慮（agent，步驟）：…」，最多 400 字）。審查者本來就要讀 `handoff-context.md` 的參考資訊，所以不用新增輸入檔；兩份審查 prompt 補了一句：優先查證它是否真的被處理，但那是線索不是結論，不能因此省略逐條核對。
+- 涵蓋計畫與程式碼兩邊（`targetStage` 依階段決定）：所有 `settleHandoff` 的呼叫點都適用，包括寫測試、寫實作、修正、規格、計畫與計畫修訂。「無」「沒有」「none」這類空話不記；重複的疑慮由既有的重複判斷併成一筆。
+- 限制：只在關卡通過後才記，被還原重試的那次疑慮不會記；沒有程式強制作者誠實或完整，所以不影響任何關卡；帳本裡的 `info` 會累積，每個後續 agent 的 prompt 都會帶到。
+- 測試：作者寫疑慮時帳本多一筆 `info` 且出現在審查者的 `handoff-context.md`；寫「無」不記。
+
 ---
 
 ## F. 可觀測性與規則演進（低）
@@ -259,6 +301,14 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 
 - `insights`、`usageInsights` 彙總失敗類別、重試浪費與用量建議，但只是給人看。沒有「某類失敗（例如 `tests_not_red`、`out_of_scope`）在多個 run 反覆出現就調整 prompt 或預設值」的路徑。
 - agfnow 的 `incidents-log.md` 把規則連結到事故；我們有資料（`retries.jsonl`）卻沒有「規則 ↔ 失敗案例」的對應，改 prompt 時無從得知是為了什麼而加。
+
+**修改結果（`feat/flow-hardening`）**
+
+- 沒有做「自動調整 prompt 或預設值」：讓程式自己改規則風險太高，也無從驗證改得對不對。改做兩件事：
+  1. `insights.ts` 新增 `RETRY_RULES`：每個重試類別對應到相關的 prompt、程式碼與設定，加一句判讀（TypeScript 的 `Record<RetryCategory, …>` 強制每個類別都有，新增類別時會編譯失敗）。這就是缺少的「規則 ↔ 失敗案例」對應，改規則時可由此反查它是為了擋哪種失敗。
+  2. `insights` 指令新增「反覆出現的失敗與對應規則」：同一類重試累積至少 3 次、且分散在 2 個以上的 run（`HOTSPOT_MIN_COUNT`、`HOTSPOT_MIN_RUNS`）才列出，附判讀與相關規則。也列出 D1 的 flaky 檢查次數。
+- 限制：只指出該看哪裡，不會自動改；門檻是我憑感覺定的，沒有用實際資料校準；`RETRY_RULES` 裡的檔案名稱是手寫的，prompt 改名時不會自動同步。
+- 測試：熱點的門檻與排序、次數不足時沒有熱點、每個類別都有規則、flaky 加總。
 
 ### F2. 模型分級只在 adaptive 模式（`modelSelection`）【已確認，未深讀】
 
@@ -277,7 +327,7 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 | 可借鏡 #1 輕量路徑 | **已完成**（`run --fast`）。但 `FastCheck` 是 agent 自述旗標，見 E4 |
 | 可借鏡 #2 審查發現須可追溯 | **已做（PR #65）**：額外發現須附 evidence、分開標示、只在第一次審查能擋關；沒做「對得上規格或驗收條件才進 fix」的硬性要求，對不上驗收條件的發現只要有證據仍會進 fix，見 A2 |
 | 可借鏡 #3 驗收編號覆蓋表 | **已完成（PR #65）**：計畫層（任務 ↔ AC）本來就強制，審查層現在也由程式比對編號，對應 A1 |
-| 可借鏡 #4 Minimality 審查項 | 未做，對應 E2 |
+| 可借鏡 #4 Minimality 審查項 | **已做（`feat/flow-hardening`）**，只改 prompt，見 E2 |
 | 可借鏡 #5 security-scan 選配階段 | 未做，對應 E3 |
 | 「我們的 review 迴圈直接採納意見」 | 確認屬實，A2 已用 evidence 與擋關次數限制緩解，沒有完全消除 |
 
@@ -290,19 +340,19 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 | 順位 | 項目 | 理由 | 規模 |
 |---|---|---|---|
 | 1 | A1 審查覆蓋表＋A2 發現分類（**已完成，PR #65**） | 影響最大；純程式關卡，符合專案原則；資料基礎已在 | 中：schema、`codeReview`、兩份 review prompt、測試 |
-| 2 | D1 verify 失敗先原樣重跑一次 | 直接省 fix agent 的呼叫；風險低 | 小 |
+| 2 | D1 verify 失敗先原樣重跑一次（**已完成，`feat/flow-hardening`**） | 直接省 fix agent 的呼叫；風險低 | 小 |
 | 3 | B2 `gh pr create`／push 失敗不標 done | 目前會留下「完成但沒有 PR」的假象 | 小 |
 | 4 | B1 開 PR 前對 base 做 fetch／合併檢查 | 避免推出已過時的分支；先確認 B1 的【未驗證】 | 中 |
 | 5 | A4 非 TDD 任務無變更不可靜默略過（**已改為留紀錄，PR #65**，不強制審查） | 與 A1 疊加，fast 下尤其沒有保險 | 小 |
 | 6 | A3 fix 後偵測測試被放寬（**已完成，PR #65**） | 關卡一致性 | 中 |
-| 7 | E2 Minimality 審查項 | 只改 prompt | 小 |
+| 7 | E2 Minimality 審查項（**已完成，`feat/flow-hardening`**） | 只改 prompt | 小 |
 | 8 | A6 `tieBreak` 預設改 `stop`，或把不核准意見轉成交接事項（**已採後者，PR #65**；預設值沒改） | 屬 breaking default，需版本說明 | 小 |
-| 9 | C1 計畫階段偵測平行任務路徑重疊 | 降低衝突重做 | 中 |
+| 9 | C1 計畫階段偵測平行任務路徑重疊（**已完成，`feat/flow-hardening`**） | 降低衝突重做 | 中 |
 | 10 | B3 `--wait-ci` 選配 | 補上最後一哩，但範圍較大 | 大 |
 | 11 | E1 delta 審查 | 省成本，需處理 `roles.ts` 不變式 | 中 |
 | 12 | E3 安全審查選配階段 | 需要觸發條件設計 | 大 |
 
-尚未處理：D1、B2、B1、E2、C1、B3、E1、E3 與 B4、C2、C3、D2 到 D4、E4、E5、F。做任何一項前，依 AGENTS.md：改行為要同步更新 `README.md`；新增 run 狀態欄位要設 optional；改 `roles.ts` 要補 `roles.test.ts`；改 adapter 要用真實 JSON 行補測試。
+尚未處理：B2、B1、B3、E1、E3 與 B4、C2、C3、D2、D3、E4、F2、F3。做任何一項前，依 AGENTS.md：改行為要同步更新 `README.md`；新增 run 狀態欄位要設 optional；改 `roles.ts` 要補 `roles.test.ts`；改 adapter 要用真實 JSON 行補測試。
 
 ## 不建議做的事（延續比較文件的結論並補充）
 

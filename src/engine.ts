@@ -36,7 +36,7 @@ import {
   type HandoffLedger,
   type Stage,
 } from "./schemas.js";
-import { addRetry, addSubstitution, addUsage, agentRuns, getRun, listRetries, releaseAgentRun, reserveAgentRun, resetAgentRunReservations, saveRun, type RetryCategory } from "./store.js";
+import { addFlaky, addRetry, addSubstitution, addUsage, agentRuns, getRun, listRetries, releaseAgentRun, reserveAgentRun, resetAgentRunReservations, saveRun, type RetryCategory } from "./store.js";
 import { doneSet, errorMessage, readyTasks, scheduleLanes, type AmendResolution, type LaneOutcome } from "./lanes.js";
 import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
 import {
@@ -61,7 +61,7 @@ import {
   type PlanReviewRound,
   type PlanReviewState,
 } from "./planReview.js";
-import { confirmationChecklist, descriptionWaivesRed, splitHumanItems, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { confirmationChecklist, descriptionWaivesRed, splitHumanItems, orderTasks, outOfScopeFiles, outOfScopeMessage, overlappingParallelTasks, parallelOverlapMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
 import { brokenPackageImport, foreignFailingTests, packageImports, violatingTestChanges, weakenedChecks, weakenedMessage } from "./testGuard.js";
 
@@ -222,6 +222,37 @@ function finishHandoff(
   }
 }
 
+/** 沒有實質內容的疑慮回報（「無」「沒有」「none」…）不記 */
+const NO_CONCERN = /^(?:無|沒有|无|none|n\/a|na|nil|-+|—+)(?:疑慮|問題)?[。.!！\s]*$/i;
+const CONCERN_MAX = 400;
+
+/**
+ * 作者在 <result><concerns> 寫的疑慮，只有人看得到，審查者看不到。關卡通過後把它記成交接帳本的參考資訊（info），
+ * 審查者讀 handoff-context.md 時就會看到，可以優先查證。只是線索：不影響任何關卡，記錄失敗也不能讓步驟失敗。
+ */
+function recordConcerns(run: FlowRun, outcome: StepOutcome): void {
+  const text = outcome.r.meta?.concerns.trim();
+  if (!text || NO_CONCERN.test(text)) return;
+  const callKey = `concerns:${outcome.callKey}`;
+  try {
+    acceptHandoff(
+      run.id, callKey, { stage: run.stage, step: outcome.step, agent: outcome.agent, callKey },
+      {
+        newIssues: [{
+          kind: "info",
+          summary: `作者回報的疑慮（${outcome.agent}，${outcome.step}）：${text.length > CONCERN_MAX ? `${text.slice(0, CONCERN_MAX)}…` : text}`,
+          evidence: `${outcome.step} 的 <result><concerns>`,
+          targetStage: handoffTarget(run),
+        }],
+        dispositions: [],
+      },
+      "writer",
+    );
+  } catch {
+    // 只是線索，不能因為記不下來而讓已通過的步驟失敗
+  }
+}
+
 /**
  * 寫作步驟的交接：關卡已通過，交接回覆不合格時不丟掉工作，請同一家 agent 只補寫一次。
  * 補寫前記下 HEAD 與 files 的內容，補寫後一律 reset 回去並還原這些檔案，連補寫自行建立的 commit 也丟棄，
@@ -232,7 +263,10 @@ async function settleHandoff(
   run: FlowRun, outcome: StepOutcome, files: readonly string[], base?: string,
 ): Promise<string | undefined> {
   const first = finishHandoff(run, outcome, "writer");
-  if (!first) return undefined;
+  if (!first) {
+    recordConcerns(run, outcome);
+    return undefined;
+  }
   const repo = worktreeDir(run.id);
   const settled = await headCommit(repo);
   const snap = snapshotPlan(run, files);
@@ -253,7 +287,9 @@ async function settleHandoff(
     await cleanup();
   }
   if (!repair.r.ok) return `${first}（補寫交接時 Agent 執行失敗：${repair.r.summary}）`;
-  return finishHandoff(run, repair, "writer");
+  const repaired = finishHandoff(run, repair, "writer");
+  if (!repaired) recordConcerns(run, outcome);
+  return repaired;
 }
 
 /** 印出回覆裡的 XML 中繼資料；只供人檢視，關卡仍由程式檢查決定 */
@@ -356,6 +392,21 @@ function taskUsesTdd(task: TaskItem, framework: boolean): boolean {
 const TESTS_NOT_RED_REASON = "測試在功能尚未實作前就全部通過，代表測試沒有驗證到新行為。請撰寫會因功能尚未實作而失敗的測試。";
 /** 越界檢查只擋前兩次：任務描述的路徑只是啟發式，之後交給審查把關，避免誤判讓 run 卡死 */
 const SCOPE_GUARD_ATTEMPTS = 2;
+
+/**
+ * 任務級狀態：開始（或重新開始）一個任務時整組歸零。各處不要自己挑欄位清，漏一個就會讓新任務帶著舊任務的基準 commit 或退回次數。
+ * 新增任務級欄位時加在這裡。
+ */
+export const TASK_RESET = {
+  taskPhase: "tests" as const,
+  taskBase: undefined,
+  testsCommit: undefined,
+  lastTestsAuthor: undefined,
+  testsRedos: undefined,
+};
+
+/** 丟掉任務重做時，上一輪的作者、審查者與修正來源也不再適用 */
+export const NO_WRITER_CONTEXT = { lastWriter: undefined, lastReviewer: undefined, fixSource: undefined };
 /** 綠燈階段連續失敗幾次（含這一次）、或實作者沒有任何變更時，懷疑是測試本身的問題而退回測試階段 */
 const TESTS_REDO_AFTER_FAILURES = 2;
 /** 同一個任務最多退回測試階段幾次，超過就照舊在綠燈階段重試到上限 */
@@ -589,7 +640,14 @@ function validatePlan(run: FlowRun): TaskItem[] | string {
   if (complexityError) return complexityError;
   const tddError = validateTddFlag(tasks.data);
   if (tddError) return tddError;
-  return orderTasks(tasks.data, new Set(ids));
+  const ordered = orderTasks(tasks.data, new Set(ids));
+  if (typeof ordered === "string") return ordered;
+  // 會平行執行（taskConcurrency 不是 1）的任務不能描述同一批檔案，否則合併時才衝突、整條車道重做
+  if (loadRepoConfig().taskConcurrency !== 1) {
+    const overlaps = overlappingParallelTasks(ordered);
+    if (overlaps.length) return parallelOverlapMessage(overlaps);
+  }
+  return ordered;
 }
 
 function acceptPlan(run: FlowRun, ordered: TaskItem[]): void {
@@ -628,7 +686,7 @@ function planSettled(run: FlowRun, key: string): FlowRun {
     ? run.maxAgentRuns
     : agentRuns(run.id) + ordered.length * loadRepoConfig().agentRunsPerTask;
   if (budget !== run.maxAgentRuns) info(run, `🎟️  agent 執行次數上限改為 ${budget}（已執行 ${agentRuns(run.id)} 次 + ${ordered.length} 個任務 × ${loadRepoConfig().agentRunsPerTask}）`);
-  return { ...settled, attempts, maxAgentRuns: budget, taskIndex: 0, taskPhase: "tests" };
+  return { ...settled, attempts, maxAgentRuns: budget, taskIndex: 0, ...TASK_RESET };
 }
 
 async function planStage(run: FlowRun): Promise<FlowRun> {
@@ -1162,8 +1220,7 @@ export async function iterateRun(run: FlowRun, opts: { requirement: string; maxA
   return {
     ...run, requirement, round, stage: "spec", stopAfter: undefined,
     maxAgentRuns: agentRuns(run.id) + quota, maxAgentRunsExplicit: explicit ? true : undefined,
-    attempts: {}, modelRetryAttempts: {}, taskIndex: 0, taskPhase: "tests", doneTasks: undefined, amendments: undefined,
-    taskBase: undefined, testsCommit: undefined, testsRedos: undefined, lastTestsAuthor: undefined,
+    attempts: {}, modelRetryAttempts: {}, taskIndex: 0, ...TASK_RESET, doneTasks: undefined, amendments: undefined,
     fixSource: undefined, skipPlanReview: undefined,
     pausedStage: undefined, pauseReason: undefined, failedStage: undefined, failureReason: undefined, failureCategory: undefined,
   };
@@ -1445,8 +1502,7 @@ async function amendIfRequested(run: FlowRun, tasks: TaskItem[], task: TaskItem)
   else await resetTo(repo, run.taskBase);
   const attempts = Object.fromEntries(Object.entries(result.run.attempts).filter(([key]) => !key.startsWith(`${task.id}:`)));
   const reset = saveRun({
-    ...result.run, attempts, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined,
-    testsRedos: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined,
+    ...result.run, attempts, ...TASK_RESET, ...NO_WRITER_CONTEXT,
   });
   // 請求檔最後才刪：中途中斷時檔案還在，decideAmend 會判斷為已套用，重置（可重複執行）再做一次
   rmSync(file, { force: true });
@@ -1506,7 +1562,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   // ── 不走 TDD：略過紅燈，實作前的 HEAD 就是這個任務的起點 ──
   if (!tdd && run.taskPhase === "tests") {
     info(run, `⏭️  [${progress}] 略過 TDD（${framework ? "planner 標記不適合先寫測試" : "專案沒有測試框架"}）`);
-    return { ...run, taskPhase: "code", taskBase: await headCommit(repo), testsCommit: undefined, lastTestsAuthor: undefined };
+    return { ...run, ...TASK_RESET, taskPhase: "code", taskBase: await headCommit(repo) };
   }
 
   // ── 紅燈：只寫測試，而且測試必須失敗 ──
@@ -1761,7 +1817,7 @@ async function mergeLane(ref: { run: FlowRun }, task: TaskItem): Promise<"merged
   const merged = await mergeBranch(pwt, lane.branch, `merge(${task.id}): ${task.title}`);
   const redoLane = (message: string, category: "merge_conflict" | "merge_tests_failed"): "redo" | { kind: "failed"; reason: string; category?: string } => {
     const redo = retry({ ...lane, stage: "implement" }, `${task.id}:merge`, message, "implement", category);
-    saveRun({ ...redo, taskIndex: 0, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
+    saveRun({ ...redo, taskIndex: 0, ...TASK_RESET, ...NO_WRITER_CONTEXT });
     if (redo.stage === "failed") return { kind: "failed", category: "retry_limit", reason: redo.failureReason ?? "合併重試達上限" };
     return "redo";
   };
@@ -1852,7 +1908,7 @@ async function implementLanes(run: FlowRun, tasks: TaskItem[], cfg: RepoConfig):
   if (result.restart) return ref.run;
   info(ref.run, "✅ 所有任務完成");
   announceConfirmations(ref.run);
-  return { ...to(ref.run, "verify"), taskIndex: tasks.length, taskPhase: "tests" };
+  return { ...to(ref.run, "verify"), taskIndex: tasks.length, ...TASK_RESET };
 }
 
 // ── 任務審查：只看這個任務的變更與驗收條件 ──
@@ -1924,22 +1980,14 @@ async function redoTests(
   ].join("\n"));
   addRetry(run.id, { key, backTo: "implement", category: "tests_invalid", attempt: redos, final: false }, run.updatedAt);
   // 暫停時退回次數歸零：resume 後從測試階段重來，再給一輪退回機會
-  if (pause) return saveRun({ ...run, attempts, stage: "implement", taskPhase: "tests", testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined });
+  if (pause) return saveRun({ ...run, attempts, stage: "implement", ...TASK_RESET, taskBase: run.taskBase });
   info(run, `↩️  ${key} 測試無法被實作滿足（${why}），退回測試階段重寫（${redos}/${TESTS_REDO_LIMIT}）`);
-  return { ...run, attempts, stage: "implement", taskPhase: "tests", testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: redos };
+  return { ...run, attempts, stage: "implement", ...TASK_RESET, taskBase: run.taskBase, testsRedos: redos };
 }
 
 /** 這個任務結束，下一個從寫測試開始 */
 function finishTask(run: FlowRun): FlowRun {
-  return {
-    ...run,
-    taskIndex: run.taskIndex + 1,
-    taskPhase: "tests",
-    taskBase: undefined,
-    testsCommit: undefined,
-    lastTestsAuthor: undefined,
-    testsRedos: undefined,
-  };
+  return { ...run, ...TASK_RESET, taskIndex: run.taskIndex + 1 };
 }
 
 // ── 任務驗證：通過才進入下一個任務 ──
@@ -2022,9 +2070,30 @@ export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "
       planned.push({ name: check.name, cmd, target: t });
     }
     const outcomes = await runPool(planned, cfg.checksConcurrency ?? Infinity, (check) => runCommand(check.target, check.cmd));
+    // 失敗先原樣重跑一次：暫時性的失敗（flaky 測試、port 被占用、網路）不該交給修正者去「修」不存在的 bug
+    const flaky = new Set<number>();
+    if (cfg.rerunFailedChecks) {
+      const failed = outcomes.flatMap((r, i) => (r.ok ? [] : [i]));
+      for (const i of failed) info(run, `   ↻ ${planned[i]!.name} 失敗，原樣重跑一次確認`);
+      const reruns = failed.map((i) => {
+        const t = target(run, `${stepPrefix}${planned[i]!.name}-rerun`, CMD_AGENT);
+        mkdirSync(dirname(t.logFile), { recursive: true });
+        writeFileSync(t.logFile, "");
+        return { i, target: t };
+      });
+      const second = await runPool(reruns, cfg.checksConcurrency ?? Infinity, (rerun) => runCommand(rerun.target, planned[rerun.i]!.cmd));
+      reruns.forEach((rerun, k) => {
+        outcomes[rerun.i] = second[k]!;
+        if (second[k]!.ok) {
+          flaky.add(rerun.i);
+          addFlaky(run.id, { scope, check: planned[rerun.i]!.name });
+        }
+      });
+    }
     planned.forEach((check, i) => {
       const r = outcomes[i]!;
-      info(run, `   ${r.ok ? "✓" : "✗"} ${check.name}${r.ok ? "" : logHint(run, r.seq)}`);
+      const note = flaky.has(i) ? "（第一次失敗、重跑通過，視為 flaky）" : "";
+      info(run, `   ${r.ok ? "✓" : "✗"} ${check.name}${note}${r.ok ? "" : logHint(run, r.seq)}`);
       results.push({ name: check.name, ok: r.ok, output: tail(r.output, 3000) });
     });
   }

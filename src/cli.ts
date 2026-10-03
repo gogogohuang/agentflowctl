@@ -14,10 +14,10 @@ import { describeDetected, detectProjectDefaults } from "./detect.js";
 import { CMD_AGENT, listLogs, localTime, logMark, nextLogFile, renderLog } from "./logs.js";
 import { confirmationsPath, flowDir, laneId, logDir, projectRoot, worktreeDir } from "./paths.js";
 import { ModelStage, ModelStrength, OrderedTaskList, StopAfterStage, type FlowRun, type StopAfterStage as StopAfterStageType, type TaskItem } from "./schemas.js";
-import { computeInsights, failureLabel, retryLabel } from "./insights.js";
+import { computeInsights, failureLabel, HOTSPOT_MIN_COUNT, HOTSPOT_MIN_RUNS, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
 import { computeStats, formatDuration } from "./stats.js";
-import { agentRuns, getRun, listRetries, listRuns, listSubstitutions, listUsage, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
+import { agentRuns, getRun, listFlaky, listRetries, listRuns, listSubstitutions, listUsage, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
 import { confirmationLines, confirmationTasks } from "./tasks.js";
 import { padDisplay, readJsonFile, type JsonResult } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
@@ -646,6 +646,7 @@ async function doctor(): Promise<void> {
   console.log(`程式碼審查人數：${cfg.reviewQuorum}　計畫審查人數：${cfg.planReviewQuorum}　計畫仲裁：${cfg.planArbiter ? "開啟" : "關閉"}`);
   console.log(`同一輪審查者同時執行上限：${cfg.reviewConcurrency ?? "不限"}`);
   console.log(`同一次驗證的檢查同時執行上限：${cfg.checksConcurrency ?? "不限"}`);
+  console.log(`檢查失敗先原樣重跑一次：${cfg.rerunFailedChecks ? "是" : "否"}`);
   console.log(`沒有相依關係的任務同時執行上限：${cfg.taskConcurrency ?? "不限"}`);
   const layers = cfg.planReviewLayers;
   console.log(`計畫分層審查：${layers.enabled ? `任務達 ${layers.minTasks} 個時開啟，最多 ${layers.maxGroups} 群，每群平均至少 ${layers.tasksPerGroup} 個任務` : "關閉"}`);
@@ -725,6 +726,7 @@ program
       stage: r.stage,
       failureCategory: r.failureCategory,
       retries: listRetries(r.id),
+      flaky: listFlaky(r.id),
       usage: listUsage(r.id),
       substitutions: listSubstitutions(r.id).length,
       stats: computeStats(listLogs(logDir(r.id))),
@@ -794,6 +796,19 @@ program
       for (const row of insights.byGate.slice(0, 10)) {
         console.log(`  ${padDisplay(row.gate, 19)}  ${String(row.count).padStart(4)} 次`);
       }
+    }
+
+    if (insights.hotspots.length) {
+      console.log(`\n反覆出現的失敗與對應規則（同一類至少 ${HOTSPOT_MIN_COUNT} 次、分散在 ${HOTSPOT_MIN_RUNS} 個以上的 run）`);
+      for (const h of insights.hotspots) {
+        console.log(`  ${retryLabel(h.category)}：${h.count} 次，${h.runs} 個 run`);
+        console.log(`     ${h.hint}`);
+        console.log(`     相關規則：${h.rules.join("；")}`);
+      }
+    }
+    if (insights.flaky.length) {
+      console.log("\n不穩定的檢查（第一次失敗、原樣重跑通過，已放行）");
+      for (const f of insights.flaky) console.log(`  ${padDisplay(f.check, 19)}  ${String(f.count).padStart(4)} 次`);
     }
 
     console.log("\n建議");
