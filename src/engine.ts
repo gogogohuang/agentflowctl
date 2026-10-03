@@ -1831,8 +1831,8 @@ async function taskFixStep(run: FlowRun, task: TaskItem, progress: string, tasks
 
 /** 可交給 lint 的檔案類型 */
 const CHECKABLE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
-/** agentflowctl 自己產生的內容（交接檔、run 資料），驗證不該檢查 */
-const GENERATED_PATH = /^\.(?:flow|agentflowctl)\//;
+/** 交接檔、run 資料、本機 git worktree。明示傳給 eslint 時 ignore 不一定生效，所以清單裡直接拿掉 */
+const GENERATED_PATH = /^\.(?:flow|agentflowctl|worktree|worktrees)\//;
 
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 

@@ -2262,7 +2262,10 @@ describe("lint 與型別檢查只在最後驗證", () => {
   });
 
   it("最後驗證跑全部，lint 只收到整支分支改過的程式檔", async () => {
-    const run = await checkRun("f-chk-final", { "src/a.ts": "export {};\n", "docs/readme.md": "# x\n", ".flow/x.ts": "x\n", ".agentflowctl/y.ts": "y\n" });
+    const run = await checkRun("f-chk-final", {
+      "src/a.ts": "export {};\n", "docs/readme.md": "# x\n", ".flow/x.ts": "x\n", ".agentflowctl/y.ts": "y\n",
+      ".worktree/z.ts": "z\n", ".worktrees/w.ts": "w\n",
+    });
     expect(await runChecks(run)).toBeUndefined();
     expect(calls("f-chk-final").sort()).toEqual(["lint:src/a.ts", "test:", "typecheck:"]);
   });

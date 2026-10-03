@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { describeDetected, detectProjectDefaults, withProjectDefaults } from "./detect.js";
-import { RepoConfig } from "./schemas.js";
+import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
 function project(files: Record<string, string | object>): string {
   const dir = mkdtempSync(join(tmpdir(), "agentflowctl-detect-"));
@@ -58,9 +58,9 @@ describe("detectProjectDefaults", () => {
   it("pnpm 專案：install 不鎖 lockfile，沒有對應 script 的檢查改用 pnpm exec", () => {
     const d = detectProjectDefaults(project({ "pnpm-lock.yaml": "" }));
     expect(d.install).toBe("pnpm install");
-    expect(d.test).toBe("pnpm exec vitest run");
+    expect(d.test).toBe(`pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}`);
     expect(d.checks).toEqual([
-      { name: "test", cmd: "pnpm exec vitest run" },
+      { name: "test", cmd: `pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}` },
       { name: "build", cmd: "pnpm exec vite build" },
     ]);
   });
@@ -68,10 +68,10 @@ describe("detectProjectDefaults", () => {
   it("yarn 與 bun 的指令寫法", () => {
     const yarn = detectProjectDefaults(project({ "yarn.lock": "" }));
     expect(yarn.install).toBe("yarn install");
-    expect(yarn.test).toBe("yarn vitest run");
+    expect(yarn.test).toBe(`yarn vitest run ${VITEST_WORKTREE_EXCLUDES}`);
     const bun = detectProjectDefaults(project({ "bun.lock": "" }));
     expect(bun.install).toBe("bun install");
-    expect(bun.test).toBe("bunx vitest run");
+    expect(bun.test).toBe(`bunx vitest run ${VITEST_WORKTREE_EXCLUDES}`);
   });
 
   it("package.json 有對應的 script 時改用 run <script>", () => {
@@ -81,20 +81,26 @@ describe("detectProjectDefaults", () => {
     }));
     expect(d.checks).toEqual([
       { name: "typecheck", cmd: "pnpm run type-check", finalOnly: true },
-      { name: "lint", cmd: "pnpm run lint --ignore-pattern '.flow/**' --ignore-pattern '.agentflowctl/**'", finalOnly: true, changedOnly: true },
-      { name: "test", cmd: "pnpm run test" },
+      { name: "lint", cmd: `pnpm run lint ${ESLINT_IGNORE_ARGS}`, finalOnly: true, changedOnly: true },
+      { name: "test", cmd: `pnpm run test ${VITEST_WORKTREE_EXCLUDES}` },
       { name: "build", cmd: "pnpm run build" },
     ]);
   });
 
   it("lint script 是 eslint 時補上略過 .flow 與 .agentflowctl，npm 要加 --", () => {
     const d = detectProjectDefaults(project({ "package.json": { scripts: { lint: "eslint ." } } }));
-    expect(d.checks.find((c) => c.name === "lint")?.cmd).toBe("npm run lint -- --ignore-pattern '.flow/**' --ignore-pattern '.agentflowctl/**'");
+    expect(d.checks.find((c) => c.name === "lint")?.cmd).toBe(`npm run lint -- ${ESLINT_IGNORE_ARGS}`);
   });
 
   it("lint script 不是 eslint 時不動指令", () => {
     const d = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { scripts: { lint: "biome check ." } } }));
     expect(d.checks.find((c) => c.name === "lint")?.cmd).toBe("pnpm run lint");
+  });
+
+  it("test script 不是 vitest 時不附加 vitest 的排除", () => {
+    const d = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { scripts: { test: "jest" } } }));
+    expect(d.checks.find((c) => c.name === "test")?.cmd).toBe("pnpm run test");
+    expect(d.test).toBe(`pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}`);
   });
 
   it("typecheck 也認得不含連字號的 script 名稱", () => {
@@ -114,7 +120,7 @@ describe("withProjectDefaults", () => {
   it("補上設定裡沒寫的 install、test、checks", () => {
     const raw = withProjectDefaults({ tddSplit: false }, detected) as Record<string, unknown>;
     expect(raw.install).toBe("pnpm install");
-    expect(raw.test).toBe("pnpm exec vitest run");
+    expect(raw.test).toBe(`pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}`);
     expect(raw.checks).toEqual(detected.checks);
     expect(raw.tddSplit).toBe(false);
   });
@@ -124,7 +130,7 @@ describe("withProjectDefaults", () => {
     const raw = withProjectDefaults({ install: "make deps", checks }, detected) as Record<string, unknown>;
     expect(raw.install).toBe("make deps");
     expect(raw.checks).toEqual(checks);
-    expect(raw.test).toBe("pnpm exec vitest run");
+    expect(raw.test).toBe(`pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}`);
   });
 
   it("沒有測試框架且沒手動設定 test 時，預設 checks 不含 test", () => {
@@ -148,7 +154,7 @@ describe("describeDetected", () => {
     expect(describeDetected({ checks: [] }, detected)).toEqual([
       "🔧 依專案偵測指令：pnpm（依 pnpm-lock.yaml）",
       "   install：pnpm install",
-      "   test：pnpm exec vitest run",
+      `   test：pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}`,
     ]);
   });
 
