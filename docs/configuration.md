@@ -25,6 +25,7 @@ config doctor                                             檢查 CLI 是否可�
 | `replan <id> --note <文字>`／`--note-file <路徑>`／`--no-review` | 補充意見或手改計畫檔後重做計畫，見[執行流程細節](workflow.md#計畫有疑慮時不必整份重寫)；`--no-review` 改完不再送審 |
 | `iterate <id> --req <文字>`／`--req-file <檔案>`／`--max-agent-runs <n>` | 已完成的 run 帶入補充需求，在同一個 worktree 開第二輪，見[執行流程細節](workflow.md#完成後開第二輪) |
 | `run --manual-plan` | 計畫通過審查後等待你確認，再用 `approve <id>` 繼續 |
+| `run --fast` | 快速流程，見[執行流程細節](workflow.md#快速流程--fast)；可與 `--manual-plan`、`--stop-after spec\|plan` 並用 |
 | `run --stop-after <階段>` | 在 `spec`、`plan`、`implement`、`verify` 或 `review` 完成後暫停；`pr` 會完成 PR 流程並結束。與 `--manual-plan` 互斥 |
 | `run --cycle <名單>` | 指定這次參與的 agent，例如 `--cycle claude,codex`；優先於設定檔的 `cycle` |
 | `run --model-mode balanced\|adaptive` | 只覆蓋這次 run 的模型模式；`resume` 沿用建立時的模式 |

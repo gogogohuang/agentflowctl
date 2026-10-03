@@ -25,6 +25,7 @@ import {
   DivergeBranch,
   DivergePick,
   DivergeRecord,
+  FastCheck,
   type DivergeFrame,
   RepoConfig,
   OrderedTaskList,
@@ -295,7 +296,10 @@ function completedStopStage(current: Stage, next: Stage): "spec" | "plan" | "imp
 }
 
 function pauseAtStopAfter(run: FlowRun, next: FlowRun): FlowRun {
-  const completed = completedStopStage(run.stage, next.stage);
+  // fast 的規格階段一次定案，直接進實作：規格與計畫兩個停點都在這裡完成
+  const fastSettled = run.fast && next.fast && run.stage === "spec" && (next.stage === "implement" || next.stage === "awaiting_approval")
+    && (run.stopAfter === "spec" || run.stopAfter === "plan");
+  const completed = fastSettled ? run.stopAfter : completedStopStage(run.stage, next.stage);
   if (!completed || run.stopAfter !== completed) return next;
   return {
     ...next,
@@ -432,7 +436,54 @@ function announceConfirmations(run: FlowRun): void {
 
 // ───────────────────────── 各階段 ─────────────────────────
 
+/** fast 的任務數上限：超過就退回，要求縮小範圍 */
+const FAST_MAX_TASKS = 2;
+
+const FAST_REASONS: Record<keyof FastCheck, string> = {
+  crossModule: "跨多個模組或子系統",
+  publicOrStoredContract: "動到公開介面或儲存資料的格式",
+  trustBoundary: "碰到信任邊界（權限、輸入驗證、機密）",
+  unresolvedDecision: "有尚未決定的重要需求或設計",
+};
+
+/** 放棄 fast 的結果，從頭走完整流程：清掉這次寫的計畫檔，下一步重新產生規格 */
+function escalateFast(run: FlowRun, reason: string): FlowRun {
+  info(run, `⚡ fast 不適用（${reason}），改走完整流程`);
+  for (const f of [...PLAN_FILES, "fast-check.json"]) rmSync(flowFile(run, f), { force: true });
+  return { ...run, fast: undefined };
+}
+
+/** fast：一次呼叫寫完規格與計畫，由程式驗證；沒有計畫審查，標出複雜度或有未結計畫事項就改走完整流程 */
+async function fastPlanStage(run: FlowRun): Promise<FlowRun> {
+  const agent = specAgent(run.cycle, run.id);
+  info(run, `⚡ fast：一次產生規格與計畫（${agent}）`);
+  const cfg = loadRepoConfig();
+  const outcome = await agentStep(run, agent, "spec", renderPrompt("fast-plan", { requirement: run.requirement, testPattern: cfg.testPattern, maxTasks: String(FAST_MAX_TASKS) }), { kind: "write" });
+  const { r, agent: actual } = outcome;
+  await discardChanges(worktreeDir(run.id));
+  if (!r.ok) return retry(run, "spec", `Agent 執行失敗：${r.summary}`, "spec", "agent_error");
+  const check = readJsonFile(flowFile(run, "fast-check.json"), FastCheck);
+  if (!check.ok) return retry(run, "spec", check.error, "spec", "format_invalid");
+  const flagged = (Object.keys(FAST_REASONS) as (keyof FastCheck)[]).filter((k) => check.data[k]);
+  if (flagged.length) return escalateFast(run, flagged.map((k) => FAST_REASONS[k]).join("、"));
+  const ordered = validatePlan(run);
+  if (typeof ordered === "string") return retry(run, "spec", ordered, "spec", "format_invalid");
+  const count = ordered.filter((t) => t.kind !== "confirm").length;
+  if (count > FAST_MAX_TASKS) {
+    return retry(run, "spec", `fast 的任務最多 ${FAST_MAX_TASKS} 個，目前有 ${count} 個；請縮小範圍，或合併同一批檔案與行為的任務`, "spec", "format_invalid");
+  }
+  const handoffError = await settleHandoff(run, outcome, PLAN_FILES);
+  if (handoffError) return retry(run, "spec", handoffError, "spec", "handoff_invalid");
+  const pending = openActions(readHandoff(run.id), "plan");
+  if (pending.length) return escalateFast(run, `計畫仍有未結交接事項：${pending.map((item) => item.id).join("、")}`);
+  acceptPlan(run, ordered);
+  rmSync(flowFile(run, "fast-check.json"), { force: true });
+  rmSync(flowFile(run, "plan-review-last.txt"), { force: true });
+  return planSettled({ ...run, planWriter: actual }, "spec");
+}
+
 async function specStage(run: FlowRun): Promise<FlowRun> {
+  if (run.fast) return fastPlanStage(run);
   const agent = specAgent(run.cycle, run.id);
   info(run, `📝 產生規格（${agent}）`);
   const outcome = await agentStep(run, agent, "spec", renderPrompt("spec", { requirement: run.requirement }), { kind: "write" });
@@ -1367,6 +1418,8 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const redAlreadyGreen = run.taskPhase === "tests" && existsSync(flowFile(run, "feedback.md"))
     && readFileSync(flowFile(run, "feedback.md"), "utf8").includes(TESTS_NOT_RED_MARK);
   const waiveRed = task.tdd !== false && (descriptionWaivesRed(task.description) || redAlreadyGreen);
+  // fast 沒有任務審查，只留最後的整體程式碼審查把關
+  if (run.taskPhase === "review" && run.fast) return { ...run, taskPhase: "verify" };
   if (run.taskPhase === "review") return taskReviewStep(run, task, progress, taskJson, acceptanceJson);
   if (run.taskPhase === "verify") return taskVerifyStep(run, task, progress);
   if (run.taskPhase === "fix") return taskFixStep(run, task, progress, tasks);
@@ -1579,7 +1632,7 @@ async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, task
   return saveRun({
     id, baseBranch: parent.branch, branch, requirement: parent.requirement, stage: "implement", autopilot: true,
     maxAgentRuns: parent.maxAgentRuns, maxAttempts: parent.maxAttempts, cycle: parent.cycle, attempts: {},
-    modelMode: parent.modelMode, taskIndex: 0, taskPhase: "tests", taskOffset: offset, createdAt: now, updatedAt: now,
+    modelMode: parent.modelMode, fast: parent.fast, taskIndex: 0, taskPhase: "tests", taskOffset: offset, createdAt: now, updatedAt: now,
   });
 }
 

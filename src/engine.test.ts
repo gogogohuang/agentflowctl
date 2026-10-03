@@ -1084,8 +1084,8 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 `);
 
 async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce = false,
-  failReviewOnce = false, failFixOnce = false, stopAfter }: { tasks?: number; check?: string; rejectOnce?: boolean;
-  failReviewOnce?: boolean; failFixOnce?: boolean; stopAfter?: "spec" | "plan" | "implement" | "verify" | "review" | "pr" } = {}) {
+  failReviewOnce = false, failFixOnce = false, stopAfter, fast }: { tasks?: number; check?: string; rejectOnce?: boolean;
+  failReviewOnce?: boolean; failFixOnce?: boolean; stopAfter?: "spec" | "plan" | "implement" | "verify" | "review" | "pr"; fast?: boolean } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", worker] }])),
     cycle: ["a", "b"], install: "true", taskConcurrency: 1, test: "for f in T-*.test.mjs; do node $f || exit 1; done",
@@ -1104,7 +1104,7 @@ async function taskFlowRun(id: string, { tasks = 1, check = "true", rejectOnce =
   const now = new Date().toISOString();
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
-    autopilot: true, maxAgentRuns: 20, cycle: ["a", "b"], attempts: {},
+    autopilot: true, maxAgentRuns: 20, cycle: ["a", "b"], attempts: {}, fast,
     taskIndex: 0, taskPhase: "tests", stopAfter, createdAt: now, updatedAt: now,
   });
 }
@@ -1518,6 +1518,100 @@ describe("iterate：在同一個 worktree 開第二輪", () => {
   });
 });
 
+// --fast：一次 agent 呼叫寫完規格與計畫，程式驗證後直接定案，不經計畫審查
+const fastScript = join(root, "fast-worker.mjs");
+writeFileSync(fastScript, `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+const mode = readFileSync(".flow/fast-mode.txt", "utf8").trim();
+appendFileSync(".flow/calls.txt", "plan\\\\n");
+const task = (n) => ({ id: "T-" + n, title: "任務 " + n, description: "完成 " + n, dependsOn: [], acceptance: ["AC-" + n] });
+const count = mode === "three" ? 3 : mode === "two" ? 2 : 1;
+const ids = Array.from({ length: count }, (_, i) => i + 1);
+writeFileSync(".flow/spec.md", "# 規格\\\\n");
+writeFileSync(".flow/plan.md", "# 計畫\\\\n" + ids.map((n) => "\\\\n## T-" + n + "\\\\n").join(""));
+writeFileSync(".flow/acceptance.json", JSON.stringify(ids.map((n) => ({ id: "AC-" + n, description: "條件 " + n }))));
+writeFileSync(".flow/tasks.json", JSON.stringify(ids.map(task)));
+const flag = (k) => mode === k;
+if (mode !== "no-check") writeFileSync(".flow/fast-check.json", JSON.stringify({
+  crossModule: flag("cross"), publicOrStoredContract: flag("contract"), trustBoundary: flag("trust"), unresolvedDecision: flag("unresolved"),
+}));
+const issues = mode === "open" ? [{ kind: "action", summary: "計畫待核對", evidence: "plan.md:1", targetStage: "plan" }] : [];
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: issues, dispositions: [] }));
+`);
+
+describe("fast 計畫階段", () => {
+  async function fastRun(id: string, mode: string, opts: { maxAgentRuns?: number; stopAfter?: "spec" | "plan"; manual?: boolean } = {}) {
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", fastScript] }])),
+      cycle: ["a", "b"], install: "true", test: "true", checks: [],
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "fast-mode.txt"), mode);
+    const now = new Date().toISOString();
+    return advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "spec", fast: true,
+      autopilot: !opts.manual, maxAgentRuns: opts.maxAgentRuns ?? 1, cycle: ["a", "b"], attempts: {}, stopAfter: opts.stopAfter,
+      taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+  }
+  const planCalls = (id: string) => readFileSync(join(flowDir(id), "calls.txt"), "utf8");
+
+  it("一次呼叫定案：直接進實作，不經計畫審查，驗收條件與任務齊全", async () => {
+    const run = await fastRun("f-fast-ok", "ok", { stopAfter: "spec" });
+    expect(run).toMatchObject({ stage: "paused", pausedStage: "implement", fast: true, taskIndex: 0, taskPhase: "tests" });
+    expect(agentRuns(run.id)).toBe(1);
+    expect(planCalls(run.id)).toBe("plan\\n");
+    expect(JSON.parse(readFileSync(join(flowDir(run.id), "tasks.ordered.json"), "utf8"))).toHaveLength(1);
+    expect(existsSync(join(flowDir(run.id), "fast-check.json"))).toBe(false);
+  });
+
+  it("兩個任務也可以；停點是 plan 時同樣在定案後暫停", async () => {
+    const run = await fastRun("f-fast-two", "two", { stopAfter: "plan" });
+    expect(run).toMatchObject({ stage: "paused", pausedStage: "implement" });
+    expect(JSON.parse(readFileSync(join(flowDir(run.id), "tasks.ordered.json"), "utf8"))).toHaveLength(2);
+  });
+
+  it("--manual-plan：定案後等人核准", async () => {
+    const run = await fastRun("f-fast-manual", "ok", { manual: true });
+    expect(run.stage).toBe("awaiting_approval");
+  });
+
+  it("定案時 agent 次數上限依任務數改算", async () => {
+    const run = await fastRun("f-fast-budget", "ok", { stopAfter: "spec", maxAgentRuns: 5 });
+    expect(run.maxAgentRuns).toBeGreaterThan(1);
+  });
+
+  it.each(["cross", "contract", "trust", "unresolved"])("計畫標出複雜度（%s）：丟掉 fast 的計畫，改走完整流程", async (mode) => {
+    const run = await fastRun(`f-fast-escalate-${mode}`, mode);
+    // 回到完整流程的規格階段；額度只有 1 次，所以在那裡以 agent_budget 失敗
+    expect(run).toMatchObject({ stage: "failed", failedStage: "spec", failureCategory: "agent_budget" });
+    expect(run.fast).toBeUndefined();
+    for (const f of ["spec.md", "plan.md", "acceptance.json", "tasks.json", "fast-check.json"]) {
+      expect(existsSync(join(flowDir(run.id), f))).toBe(false);
+    }
+  });
+
+  it("計畫帶著未結的計畫交接事項：同樣改走完整流程，事項留給後面處理", async () => {
+    const run = await fastRun("f-fast-open", "open");
+    expect(run).toMatchObject({ stage: "failed", failedStage: "spec", failureCategory: "agent_budget" });
+    expect(run.fast).toBeUndefined();
+    expect(readHandoff(run.id).issues[0]?.status).toBe("open");
+  });
+
+  it("任務超過 2 個：退回重寫，並把上限寫進意見", async () => {
+    const run = await fastRun("f-fast-three", "three");
+    expect(run).toMatchObject({ stage: "failed", failedStage: "spec", failureCategory: "agent_budget", fast: true });
+    expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toMatch(/最多 2 個/);
+    expect(listRetries(run.id).map((r) => r.category)).toContain("format_invalid");
+  });
+
+  it("缺少複雜度檢查檔：退回重寫", async () => {
+    const run = await fastRun("f-fast-no-check", "no-check");
+    expect(run).toMatchObject({ stage: "failed", failedStage: "spec", fast: true });
+    expect(listRetries(run.id).map((r) => r.category)).toContain("format_invalid");
+  });
+});
+
 describe("任務審查與驗證", () => {
   it("完成 implement 停點後暫停，resume stage 指向 verify", async () => {
     const run = await taskFlowRun("f-stop-implement", { stopAfter: "implement" });
@@ -1553,6 +1647,20 @@ describe("任務審查與驗證", () => {
     const run = await taskFlowRun("f-task-fix-retry-clear", { rejectOnce: true, failFixOnce: true });
     expect(run.stage).toBe("done");
     expect(run.attempts["T-1:fix"]).toBeUndefined();
+  });
+
+  it("fast：略過任務審查，每個任務只有測試、實作與驗證，最後仍有整體審查", async () => {
+    const run = await taskFlowRun("f-fast-no-task-review", { tasks: 2, fast: true });
+    expect(run.failureReason).toBeUndefined();
+    expect(run.stage).toBe("done");
+    expect(steps(run.id)).toEqual(["tests:T-1", "code:T-1", "tests:T-2", "code:T-2", "review"]);
+  });
+
+  it("fast：沒有任務審查，所以任務審查的退回不會發生", async () => {
+    const run = await taskFlowRun("f-fast-reject-ignored", { fast: true, rejectOnce: true });
+    expect(run.stage).toBe("done");
+    expect(steps(run.id)).toEqual(["tests:T-1", "code:T-1", "review"]);
+    expect(existsSync(join(flowDir(run.id), "reject-once.txt"))).toBe(true);
   });
 
   it("每個任務依序寫測試、實作、審查、驗證，全部完成後再做整體審查", async () => {

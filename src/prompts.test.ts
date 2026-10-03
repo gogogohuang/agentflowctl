@@ -15,6 +15,7 @@ const vars = {
   task: "{}",
   acceptance: "[]",
   testPattern: "\\.test\\.ts$",
+  maxTasks: "2",
   testCmd: "npx vitest run",
   redOutput: "FAIL",
   index: "- T-1 標題 | AC-1 | depends：（無）\n  改 src/form.ts",
@@ -65,6 +66,13 @@ describe("prompts", () => {
     expect(text).toContain(".flow/diverge-pick.json");
     expect(text).toContain("只能選 inputs 裡出現的 frame");
     expect(text).not.toContain("diverge-branch.json");
+  });
+
+  it("fast-plan 一次寫完規格與計畫，並要求回報複雜度事實", () => {
+    const text = renderPrompt("fast-plan", vars);
+    for (const f of [".flow/spec.md", ".flow/acceptance.json", ".flow/plan.md", ".flow/tasks.json", ".flow/fast-check.json"]) expect(text).toContain(f);
+    for (const k of ["crossModule", "publicOrStoredContract", "trustBoundary", "unresolvedDecision"]) expect(text).toContain(k);
+    expect(text).toContain("任務最多 2 個");
   });
 
   it("每份 prompt 的角色都不一樣", () => {
