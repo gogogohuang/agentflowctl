@@ -78,6 +78,14 @@ function readPackageJson(root: string): PackageJson {
   }
 }
 
+/** 有 package.json 卻不像 Vite 專案：沒有 vite 依賴、vite.config 與根目錄 index.html */
+function isNonViteProject(root: string, pkg: PackageJson): boolean {
+  if (!existsSync(join(root, "package.json"))) return false;
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  if ("vite" in deps || existsSync(join(root, "index.html"))) return false;
+  return !["ts", "js", "mjs", "mts", "cjs", "cts"].some((ext) => existsSync(join(root, `vite.config.${ext}`)));
+}
+
 function detectManager(root: string, pkg: PackageJson): { manager: PackageManager; source: string } {
   if (typeof pkg.packageManager === "string") {
     const name = pkg.packageManager.split("@")[0];
@@ -113,6 +121,8 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
       const run = `${manager} run ${script}`;
       return [{ name, cmd: eslint ? withArgs(run, ESLINT_IGNORE_ARGS, manager) : run, finalOnly: true, changedOnly: true }];
     }
+    // 非 Vite 專案沒有 build script 就略過，不去 npx 一個用不到的 vite
+    if (!script && name === "build" && isNonViteProject(root, pkg)) return [];
     if (!script) return [{ name, cmd: withExec(cmd, manager) }];
     const run = `${manager} run ${script}`;
     // 專案 script 已是 vitest 時只附加排除，不改寫 script 本身；其他測試指令維持原樣
