@@ -17,6 +17,7 @@ export const RETRY_LABEL: Record<RetryCategory, string> = {
   tests_not_green: "測試仍未通過",
   tests_invalid: "測試本身有問題，退回重寫",
   tests_deleted: "刪除測試檔",
+  checks_weakened: "繞過檢查（skip、suppress、斷言減少）",
   out_of_scope: "動到後面任務的檔案",
   merge_conflict: "平行任務合併衝突",
   merge_tests_failed: "平行任務合併後測試失敗",

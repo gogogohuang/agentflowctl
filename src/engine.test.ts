@@ -15,10 +15,14 @@ process.chdir(root);
 const script = join(root, "reviewer.mjs");
 writeFileSync(script, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const mode = readFileSync(".flow/review-mode.txt", "utf8").trim();
+const acs = existsSync(".flow/acceptance.json") ? JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })) : [];
 if (existsSync(".flow/tamper-review.txt")) writeFileSync(".flow/acceptance.json", "[]");
 const context = readFileSync(".flow/handoff-context.md", "utf8");
 const id = context.match(/## ([a-f0-9]+)：/)?.[1];
-writeFileSync(mode.startsWith("plan-") ? ".flow/plan-review.json" : ".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+const review = mode === "missing" ? { verdict: "approve", items: [] }
+  : mode.startsWith("extra") ? { verdict: "changes_requested", items: [...acs, { criterion: "額外發現：空陣列", status: "not_met", note: "submit 會丟例外", evidence: mode === "extra-bare" ? "" : "feature.ts:1" }] }
+  : { verdict: "approve", items: mode.startsWith("plan-") ? [] : acs };
+writeFileSync(mode.startsWith("plan-") ? ".flow/plan-review.json" : ".flow/review.json", JSON.stringify(review));
 writeFileSync(".flow/handoff-response.json", JSON.stringify({
   newIssues: [],
   dispositions: mode.endsWith("close") && id ? [{ id, status: "resolved", reason: "已核對測試", evidence: "src/api.test.ts:25" }] : [],
@@ -41,7 +45,7 @@ const SLOW_TEST_MS = 30_000;
 // 額度用完的 agent 記在 engine 模組層，同一個測試程序內不會自動清掉；每個測試都從沒有人額度用完開始
 beforeEach(() => resetQuotaState());
 
-async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper = false, adaptive = false, stopAfter?: "review" | "pr") {
+async function reviewRun(id: string, mode: "open" | "close" | "missing" | "extra-bare" | "extra" | "extra-close", quorum = 1, tamper = false, adaptive = false, stopAfter?: "review" | "pr", opts: { attempts?: Record<string, number>; maxAgentRuns?: number } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b", "c"].map((name) => [name, { adapter: "command", command: ["node", script, ...(adaptive ? ["{model}"] : [])],
       ...(adaptive ? { models: [{ name: "small", strength: "low" }, { name: "large", strength: "high" }], modelProbe: ["node", script, "{model}"] } : {}) }])),
@@ -54,16 +58,14 @@ async function reviewRun(id: string, mode: "open" | "close", quorum = 1, tamper 
   await commitAll(wt, "feat: 測試功能 [a]");
   mkdirSync(flowDir(id), { recursive: true });
   writeFileSync(join(flowDir(id), "review-mode.txt"), mode);
-  if (tamper) {
-    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "匯出 answer" }]));
-    writeFileSync(join(flowDir(id), "tamper-review.txt"), "");
-  }
+  writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "匯出 answer" }]));
+  if (tamper) writeFileSync(join(flowDir(id), "tamper-review.txt"), "");
   const source = { stage: "implement" as const, step: "T-1-code", agent: "a", callKey: `${id}:code` };
   mergeHandoff(id, source.callKey, source, { newIssues: [{ kind: "action", summary: "測試待核對", evidence: "src/api.test.ts:20", targetStage: "code" }], dispositions: [] }, "writer");
   const now = new Date().toISOString();
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "review" as const,
-    autopilot: true, maxAgentRuns: 10, cycle: ["a", "b", "c"], lastWriter: "a", attempts: {},
+    autopilot: true, maxAgentRuns: opts.maxAgentRuns ?? 10, cycle: ["a", "b", "c"], lastWriter: "a", attempts: opts.attempts ?? {},
     ...(adaptive ? { modelMode: "adaptive" as const } : {}),
     taskIndex: 1, taskPhase: "tests" as const, stopAfter, createdAt: now, updatedAt: now,
   });
@@ -88,6 +90,39 @@ describe("審查交接關卡", () => {
     expect(retries.at(-1)).toMatchObject({ final: true });
     expect(retries.slice(0, -1).every((r) => r.final === false)).toBe(true);
     expect(run.failureCategory).toBe("retry_limit");
+  });
+
+  it("審查沒有逐條回報驗收條件時視為格式錯誤，重審到上限才失敗", async () => {
+    const run = await reviewRun("f-review-missing", "missing");
+    expect(run.stage).toBe("failed");
+    expect(run.failureCategory).toBe("retry_limit");
+    const retries = listRetries(run.id);
+    expect(retries.every((r) => r.category === "format_invalid")).toBe(true);
+    expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toContain("沒有逐條回報驗收條件：AC-1");
+  });
+
+  it("額外發現沒有 evidence 時視為格式錯誤", async () => {
+    const run = await reviewRun("f-review-extra-bare", "extra-bare");
+    expect(run.failureCategory).toBe("retry_limit");
+    expect(listRetries(run.id).every((r) => r.category === "format_invalid")).toBe(true);
+    expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toContain("額外發現必須在 evidence");
+  });
+
+  it("額外發現第一次可以擋關，意見以 extra_finding 與驗收條件的 issue 分開標示", async () => {
+    const run = await reviewRun("f-review-extra-block", "extra", 1, false, false, undefined, { maxAgentRuns: 1 });
+    expect(listRetries(run.id).map((r) => r.category)).toEqual(["review_changes"]);
+    const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+    expect(feedback).toContain('<extra_finding status="not_met" evidence="feature.ts:1">');
+    expect(feedback).not.toContain("<issue ");
+  });
+
+  it("已經修過一輪後只剩額外發現時不再擋關，改記成參考資訊", async () => {
+    const run = await reviewRun("f-review-extra-downgrade", "extra-close", 1, false, false, undefined, { attempts: { review: 1 } });
+    expect(run.stage).toBe("done");
+    const info = readHandoff(run.id).issues.filter((i) => i.kind === "info");
+    expect(info).toHaveLength(1);
+    expect(info[0]).toMatchObject({ targetStage: "code", evidence: "feature.ts:1" });
+    expect(info[0]!.summary).toContain("額外發現：空陣列");
   });
 
   it("審查者附證據結案後才進入 PR", async () => {
@@ -184,6 +219,8 @@ if (prompt.includes("plan-arbiter.json")) {
     });
     expect(readHandoff(id).issues).toEqual([
       expect.objectContaining({ kind: "action", targetStage: "plan", status: "open" }),
+      // 分歧時繼續實作，沒核准的仲裁意見另記成程式碼類的待處理事項
+      expect.objectContaining({ kind: "action", targetStage: "code", status: "open", summary: expect.stringContaining("仍有缺口") }),
     ]);
     expect(listRetries(id).map((r) => [r.key, r.category])).toEqual([["plan-handoff", "open_handoff"]]);
     expect(run.failedStage).toBe("plan_fix");
@@ -838,6 +875,11 @@ describe("略過 TDD", () => {
     expect(agentRuns(run.id)).toBe(1);
     expect(listRetries(run.id).map((item) => item.category)).not.toContain("code_not_written");
     expect(existsSync(join(worktreeDir(run.id), "feature.mjs"))).toBe(false);
+    // 沒有變更就略過時留下參考資訊，最終審查要核對這個任務的驗收條件
+    const info = readHandoff(run.id).issues.filter((i) => i.kind === "info");
+    expect(info).toHaveLength(1);
+    expect(info[0]).toMatchObject({ targetStage: "code" });
+    expect(info[0]!.summary).toContain("沒有任何檔案變更而被略過");
   });
 
   it("kind 為 confirm 時從實作清單拿掉、另存給使用者，不停下", async () => {
@@ -894,6 +936,37 @@ describe("修正階段", () => {
     const feedback = readFileSync(join(flowDir(id), "feedback-seen.txt"), "utf8");
     expect(feedback).toContain("型別檢查失敗");
     expect(feedback).toContain("不可修改規格與計畫檔");
+  });
+
+  it("修正新增 skip 或型別抑制時還原並帶著原本的意見重試", async () => {
+    const id = "f-fix-weakened";
+    const weak = join(root, "weak-fixer.mjs");
+    writeFileSync(weak, `import { writeFileSync } from "node:fs";
+writeFileSync("answer.test.ts", "it.skip('回傳 42', () => {});\\n");
+writeFileSync("answer.ts", "// @ts-ignore\\nexport const answer: string = 42;\\n");
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+      agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", weak] }])),
+      cycle: ["a", "b"], install: "true", test: "true", checks: [],
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "匯出 answer" }]));
+    writeFileSync(join(flowDir(id), "feedback.md"), "測試失敗");
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "fix", fixSource: "verify",
+      autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], lastWriter: "a", attempts: {},
+      taskIndex: 1, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    expect(listRetries(id).map((item) => item.category)).toContain("checks_weakened");
+    expect(existsSync(join(worktreeDir(id), "answer.test.ts"))).toBe(false);
+    const feedback = readFileSync(join(flowDir(id), "feedback.md"), "utf8");
+    expect(feedback).toContain("測試失敗");
+    expect(feedback).toContain("answer.test.ts（新增 skip／only／todo 1 處）");
+    expect(feedback).toContain("answer.ts（新增 @ts-ignore／@ts-nocheck／eslint-disable 1 處）");
+    expect(run.attempts.fix).toBe(1);
   });
 
   it("任務修正動到後面任務負責的檔案時還原並帶著原本的意見重試", async () => {
@@ -1086,8 +1159,8 @@ if (role === "task-review" || role === "review") {
   const reject = role === "task-review" && existsSync(shared + "/reject-once.txt");
   if (reject) rmSync(shared + "/reject-once.txt");
   writeFileSync(".flow/review.json", JSON.stringify(reject
-    ? { verdict: "changes_requested", items: [{ criterion: "AC-1", status: "partial", note: "缺少邊界情況" }] }
-    : { verdict: "approve", items: [] }));
+    ? { verdict: "changes_requested", items: [{ criterion: "AC-1", status: "partial", note: "缺少邊界情況" }, ...JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })).filter((a) => a.criterion !== "AC-1")] }
+    : { verdict: "approve", items: JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })) }));
 }
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
@@ -1154,7 +1227,7 @@ if (role === "code") {
   writeFileSync(id + ".mjs", "export const ok = true;\\n");
   if (cfg.shared?.includes(id)) appendFileSync("shared.txt", id + "\\n");
 }
-if (role === "task-review" || role === "review") writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+if (role === "task-review" || role === "review") writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })) }));
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
 
@@ -1891,7 +1964,7 @@ if (quota === "quota") {
   process.exit(1);
 }
 const prompt = readFileSync(0, "utf8");
-if (prompt.includes("你是程式碼審查者")) writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+if (prompt.includes("你是程式碼審查者")) writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })) }));
 else writeFileSync(\`fixed-\${name}.txt\`, "ok\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
@@ -1909,6 +1982,7 @@ async function quotaRun(id: string, stage: "fix" | "review", exhausted: string, 
   await commitAll(worktreeDir(id), "feat: 測試功能 [a]");
   mkdirSync(flowDir(id), { recursive: true });
   writeFileSync(join(flowDir(id), "feedback.md"), "測試失敗");
+  writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "匯出 answer" }]));
   const now = new Date().toISOString();
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage, fixSource: "verify",

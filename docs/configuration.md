@@ -146,7 +146,7 @@ Codex 另有幾點差異：
 | `agents.<名稱>.models` | 無 | 自動選模時使用；每筆有 `name`、`strength`，可加 `effort`，建議用 `config agent model add` 設定並實際驗證 |
 | `fixStrategy` | `"ring"` | `"ring"` 由審查者以外的 agent 修正；`"author"` 交回最後作者 |
 | `tddSplit` | `true` | 有多位 agent 時，`true` 會把同一任務的測試與實作分給不同 agent |
-| `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准 |
+| `reviewQuorum` | `1` | 任務與最終程式碼審查需要幾位不同審查者核准。預設只有一位，單一模型的盲點就是最後一道關卡；重要專案建議設 `2` 以上，代價是每次審查多花一次 agent 呼叫 |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者核准 |
 | `taskConcurrency` | 不限 | 沒有相依關係的任務最多幾個同時執行（各在自己的 worktree）；`1` 為一次一個任務，等同關閉平行任務；說明見[平行執行任務](#平行執行任務) |
 | `checksConcurrency` | 不限 | 同一次驗證裡 typecheck、lint、test、build 等檢查最多幾個同時執行；`1` 為一次一個。install 仍先單獨跑完 |
@@ -154,7 +154,7 @@ Codex 另有幾點差異：
 | `planArbiter` | `true` | 計畫審查僵持，或修訂一次後仍被要求修改時是否啟用仲裁 |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |
 | `diverge` | `{ "enabled": true, "after": 2, "branches": 3 }` | 同一任務連續因測試／實作關卡失敗時，先從 2 到 3 個角度診斷再重試；說明見表格下方 |
-| `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續、`"stop"` 停止 |
+| `tieBreak` | `"proceed"` | 兩位仲裁者意見分歧時，`"proceed"` 繼續（沒核准的意見會記成待處理事項，最終審查必須結案）、`"stop"` 停止 |
 | `maxAgentRuns` | `60` | 計畫定案前，一次 run 最多執行幾次 agent；定案後改依任務數決定（見 `agentRunsPerTask`） |
 | `agentRunsPerTask` | `20` | 計畫定案時，上限改為「已執行次數 ＋ 任務數 × 這個值」（任務數不含 `kind: confirm`）。`run`／`resume` 明確指定 `--max-agent-runs` 後不再改算 |
 | `maxAmendments` | `2` | 同一個已合併任務最多被後面的任務要求修補幾次，超過就暫停等人處理 |

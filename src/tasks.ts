@@ -171,21 +171,37 @@ export function confirmationChecklist(tasks: TaskItem[], acceptance: { id: strin
 
 /** 描述裡寫出的檔案路徑（含目錄與副檔名），例如 src/pages/x/Foo.tsx */
 const PATH_TOKEN = /[\w@.-]+(?:\/[\w@.-]+)+\.[A-Za-z0-9]+/g;
+/** 專案根目錄的檔案，例如 package.json、tsconfig.json、README.md；只認常見的副檔名，避免把「Next.js」之類的字當成路徑 */
+const ROOT_FILE_TOKEN = /(?<![\w@./-])[\w@-]+(?:\.[\w@-]+)*\.(?:json|ya?ml|toml|md|[cm]?[jt]sx?|css|html)(?![\w/-])/g;
+/** 描述裡寫出的目錄，結尾要有斜線，例如 src/auth/；至少兩層，避免 src/ 這種太寬的目錄把一整個專案都算成某個任務的 */
+const DIR_TOKEN = /(?<![\w@./:-])[\w@.-]+(?:\/[\w@.-]+)+\/(?![\w@.-])/g;
 
 export function describedPaths(description: string): Set<string> {
-  return new Set((description.match(PATH_TOKEN) ?? []).map((path) => path.replace(/^\.\//, "")));
+  const tokens = [...(description.match(PATH_TOKEN) ?? []), ...(description.match(ROOT_FILE_TOKEN) ?? [])];
+  return new Set(tokens.map((path) => path.replace(/^\.\//, "")));
+}
+
+/** 描述裡寫出的目錄；目錄底下的檔案算這個任務的 */
+export function describedDirs(description: string): string[] {
+  return [...new Set((description.match(DIR_TOKEN) ?? []).map((dir) => dir.replace(/^\.\//, "")))];
+}
+
+/** 描述是否把這個檔案劃給自己：明寫檔案路徑，或寫了它所在的目錄 */
+function describes(description: string, file: string): boolean {
+  return describedPaths(description).has(file) || describedDirs(description).some((dir) => file.startsWith(dir));
 }
 
 /**
  * 找出目前任務動到、但只有後面任務的描述提到的檔案。
  * 這些檔案屬於後面的任務：先做掉會讓那個任務的紅燈不可能成立，審查也看不出是誰的工作。
+ * 沒有任何任務提到的檔案不在此限：新增 helper、鎖定檔等無法事先列舉。
  */
 export function outOfScopeFiles(tasks: TaskItem[], index: number, changed: string[]): { file: string; owner: string }[] {
-  const mine = describedPaths(tasks[index]?.description ?? "");
+  const mine = tasks[index]?.description ?? "";
   const found: { file: string; owner: string }[] = [];
   for (const file of changed) {
-    if (mine.has(file)) continue;
-    const owner = tasks.slice(index + 1).find((task) => describedPaths(task.description).has(file));
+    if (describes(mine, file)) continue;
+    const owner = tasks.slice(index + 1).find((task) => describes(task.description, file));
     if (owner) found.push({ file, owner: owner.id });
   }
   return found;

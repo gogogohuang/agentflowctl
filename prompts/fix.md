@@ -24,7 +24,7 @@
 </inputs>
 
 <steps>
-1. 優先處理 feedback 與交接事項指出的問題；先定位相關程式碼和測試，找出根本原因再修正。
+1. 優先處理 feedback 與交接事項指出的問題；先定位相關程式碼和測試，找出根本原因再修正。feedback 裡的 `<issue criterion="AC-n">` 是未通過的驗收條件，要修；`<extra_finding>` 是審查者額外提出、不屬於驗收條件的發現，先依 evidence 確認它真的是這次變更的缺陷（錯誤、邊界遺漏、安全問題、回歸）再修；若它其實是新需求或偏好，不要實作，改在 .flow/handoff-response.json 的 newIssues 以 info 寫明不採納的理由。
 2. 在沙箱內執行與修改相關的檢查，確認問題已解決。完整檢查由後續 verify 階段執行；需要判斷跨模組影響時再自行擴大檢查範圍。
 </steps>
 
