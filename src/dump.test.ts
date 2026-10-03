@@ -52,6 +52,16 @@ describe("dumpRun", () => {
     expect(existsSync(join(out, "run", "state.json"))).toBe(true);
   });
 
+  it("收 replan 留下的 confirmations-restored 標記檔", async () => {
+    saveRun(run("d-m"));
+    mkdirSync(runDir("d-m"), { recursive: true });
+    writeFileSync(join(runDir("d-m"), "confirmations-restored"), "");
+    const out = join(root, "out-m");
+    await dumpRun("d-m", out);
+    expect(existsSync(join(out, "run", "confirmations-restored"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(out, "meta.json"), "utf8")).missing).not.toContain("run/confirmations-restored");
+  });
+
   it("不收 parallel-review 與 tmp-review", async () => {
     saveRun(run("d-c"));
     for (const d of ["parallel-review", "tmp-review"]) {
@@ -91,6 +101,20 @@ describe("restoreRun", () => {
     expect(readFileSync(join(runDir("r-a"), "logs", "001-spec.log"), "utf8")).toBe("log");
     expect(readFileSync(join(flowDir("r-a"), "spec.md"), "utf8")).toBe("# spec");
     expect(execFileSync("git", ["-C", worktreeDir("r-a"), "branch", "--show-current"], { encoding: "utf8" }).trim()).toBe("flow/r-a");
+  });
+
+  it("標記檔跟著還原：確認資料的重建狀態不因復原而改變", async () => {
+    const id = "r-m";
+    saveRun({ ...run(id), stage: "plan_review" });
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    writeFileSync(join(runDir(id), "confirmations-restored"), "");
+    mkdirSync(flowDir(id), { recursive: true });
+    const out = join(root, `restore-${id}`);
+    await dumpRun(id, out);
+    await removeWorktree(root, worktreeDir(id));
+    rmSync(runDir(id), { recursive: true, force: true });
+    await restoreRun(out);
+    expect(existsSync(join(runDir(id), "confirmations-restored"))).toBe(true);
   });
 
   it("不覆蓋專案現有的 flow.config.json", async () => {

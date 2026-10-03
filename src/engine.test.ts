@@ -955,7 +955,7 @@ writeFileSync(".flow/handoff-response.json", "{ 壞掉的 json");
 describe("交接補寫", () => {
   const calls = (id: string) => readFileSync(join(flowDir(id), "calls.txt"), "utf8");
 
-  async function fixRun(id: string, mode: string) {
+  async function fixRun(id: string, mode: string, maxAgentRuns = 2) {
     writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", repairScript] }])),
       cycle: ["a", "b"], install: "true", test: "true", checks: [],
@@ -968,10 +968,19 @@ describe("交接補寫", () => {
     // fix 與補寫共用 2 次 agent 預算，下一次迴圈開頭就以 agent_budget 失敗，failedStage 是 fix 之後要進的階段
     return advance({
       id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "fix", fixSource: "verify",
-      autopilot: true, maxAgentRuns: 2, cycle: ["a", "b"], lastWriter: "a", attempts: {},
+      autopilot: true, maxAgentRuns, cycle: ["a", "b"], lastWriter: "a", attempts: {},
       taskIndex: 1, taskPhase: "tests", createdAt: now, updatedAt: now,
     });
   }
+
+  it("補寫時額度（maxAgentRuns）不足：不啟動補寫，階段以 agent_budget 失敗，修正的 commit 保留", async () => {
+    const run = await fixRun("f-repair-budget", "repair-ok", 1);
+    expect(run).toMatchObject({ stage: "failed", failedStage: "fix", failureCategory: "agent_budget" });
+    expect(run.failureReason).toContain("--max-agent-runs");
+    expect(calls(run.id)).toBe("fix\n"); // 只有修正者被呼叫，補寫沒有啟動
+    expect(agentRuns(run.id)).toBe(1);
+    expect(existsSync(join(worktreeDir(run.id), "fixed.ts"))).toBe(true);
+  });
 
   it("fix 的交接不合格時只補寫交接，保留修正的 commit", async () => {
     const run = await fixRun("f-repair-ok", "repair-ok");
@@ -1590,6 +1599,10 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
       expect(readFileSync(join(flowDir(id), "tasks.json"), "utf8")).toBe(edited);
       expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).toBe(beforeAc);
       expect(readFileSync(join(flowDir(id), "plan.md"), "utf8")).toBe(beforePlan);
+      // approve 直接進實作、讀的就是這兩份：人工專屬的任務與驗收條件不能在裡面
+      expect(readJson(join(flowDir(id), "tasks.ordered.json")).map((t: { id: string }) => t.id)).not.toContain("T-3");
+      expect(getRun(id)?.stage ?? run.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]); // 確認清單仍是唯一一份
       expect(existsSync(join(runDir(id), "confirmations-restored"))).toBe(false);
       expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).not.toContain("AC-3");
     });
