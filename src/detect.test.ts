@@ -20,8 +20,26 @@ describe("detectProjectDefaults", () => {
     expect(d.manager).toBe("npm");
     expect(d.install).toBe(defaults.install);
     expect(d.test).toBe(defaults.test);
-    // 沒有 lint／typecheck script 就略過，不退回預設指令；其餘維持預設
-    expect(d.checks).toEqual(defaults.checks.filter((c) => c.name !== "typecheck" && c.name !== "lint"));
+    // 沒有 lint／typecheck script 就略過，不退回預設指令；非 Vite 專案也沒有 build script 時 build 同樣略過
+    expect(d.checks).toEqual(defaults.checks.filter((c) => c.name === "test"));
+  });
+
+  it("有 package.json、沒有 build script 且不是 Vite 專案時略過 build，不退回 npx vite build", () => {
+    const names = (files: Record<string, string | object>) => detectProjectDefaults(project(files)).checks.map((c) => c.name);
+    expect(names({ "package.json": { scripts: { test: "node --test" } } })).toEqual(["test"]);
+  });
+
+  it("看得出是 Vite 專案時沒有 build script 仍跑預設的 vite build", () => {
+    const names = (files: Record<string, string | object>) => detectProjectDefaults(project(files)).checks.map((c) => c.name);
+    expect(names({ "package.json": { devDependencies: { vite: "^6" } } })).toContain("build");
+    expect(names({ "package.json": {}, "vite.config.ts": "" })).toContain("build");
+    expect(names({ "package.json": {}, "index.html": "" })).toContain("build");
+  });
+
+  it("有 build script 時一律跑它；沒有 package.json 的全新專案維持預設 build", () => {
+    const d = detectProjectDefaults(project({ "package.json": { scripts: { build: "tsc" } } }));
+    expect(d.checks.find((c) => c.name === "build")?.cmd).toBe("npm run build");
+    expect(detectProjectDefaults(project({})).checks.some((c) => c.name === "build")).toBe(true);
   });
 
   it("依依賴與 test script 判斷有沒有測試框架", () => {
