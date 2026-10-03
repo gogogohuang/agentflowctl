@@ -9,13 +9,20 @@ import type { TaskItem } from "./schemas.js";
 export type LaneOutcome =
   | { kind: "done" }
   | { kind: "failed"; reason: string; category?: string }
-  | { kind: "paused"; reason: string };
+  | { kind: "paused"; reason: string }
+  /** 車道裡的任務寫了 .flow/amend-request.json：request 是原文，由呼叫端判斷 */
+  | { kind: "amend"; request: string };
+
+/** 處理修補請求的結果：retry＝請求不合格，同一車道帶著回饋重跑；restart＝已插入修補任務，停止開新車道，讓呼叫端重新排程 */
+export type AmendResolution = "retry" | "restart" | { kind: "failed"; reason: string; category?: string } | { kind: "paused"; reason: string };
 
 export interface LaneHooks {
   /** 讓這個任務在自己的車道跑到完成（或失敗、暫停）；已有進度的車道要接著跑 */
   start(task: TaskItem): Promise<LaneOutcome>;
   /** 把完成的車道合併回 run 的分支；衝突時回傳 "redo"，排程會讓同一個任務重跑；衝突重試達上限則回報失敗 */
   merge(task: TaskItem): Promise<"merged" | "redo" | { kind: "failed"; reason: string; category?: string }>;
+  /** 處理車道提出的修補請求；沒提供就把請求視為失敗 */
+  amend?(task: TaskItem, request: string): Promise<AmendResolution>;
 }
 
 export interface LaneResult {
@@ -23,6 +30,8 @@ export interface LaneResult {
   done: Set<string>;
   failed?: { task: TaskItem; reason: string; category?: string };
   paused?: string;
+  /** 修補任務已插入：已在跑的車道收尾後停止，呼叫端要重新排程 */
+  restart?: boolean;
 }
 
 /** 順序執行時已完成的（taskIndex 之前），加上平行模式已合併的 */
@@ -57,7 +66,23 @@ export async function scheduleLanes(tasks: readonly TaskItem[], initiallyDone: R
     if (running.size === 0) return result;
     const { task, outcome } = await Promise.race(running.values());
     running.delete(task.id);
-    if (outcome.kind === "failed") {
+    if (outcome.kind === "amend") {
+      const resolution: AmendResolution = hooks.amend
+        ? await hooks.amend(task, outcome.request)
+        : { kind: "failed", reason: `${task.id} 提出修補請求，但這個流程不支援修補` };
+      if (resolution === "retry") {
+        if (!stopped) launch(task);
+      } else if (resolution === "restart") {
+        stopped = true;
+        result.restart = true;
+      } else if (resolution.kind === "paused") {
+        stopped = true;
+        result.paused ??= resolution.reason;
+      } else {
+        stopped = true;
+        result.failed ??= { task, reason: resolution.reason, category: resolution.category };
+      }
+    } else if (outcome.kind === "failed") {
       stopped = true;
       result.failed ??= { task, reason: outcome.reason, category: outcome.category };
     } else if (outcome.kind === "paused") {

@@ -35,7 +35,7 @@ import {
   type Stage,
 } from "./schemas.js";
 import { addRetry, addSubstitution, addUsage, agentRuns, getRun, listRetries, saveRun, type RetryCategory } from "./store.js";
-import { doneSet, readyTasks, scheduleLanes, type LaneOutcome } from "./lanes.js";
+import { doneSet, readyTasks, scheduleLanes, type AmendResolution, type LaneOutcome } from "./lanes.js";
 import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
 import {
   applyReviewVerdicts,
@@ -1581,6 +1581,8 @@ async function driveLane(parent: FlowRun, task: TaskItem, offset: number, tasks:
   let lane = await prepareLane(parent, task, offset, tasks, done);
   try {
     for (;;) {
+      const requestFile = join(flowDir(lane.id), "amend-request.json");
+      if (existsSync(requestFile)) return { kind: "amend", request: readFileSync(requestFile, "utf8") };
       if (lane.stage === "verify") return { kind: "done" };
       if (lane.stage !== "implement") return { kind: "failed", reason: lane.failureReason ?? `車道停在 ${lane.stage}`, category: lane.failureCategory };
       const runs = agentRuns(parent.id);
@@ -1650,6 +1652,40 @@ async function mergeLane(ref: { run: FlowRun }, task: TaskItem): Promise<"merged
   return "merged";
 }
 
+/**
+ * 處理車道提出的修補請求（請求者是這條車道的任務）：
+ * 不合格就讓車道帶著回饋重跑；達上限暫停；套用後丟棄請求者的車道（分支回收），之後從最新的分支重做。
+ */
+async function amendFromLane(ref: { run: FlowRun }, task: TaskItem, request: string): Promise<AmendResolution> {
+  const id = laneId(ref.run.id, task.id);
+  const lane = getRun(id);
+  if (!lane) throw new Error(`找不到車道 ${id} 的紀錄`);
+  const requestFile = join(flowDir(id), "amend-request.json");
+  const tasks = loadOrderedTasks(ref.run);
+  const result = applyAmendRequest(ref.run, request, task.id, tasks, doneSet(tasks, ref.run.taskIndex, ref.run.doneTasks));
+  if (result.kind === "invalid") {
+    rmSync(requestFile, { force: true });
+    const retried = retry({ ...lane, stage: "implement" }, `${task.id}:amend`, result.reason, "implement", "amend_invalid");
+    saveRun(retried);
+    if (retried.stage === "failed") return { kind: "failed", category: "retry_limit", reason: retried.failureReason ?? "修補請求重試達上限" };
+    return "retry";
+  }
+  if (result.kind === "limit") {
+    rmSync(requestFile, { force: true });
+    writeFileSync(join(flowDir(id), "feedback.md"), `# 修補請求未被接受\n\n${amendLimitFeedback(result.reason)}\n`);
+    const reason = `${task.id} 的修補請求被拒絕：${result.reason}；請檢查 ${join(flowDir(id), "feedback.md")} 後 resume，或用 replan 調整計畫`;
+    saveRun({ ...lane, stage: "paused", pausedStage: "implement", pauseReason: reason });
+    return { kind: "paused", reason };
+  }
+  ref.run = result.run;
+  await cleanupTempWorktrees(id);
+  await removeWorktree(projectRoot(), worktreeDir(id)).catch(() => rmSync(worktreeDir(id), { recursive: true, force: true }));
+  await git(projectRoot(), "branch", "-D", lane.branch).catch(() => {});
+  // 請求檔最後才刪：中途中斷時檔案還在，decideAmend 會判斷為已套用，清理再做一次（車道 worktree 移除後檔案可能已不存在）
+  rmSync(requestFile, { force: true });
+  return "restart";
+}
+
 /** 平行執行所有任務：沒有相依關係的任務各占一條車道，完成後依序合併，直到全部完成、有車道失敗，或額度用完 */
 async function implementLanes(run: FlowRun, tasks: TaskItem[], cfg: RepoConfig): Promise<FlowRun> {
   const ref = { run };
@@ -1659,12 +1695,15 @@ async function implementLanes(run: FlowRun, tasks: TaskItem[], cfg: RepoConfig):
   const result = await scheduleLanes(tasks, done0, limit, {
     start: (task) => driveLane(ref.run, task, tasks.findIndex((t) => t.id === task.id), tasks, new Set(ref.run.doneTasks ?? [])),
     merge: (task) => mergeLane(ref, task),
+    amend: (task, request) => amendFromLane(ref, task, request),
   });
   if (result.failed) {
     const { task, reason, category } = result.failed;
     return { ...ref.run, stage: "failed", failedStage: "implement", failureCategory: (category as FlowRun["failureCategory"]) ?? "error", failureReason: `${task.id}：${reason}` };
   }
   if (result.paused) throw new QuotaPause(result.paused);
+  // 修補任務已插入：不改階段直接回傳，advance() 會重新進入實作階段，讀到新的任務清單
+  if (result.restart) return ref.run;
   info(ref.run, "✅ 所有任務完成");
   announceConfirmations(ref.run);
   return { ...to(ref.run, "verify"), taskIndex: tasks.length, taskPhase: "tests" };
