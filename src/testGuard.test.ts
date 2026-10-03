@@ -81,6 +81,11 @@ describe("foreignFailingTests：失敗的測試檔不是本任務寫的", () => 
     expect(foreignFailingTests("AssertionError: expected 1 to be 2\n    at feature.test.mjs:3:1", mine)).toEqual([]);
   });
 
+  it("別的目錄有同名測試檔失敗：不會被誤認成本任務的", () => {
+    const output = "FAIL  src/pages/b/format.test.ts > x\n";
+    expect(foreignFailingTests(output, mine)).toEqual(["src/pages/b/format.test.ts"]);
+  });
+
   it("去掉 ANSI 色碼與行號後仍能比對，路徑尾端相同視為同一檔", () => {
     const output = "\u001b[31mFAIL\u001b[39m  format.test.ts:12:5 > x\n";
     expect(foreignFailingTests(output, mine)).toEqual([]);

@@ -440,7 +440,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
 `);
 
 /** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
-async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, testSource = "process.exit(1);\n" }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; testSource?: string } = {}) {
+async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, regressions, testSource = "process.exit(1);\n" }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; regressions?: number; testSource?: string } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
@@ -460,7 +460,7 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   const run = await advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
     autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts, taskIndex: 0, taskPhase: "code",
-    taskBase, testsCommit, lastTestsAuthor: "a", ...(testsRedos === undefined ? {} : { testsRedos }), createdAt: now, updatedAt: now,
+    taskBase, testsCommit, lastTestsAuthor: "a", ...(testsRedos === undefined ? {} : { testsRedos }), ...(regressions === undefined ? {} : { regressions }), createdAt: now, updatedAt: now,
   });
   return { run, wt, taskBase, testsCommit };
 }
@@ -603,7 +603,7 @@ describe("綠燈階段：失敗的是前面任務的測試", () => {
   });
 
   it("連續第二次：暫停等人處理，不重寫測試，resume 再有機會", async () => {
-    const { run } = await greenRun("f-green-regress-second", { writesCode: true, testSource: OLD_FAIL, attempts: { "T-1:code": 1 } });
+    const { run } = await greenRun("f-green-regress-second", { writesCode: true, testSource: OLD_FAIL, attempts: { "T-1:code": 1 }, regressions: 1 });
     expect(run.stage).toBe("paused");
     expect(run.pauseReason).toContain("old.test.ts");
     expect(run.pauseReason).toContain("resume");
@@ -611,6 +611,13 @@ describe("綠燈階段：失敗的是前面任務的測試", () => {
     expect(run.testsRedos).toBeUndefined();
     expect(run.attempts["T-1:code"]).toBeUndefined();
     expect(listRetries(run.id)).toEqual([]);
+  });
+
+  it("先前是別的原因失敗（不是回歸）：第一次回歸仍只是退回實作者，不暫停", async () => {
+    const { run } = await greenRun("f-green-regress-mixed", { writesCode: true, testSource: OLD_FAIL, attempts: { "T-1:code": 1 } });
+    expect(run.stage).not.toBe("paused");
+    expect(run.regressions).toBe(1);
+    expect(run.attempts["T-1:code"]).toBe(2);
   });
 });
 
@@ -2811,7 +2818,7 @@ describe("lint 與型別檢查只在最後驗證", () => {
 
 describe("任務級狀態重置", () => {
   it("TASK_RESET 涵蓋所有任務級欄位，套在髒的 run 上全部歸零", () => {
-    expect(Object.keys(TASK_RESET).sort()).toEqual(["lastTestsAuthor", "taskBase", "taskPhase", "taskRounds", "testsCommit", "testsRedos"]);
+    expect(Object.keys(TASK_RESET).sort()).toEqual(["lastTestsAuthor", "regressions", "taskBase", "taskPhase", "taskRounds", "testsCommit", "testsRedos"]);
     const dirty = { taskPhase: "review" as const, taskBase: "a", testsCommit: "b", lastTestsAuthor: "x", testsRedos: 2, taskRounds: 2, lastWriter: "w", fixSource: "verify" as const };
     expect({ ...dirty, ...TASK_RESET }).toMatchObject({ taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, taskRounds: undefined, lastWriter: "w" });
     expect({ ...dirty, ...TASK_RESET, ...NO_WRITER_CONTEXT }).toMatchObject({ lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });

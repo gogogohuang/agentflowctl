@@ -408,6 +408,7 @@ export const TASK_RESET = {
   lastTestsAuthor: undefined,
   testsRedos: undefined,
   taskRounds: undefined,
+  regressions: undefined,
 };
 
 /** 丟掉任務重做時，上一輪的作者、審查者與修正來源也不再適用 */
@@ -1714,19 +1715,23 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const failures = (run.attempts[key] ?? 0) + 1;
     // 失敗的是別的（前面任務的）測試檔：問題不在這個任務的測試，重寫它們救不了。
     // 實作者不能改既有測試，要嘛改實作別破壞它們，要嘛提 amend；第二次還是這樣就停下，不再重試
+    // 非 TDD 任務沒有「自己的測試」可比對，實作者本來就可以改測試，不做這項判斷
     const own = tdd && run.taskBase ? (await changedFiles(repo, run.taskBase, testsCommit)).filter((f) => testRe.test(f)) : [];
-    const regressed = foreignFailingTests(green.output, own);
+    const regressed = tdd && run.taskBase ? foreignFailingTests(green.output, own) : [];
+    if (!regressed.length) run = { ...run, regressions: undefined };
     if (regressed.length) {
+      // 「連續」只算回歸本身：先前因其他原因失敗的嘗試不計入
+      const streak = (run.regressions ?? 0) + 1;
       const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${tail(green.output)}\n\`\`\``;
-      if (failures >= REGRESSION_PAUSE_AFTER) {
+      if (streak >= REGRESSION_PAUSE_AFTER) {
         const attempts = { ...run.attempts };
         delete attempts[key];
         mkdirSync(flowDir(run.id), { recursive: true });
         writeFileSync(flowFile(run, "feedback.md"), `# 前次嘗試未通過\n\n${reason}\n`);
-        saveRun({ ...run, attempts });
-        throw new RegressionPause(`${key} 讓前面任務的測試失敗（${regressed.join("、")}），實作者已嘗試 ${failures} 次仍未解決；請判斷該改實作、改前面任務的測試，還是用 replan／amend 調整任務切分，檢查 .flow/feedback.md 後 resume`);
+        saveRun({ ...run, attempts, regressions: undefined });
+        throw new RegressionPause(`${key} 讓前面任務的測試失敗（${regressed.join("、")}），實作者已連續 ${streak} 次造成回歸；請判斷該改實作、改前面任務的測試，還是用 replan／amend 調整任務切分，檢查 .flow/feedback.md 後 resume`);
       }
-      return retry(run, key, reason, "implement", "tests_not_green");
+      return { ...retry(run, key, reason, "implement", "tests_not_green"), regressions: streak };
     }
     // 實作者沒有任何變更、或同樣的測試一再失敗，表示問題多半出在測試本身（用了專案沒有的 API、斷言互相矛盾……），
     // 再叫實作者重試只會原地打轉：丟掉這一輪，回到測試階段重寫
