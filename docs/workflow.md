@@ -73,7 +73,7 @@ agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scri
 
 ### 動態偵測
 
-內建偵測認不出類型（未辨識）的專案，`agentflowctl run` 建立 worktree 後、顯示偵測結果與安裝之前，會請一位 agent 讀專案的 `Makefile`、`justfile`、`CMakeLists.txt`、`pom.xml`、`build.gradle*`、`*.sln`／`*.csproj`、`Gemfile`、`composer.json`、`mix.exs`、`.github/workflows/*.yml` ，提出 `install`、`test`、`checks`、`testPattern`，寫成 `.flow/detect-proposal.json`。agent 只能寫 `.flow/`，其他變更會被捨棄。已辨識的類型（Node、Python、Go、Rust）不會觸發；`flow.config.json` 已手寫 `install`、`test`、`checks`、`testPattern` 四個欄位時也不會觸發。提案的指令會先印在終端機，並在主機上直接執行驗證（不在 agent 沙箱內），請留意 agent 提出的內容。
+內建偵測認不出類型（未辨識）的專案，`agentflowctl run` 建立 worktree 後、顯示偵測結果與安裝之前，會請一位 agent 讀專案的 `Makefile`、`justfile`、`CMakeLists.txt`、`pom.xml`、`build.gradle*`、`*.sln`／`*.csproj`、`Gemfile`、`composer.json`、`mix.exs`、`.github/workflows/*.yml` 與 README，提出 `install`、`test`、`checks`、`testPattern`，寫成 `.flow/detect-proposal.json`。agent 只能寫 `.flow/`，其他變更會被捨棄。已辨識的類型（Node、Python、Go、Rust）不會觸發；`flow.config.json` 已手寫 `install`、`test`、`checks`、`testPattern` 四個欄位時也不會觸發。提案的指令會先印在終端機，並在主機上直接執行驗證（不在 agent 沙箱內），請留意 agent 提出的內容。
 
 這是選配功能，不會讓 run 失敗：agent 額度用完或次數上限已到時略過（不找另一家代打，也不寫 `detected.json`，下次 `run` 再試），agent 執行失敗或提案格式不合只印警告；偵測過程出現其他非預期錯誤時同樣只印警告，且不寫 `detected.json`。
 
