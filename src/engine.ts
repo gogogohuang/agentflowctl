@@ -95,6 +95,10 @@ export class TestsStuckPause extends QuotaPause {}
 
 /** 紅燈階段發現分支上別的測試早就失敗：不是這個任務能修的，停下等人處理 */
 export class BaselineRedPause extends TestsStuckPause {}
+/** 綠燈階段破壞了前面任務的測試、實作者又不改提 amend：重寫自己的測試沒用，停下等人 */
+export class RegressionPause extends TestsStuckPause {}
+/** 任務的審查／驗證／修正來回超過 maxTaskRounds 圈：停下等人，不再燒用量 */
+export class TaskRoundsPause extends QuotaPause {}
 
 /** 這次執行中已確認額度用完的 agent；程序結束即清空，resume 時會重新嘗試 */
 const exhausted = new Set<string>();
@@ -403,6 +407,7 @@ export const TASK_RESET = {
   testsCommit: undefined,
   lastTestsAuthor: undefined,
   testsRedos: undefined,
+  taskRounds: undefined,
 };
 
 /** 丟掉任務重做時，上一輪的作者、審查者與修正來源也不再適用 */
@@ -411,6 +416,8 @@ export const NO_WRITER_CONTEXT = { lastWriter: undefined, lastReviewer: undefine
 const TESTS_REDO_AFTER_FAILURES = 2;
 /** 同一個任務最多退回測試階段幾次，超過就照舊在綠燈階段重試到上限 */
 const TESTS_REDO_LIMIT = 2;
+/** 綠燈階段讓別的測試檔失敗，連續幾次（含這一次）就暫停 */
+const REGRESSION_PAUSE_AFTER = 2;
 const TESTS_NOT_RED_MARK = "請撰寫會因功能尚未實作而失敗的測試";
 
 /** 已定案的任務寫明不要求紅燈：仍寫測試，但通過也算完成紅燈階段。 */
@@ -1705,6 +1712,22 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   if (!green.ok) {
     info(run, `   ✗ 測試仍未通過${logHint(run, green.seq)}`);
     const failures = (run.attempts[key] ?? 0) + 1;
+    // 失敗的是別的（前面任務的）測試檔：問題不在這個任務的測試，重寫它們救不了。
+    // 實作者不能改既有測試，要嘛改實作別破壞它們，要嘛提 amend；第二次還是這樣就停下，不再重試
+    const own = tdd && run.taskBase ? (await changedFiles(repo, run.taskBase, testsCommit)).filter((f) => testRe.test(f)) : [];
+    const regressed = foreignFailingTests(green.output, own);
+    if (regressed.length) {
+      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${tail(green.output)}\n\`\`\``;
+      if (failures >= REGRESSION_PAUSE_AFTER) {
+        const attempts = { ...run.attempts };
+        delete attempts[key];
+        mkdirSync(flowDir(run.id), { recursive: true });
+        writeFileSync(flowFile(run, "feedback.md"), `# 前次嘗試未通過\n\n${reason}\n`);
+        saveRun({ ...run, attempts });
+        throw new RegressionPause(`${key} 讓前面任務的測試失敗（${regressed.join("、")}），實作者已嘗試 ${failures} 次仍未解決；請判斷該改實作、改前面任務的測試，還是用 replan／amend 調整任務切分，檢查 .flow/feedback.md 後 resume`);
+      }
+      return retry(run, key, reason, "implement", "tests_not_green");
+    }
     // 實作者沒有任何變更、或同樣的測試一再失敗，表示問題多半出在測試本身（用了專案沒有的 API、斷言互相矛盾……），
     // 再叫實作者重試只會原地打轉：丟掉這一輪，回到測試階段重寫
     // 失敗是「測試呼叫了套件沒有的匯出」時與實作無關，不必等第二次就退回
@@ -1936,12 +1959,24 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
   if ("run" in result) return result.run;
   const reviewed = succeed(result.state, `${task.id}:review-run`, "implement");
   if (!result.objector) return { ...succeed(reviewed, key, "implement"), taskPhase: "verify" };
-  return {
+  return capTaskRounds(run, {
     ...retry(reviewed, key, `任務審查要求修改：\n\n${result.issues.join("\n\n")}`, "implement", "review_changes"),
     taskPhase: "fix",
     fixSource: "review",
     lastReviewer: result.objector,
-  };
+  }, task);
+}
+
+/**
+ * 任務的「審查／驗證未通過 → 修正」算一圈。各關各有自己的重試計數，通過就清掉，合起來可以繞很多圈；
+ * 這裡另外數整個任務的圈數，超過 maxTaskRounds 就停下（狀態已在修正階段、feedback 已寫好，resume 後從修正接續並重新計圈）。
+ */
+function capTaskRounds(run: FlowRun, next: FlowRun, task: TaskItem): FlowRun {
+  const rounds = (run.taskRounds ?? 0) + 1;
+  const limit = loadRepoConfig().maxTaskRounds;
+  if (next.stage === "failed" || rounds <= limit) return { ...next, taskRounds: rounds };
+  saveRun({ ...next, taskRounds: undefined });
+  throw new TaskRoundsPause(`${task.id} 已經審查／驗證與修正來回 ${limit} 圈仍未通過，繼續自動重試只會燒用量；請檢查 .flow/feedback.md（是任務切太大、驗收條件不清，還是前面任務的耦合），必要時 replan 後 resume（resume 會再給 ${limit} 圈）`);
 }
 
 /** 這個任務的測試檔由套件匯入的具名符號 */
@@ -1995,7 +2030,7 @@ async function taskVerifyStep(run: FlowRun, task: TaskItem, progress: string): P
   const key = `${task.id}:verify`;
   info(run, `🔍 [${progress}] 執行驗證`);
   const report = await runChecks(run, `${task.id}-`, "task");
-  if (report) return { ...retry(run, key, report, "implement", "checks_failed"), taskPhase: "fix", fixSource: "verify" };
+  if (report) return capTaskRounds(run, { ...retry(run, key, report, "implement", "checks_failed"), taskPhase: "fix", fixSource: "verify" }, task);
   info(run, `✅ [${progress}] 完成`);
   return finishTask(succeed(run, key, "implement"));
 }

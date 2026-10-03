@@ -296,6 +296,8 @@ export const RepoConfig = z.object({
   agentRunsPerTask: z.number().int().positive().default(20),
   /** 同一個已合併任務最多被後面的任務要求修補幾次；超過就暫停等人處理 */
   maxAmendments: z.number().int().min(1).default(2),
+  /** 同一個任務「審查或驗證未通過 → 修正」最多來回幾圈，超過就暫停等人；各關另有 maxAttempts */
+  maxTaskRounds: z.number().int().min(1).default(3),
   /** 同一關連續失敗幾次後停止；至少 3，修正與審查才來得及往返一輪 */
   maxAttempts: z.number().int().min(3).default(5),
   /** 終端機是否印出 agent 的文字、工具呼叫與專案指令；命令列 -v 也能開啟 */
@@ -377,6 +379,8 @@ export const FlowRun = z.object({
   testsCommit: z.string().optional(),
   /** 這個任務因綠燈階段無法讓測試通過、已退回測試階段重寫的次數 */
   testsRedos: z.number().int().optional(),
+  /** 目前任務已經「審查或驗證未通過 → 修正」幾圈（超過 maxTaskRounds 暫停） */
+  taskRounds: z.number().int().optional(),
   /** 目前任務的測試實際由誰撰寫（可能是代打） */
   lastTestsAuthor: z.string().optional(),
   failedStage: Stage.optional(),

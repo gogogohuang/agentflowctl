@@ -323,6 +323,7 @@ run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 計畫分層審查（見「計畫」一節）。`enabled`：`false` 時一律整份審查；`minTasks`：任務數達到這個值才考慮分層，整數至少 2；`maxGroups`：每輪最多幾群，整數至少 2；`tasksPerGroup`：群數也不超過任務數除以這個值（無條件捨去），整數至少 1。子欄位都可省略；寫了未知子欄位會驗證失敗 |
 | `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續，沒核准的那一方的每則意見另記成程式碼類的待處理事項（`action`），最終審查必須結案或明確接受，否則不能開 PR；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
+| `maxTaskRounds` | `3` | 同一個任務「任務審查或驗證未通過 → 修正」最多來回幾圈，超過暫停等人 |
 | `maxAttempts` | `5` | 同一關連續失敗幾次後停止，至少 3 |
 | `verbose` | `false` | 顯示 agent 文字、工具呼叫與專案指令，效果同 `-v` |
 | `install` / `test` / `checks` | 依專案偵測 | 安裝、測試與 verify 階段實際執行的指令 |

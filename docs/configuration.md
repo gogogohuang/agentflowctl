@@ -159,6 +159,7 @@ Codex 另有幾點差異：
 | `maxAgentRuns` | `60` | 計畫定案前，一次 run 最多執行幾次 agent；定案後改依任務數決定（見 `agentRunsPerTask`） |
 | `agentRunsPerTask` | `20` | 計畫定案時，上限改為「已執行次數 ＋ 任務數 × 這個值」（任務數不含 `kind: confirm`）。`run`／`resume` 明確指定 `--max-agent-runs` 後不再改算 |
 | `maxAmendments` | `2` | 同一個已合併任務最多被後面的任務要求修補幾次，超過就暫停等人處理 |
+| `maxTaskRounds` | `3` | 同一個任務「任務審查或任務驗證未通過 → 修正」最多來回幾圈，超過就暫停等人（`resume` 會再給同樣的圈數）。各關的 `maxAttempts` 通過就歸零，合起來可以繞很多圈，這個上限另外算整個任務 |
 | `maxAttempts` | `5` | 同一關連續失敗幾次後停止，至少 3；可用 `run`／`resume` 的 `--max-attempts` 覆蓋 |
 | `verbose` | `false` | 顯示 agent 文字、工具呼叫與專案指令，效果同 `-v` |
 | `install`、`test` | 依專案偵測 | 寫成指令字串，例如 `"install": "pnpm install"` |
