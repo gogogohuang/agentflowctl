@@ -118,7 +118,7 @@ agentflowctl config agent cycle claude,codex
 agentflowctl config selection mode adaptive    # 依階段與任務難度自動選模；需先登記各 agent 的模型
 ```
 
-`install`、`test`、`checks` 未設定時會依專案自動偵測。偵測到的 vitest 會略過 `.worktree/` 與 `.worktrees/`；eslint 的 lint 會略過 `.flow/`、`.agentflowctl/`、`.worktree/`、`.worktrees/`。完整欄位、自動選模、推理強度、平行執行與模型驗證見[設定詳解](docs/configuration.md)，範例見 [examples/flow.config.json](examples/flow.config.json)。
+`install`、`test`、`checks` 未設定時會依專案自動偵測。專案有 `test` script 時，紅綠燈與 `checks.test` 都跑它，沒有才用預設的 vitest。偵測到的 vitest 會略過 `.worktree/` 與 `.worktrees/`；eslint 的 lint 會略過 `.flow/`、`.agentflowctl/`、`.worktree/`、`.worktrees/`。完整欄位、自動選模、推理強度、平行執行與模型驗證見[設定詳解](docs/configuration.md)，範例見 [examples/flow.config.json](examples/flow.config.json)。
 
 ## 更多文件
 
