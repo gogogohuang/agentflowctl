@@ -50,6 +50,8 @@ export const divergePath = (id: string) => join(runDir(id), "diverge.json");
 export const confirmationsPath = (id: string) => join(runDir(id), "confirmations.json");
 /** 人工確認項目連帶搬出的驗收條件與計畫段落：{ acceptance, plan }，只供 PR 描述使用 */
 export const confirmationDetailsPath = (id: string) => join(runDir(id), "confirmation-details.json");
+/** replan 把確認項目併回 .flow/ 後留下的標記：有它，下次定案才從 .flow/ 重建確認資料（沒有它代表 .flow/ 已經搬空，沿用既有資料） */
+export const confirmationsRestoredPath = (id: string) => join(runDir(id), "confirmations-restored");
 /** 平行審查的臨時 worktree（每個呼叫一個）；孤兒在 advance() 開頭統一清掉 */
 export const tempWorktreesDir = (id: string) => join(runDir(id), "tmp-review");
 /** 平行審查已執行成功的呼叫存檔（依輪次與輸入指紋分目錄），resume 時沿用 */

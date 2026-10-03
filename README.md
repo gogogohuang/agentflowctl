@@ -69,7 +69,7 @@ agentflowctl clean f-xxxx          # 清除 worktree 與紀錄（clean --all 清
 | `paused`：已完成指定停點 | 檢視產出後 `agentflowctl resume <id>` |
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 用 `agentflowctl logs <id> <編號>` 查原因，處理後 `agentflowctl resume <id>` |
 | `failed`：仲裁連續沒有有效裁決 | 查看 log 後 `agentflowctl resume <id>` |
-| `failed`：已達 agent 執行次數上限 | `agentflowctl resume <id> --max-agent-runs 100`（數字須大於已執行次數） |
+| `failed`：已達 agent 執行次數上限 | `agentflowctl resume <id> --max-agent-runs 100`（數字須大於已執行次數；額度用完而失敗的呼叫也計入，平行的車道與審查者合計不會超出上限） |
 
 ## 常用選項
 

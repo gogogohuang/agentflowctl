@@ -8,7 +8,7 @@ import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from ".
 import { escapeXml, opinion, reviewIssue } from "./feedback.js";
 import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
-import { confirmationDetailsPath, confirmationsPath, divergePath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { confirmationDetailsPath, confirmationsPath, confirmationsRestoredPath, divergePath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
 import { exec } from "./proc.js";
 import { missingPackageExports } from "./packageExports.js";
@@ -408,7 +408,11 @@ function rememberConfirmation(run: FlowRun, task: TaskItem): void {
 
 /**
  * 計畫定案時，把人工確認的任務、驗收條件與計畫段落從 .flow/ 搬到 run 目錄：
- * 之後的實作、審查與修正都看不到它們，只在開 PR 時交給人。可重複執行（resume 時已搬過就不再有 confirm 任務）。
+ * 之後的實作、審查與修正都看不到它們，只在開 PR 時交給人。
+ *
+ * 確認資料每次都由當前的 .flow/ 重建，所以 replan 刪掉或改寫的項目不會留下舊內容。
+ * 但定案後 .flow/ 已經搬空，planner 看不到它們：replan 會先用 restoreHumanItems 併回 .flow/（並留下標記）。
+ * 沒有標記又已有確認資料，代表 .flow/ 是上次定案搬空的（例如定案到一半中斷後 resume），沿用既有資料，只補上新出現的項目。
  */
 function separateHumanItems(run: FlowRun): void {
   const tasks = readJsonFile(flowFile(run, "tasks.json"), OrderedTaskList);
@@ -417,11 +421,11 @@ function separateHumanItems(run: FlowRun): void {
   mkdirSync(runDir(run.id), { recursive: true });
   if (tasks.ok && ac.ok) {
     const split = splitHumanItems(tasks.data, ac.data, planMd);
-    if (split.confirm.length) {
-      const saved = loadConfirmations(run);
-      const details = loadConfirmationDetails(run);
-      const merged = [...saved, ...split.confirm.filter((t) => !saved.some((s) => s.id === t.id))];
-      writeFileSync(confirmationsPath(run.id), JSON.stringify(merged, null, 2));
+    const rebuild = !existsSync(confirmationsPath(run.id)) || existsSync(confirmationsRestoredPath(run.id));
+    const saved = rebuild ? [] : loadConfirmations(run);
+    const details = rebuild ? { acceptance: [], plan: {} } : loadConfirmationDetails(run);
+    if (rebuild || split.confirm.length) {
+      writeFileSync(confirmationsPath(run.id), JSON.stringify([...saved, ...split.confirm.filter((t) => !saved.some((s) => s.id === t.id))], null, 2));
       writeFileSync(
         confirmationDetailsPath(run.id),
         JSON.stringify({
@@ -429,6 +433,10 @@ function separateHumanItems(run: FlowRun): void {
           plan: { ...details.plan, ...split.humanPlan },
         }, null, 2),
       );
+      // 標記先移除、.flow/ 後搬空：中斷在兩者之間時，resume 會走「沿用既有資料」，而 .flow/ 還在，結果相同
+      rmSync(confirmationsRestoredPath(run.id), { force: true });
+    }
+    if (split.confirm.length) {
       writeFileSync(flowFile(run, "tasks.json"), JSON.stringify(split.tasks, null, 2));
       writeFileSync(flowFile(run, "acceptance.json"), JSON.stringify(split.acceptance, null, 2));
       writeFileSync(flowFile(run, "plan.md"), split.planMd);
@@ -437,6 +445,28 @@ function separateHumanItems(run: FlowRun): void {
     }
   }
   if (!existsSync(confirmationsPath(run.id))) writeFileSync(confirmationsPath(run.id), "[]");
+}
+
+/**
+ * splitHumanItems 的反操作，replan 進入時呼叫：把已搬走的確認任務、專屬驗收條件與計畫段落併回 .flow/，
+ * 讓 planner 與手改的人看得到、也刪得掉它們（沒有併回，重建確認資料就會把沒被看到的項目全部清空）。
+ * 已存在的 id 不重複加入；檔案讀不到時不動 .flow/。
+ */
+function restoreHumanItems(run: FlowRun): void {
+  const saved = loadConfirmations(run);
+  if (!saved.length) return;
+  const tasks = readJsonFile(flowFile(run, "tasks.json"), TaskList);
+  const ac = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  if (!tasks.ok || !ac.ok) return;
+  const details = loadConfirmationDetails(run);
+  writeFileSync(flowFile(run, "tasks.json"), JSON.stringify([...tasks.data, ...saved.filter((t) => !tasks.data.some((x) => x.id === t.id))], null, 2));
+  writeFileSync(flowFile(run, "acceptance.json"), JSON.stringify([...ac.data, ...details.acceptance.filter((a) => !ac.data.some((x) => x.id === a.id))], null, 2));
+  let planMd = flowText(run, "plan.md");
+  for (const [id, text] of Object.entries(details.plan)) {
+    if (!new RegExp(`^## ${id}\\b`, "m").test(planMd)) planMd = `${planMd.trimEnd()}\n\n${text.trimEnd()}\n`;
+  }
+  writeFileSync(flowFile(run, "plan.md"), planMd);
+  writeFileSync(confirmationsRestoredPath(run.id), "");
 }
 
 function announceConfirmations(run: FlowRun): void {
@@ -1014,6 +1044,7 @@ export function canReplan(run: FlowRun): boolean {
 export function replanRun(run: FlowRun, opts: { note?: string; noReview?: boolean }): FlowRun {
   if (!canReplan(run)) throw new Error(`run 目前在 ${run.stage}，只有等待核准，或停在計畫階段的 run 可以重做計畫`);
   const note = opts.note?.trim();
+  restoreHumanItems(run);
   const ordered = validatePlan(run);
   if (typeof ordered === "string") throw new Error(`計畫檔案沒有通過檢查，請先修正 ${flowDir(run.id)}：\n${ordered}`);
   acceptPlan(run, ordered);
@@ -1062,7 +1093,7 @@ export async function iterateRun(run: FlowRun, opts: { requirement: string; maxA
   }
   rmSync(lanesDir(run.id), { recursive: true, force: true });
   await cleanupTempWorktrees(run.id, { force: true });
-  for (const f of ["confirmations.json", "confirmation-details.json", "plan-review-state.json", "plan-arbitration.json", "diverge.json", "parallel-review", "tmp-review"]) {
+  for (const f of ["confirmations.json", "confirmation-details.json", "confirmations-restored", "plan-review-state.json", "plan-arbitration.json", "diverge.json", "parallel-review", "tmp-review"]) {
     rmSync(join(runDir(run.id), f), { recursive: true, force: true });
   }
   const explicit = opts.maxAgentRuns !== undefined || run.maxAgentRunsExplicit === true;

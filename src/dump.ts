@@ -8,7 +8,7 @@ import { getRun, saveRun } from "./store.js";
 /** run 目錄下要收的檔案；parallel-review 與 tmp-review 是可重建的中間產物，不收 */
 const RUN_ENTRIES = [
   "state.json", "costs.jsonl", "retries.jsonl", "substitutions.jsonl", "handoff.json",
-  "plan-review-state.json", "plan-arbitration.json", "diverge.json", "confirmations.json", "confirmation-details.json", "logs", "reviews",
+  "plan-review-state.json", "plan-arbitration.json", "diverge.json", "confirmations.json", "confirmation-details.json", "confirmations-restored", "logs", "reviews",
 ];
 
 const version = (): string => {

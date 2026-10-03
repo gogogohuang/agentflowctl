@@ -1477,6 +1477,126 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
       expect(agentRuns(run.id)).toBe(before);
     });
   });
+
+  describe("replan：人工確認資料", () => {
+    const confirmPath = (id: string) => join(runDir(id), "confirmations.json");
+    const detailsPath = (id: string) => join(runDir(id), "confirmation-details.json");
+    const readJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+
+    /** 計畫已通過審查、等人核准：T-1 要實作，T-3 是人工確認項目（AC-3 與計畫段落專屬於它）；尚未定案，.flow/ 還有完整內容 */
+    async function awaitingWithConfirm(id: string, mode: "keep" | "delete" = "keep") {
+      const script = join(root, `${id}.mjs`);
+      writeFileSync(script, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("plan-review.json")) {
+  writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
+} else if (${JSON.stringify(mode)} === "delete") {
+  const tasks = JSON.parse(readFileSync(".flow/tasks.json", "utf8")).filter((t) => t.id !== "T-3");
+  const acceptance = JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).filter((a) => a.id !== "AC-3");
+  writeFileSync(".flow/tasks.json", JSON.stringify(tasks));
+  writeFileSync(".flow/acceptance.json", JSON.stringify(acceptance));
+  writeFileSync(".flow/plan.md", readFileSync(".flow/plan.md", "utf8").split("## T-3")[0]);
+}
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+      writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+        agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+        cycle: ["a", "b"],
+      }));
+      await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+      mkdirSync(flowDir(id), { recursive: true });
+      const tasks = [
+        { id: "T-1", title: "實作", description: "完成", dependsOn: [], acceptance: ["AC-1"] },
+        { id: "T-3", title: "目視確認畫面", description: "請看一下畫面", dependsOn: [], acceptance: ["AC-3"], kind: "confirm" },
+      ];
+      writeFileSync(join(flowDir(id), "spec.md"), "# 規格\n");
+      writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "完成" }, { id: "AC-3", description: "畫面正確" }]));
+      writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n\n## T-1 做法\n實作它\n\n## T-3 人工確認\n請目視確認畫面\n");
+      writeFileSync(join(flowDir(id), "tasks.json"), JSON.stringify(tasks));
+      const now = new Date().toISOString();
+      const run: FlowRun = {
+        id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "awaiting_approval",
+        autopilot: false, maxAgentRuns: 50, cycle: ["a", "b"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+      };
+      // 第一次定案：確認項目搬到 run 目錄，.flow/ 只剩要實作的
+      const settled = replanRun(run, { noReview: true });
+      expect(settled.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readFileSync(join(flowDir(id), "tasks.json"), "utf8")).not.toContain("T-3");
+      return settled;
+    }
+
+    it("定案後只加備註的 replan 保留既有確認項目、驗收條件與計畫段落", async () => {
+      const id = "f-replan-keep-note";
+      const run = await awaitingWithConfirm(id);
+      const detailsBefore = readFileSync(detailsPath(id), "utf8");
+      const done = await advance(saveRun(replanRun(run, { note: "T-1 的措辭改一下", noReview: true })));
+      expect(done.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readFileSync(detailsPath(id), "utf8")).toBe(detailsBefore);
+      expect(readJson(detailsPath(id)).acceptance.map((a: { id: string }) => a.id)).toEqual(["AC-3"]);
+      expect(readJson(detailsPath(id)).plan["T-3"]).toContain("請目視確認畫面");
+      // 搬空的 .flow/ 又是乾淨的：確認項目不會流進實作佇列
+      expect(readFileSync(join(flowDir(id), "tasks.ordered.json"), "utf8")).not.toContain("T-3");
+    });
+
+    it("定案後沒有備註、noReview 的 replan 同樣保留", async () => {
+      const id = "f-replan-keep-noreview";
+      const run = await awaitingWithConfirm(id);
+      const next = replanRun(run, { noReview: true });
+      expect(next.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readJson(detailsPath(id)).acceptance).toHaveLength(1);
+    });
+
+    it("replan 後 planner 刪掉被併回的確認任務：兩份資料檔移除它，留下空資料", async () => {
+      const id = "f-replan-delete";
+      const run = await awaitingWithConfirm(id, "delete");
+      const done = await advance(saveRun(replanRun(run, { note: "不需要人工確認那項了", noReview: true })));
+      expect(done.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id))).toEqual([]);
+      expect(readJson(detailsPath(id))).toEqual({ acceptance: [], plan: {} });
+    });
+
+    it("同 id 的確認任務被改寫時，採用新內容、沒有舊的 title、驗收條件與計畫段落", async () => {
+      const id = "f-replan-rewrite";
+      const run = await awaitingWithConfirm(id);
+      const rewritten = [
+        { id: "T-1", title: "實作", description: "完成", dependsOn: [], acceptance: ["AC-1"] },
+        { id: "T-3", title: "改成確認文案", description: "請確認文案", dependsOn: [], acceptance: ["AC-3"], kind: "confirm" },
+      ];
+      writeFileSync(join(flowDir(id), "tasks.json"), JSON.stringify(rewritten));
+      writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "完成" }, { id: "AC-3", description: "文案正確" }]));
+      writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n\n## T-1 做法\n實作它\n\n## T-3 文案確認\n請確認文案\n");
+      replanRun(run, { noReview: true });
+      const saved = readJson(confirmPath(id));
+      expect(saved.map((t: { title: string }) => t.title)).toEqual(["改成確認文案"]);
+      const text = readFileSync(detailsPath(id), "utf8");
+      expect(text).toContain("文案正確");
+      expect(text).toContain("請確認文案");
+      expect(text).not.toContain("畫面正確");
+      expect(text).not.toContain("請目視確認畫面");
+    });
+
+    it("沒有任何確認任務時，兩份資料檔仍存在且為空資料", async () => {
+      const id = "f-replan-empty";
+      const run = await planSettledRun(id, { maxAgentRuns: 50, autopilot: false, stopAfter: undefined });
+      replanRun(run, { noReview: true });
+      expect(readJson(confirmPath(id))).toEqual([]);
+      expect(readJson(detailsPath(id))).toEqual({ acceptance: [], plan: {} });
+    });
+
+    it("定案到一半中斷後 resume（.flow/ 已搬空、沒有標記）沿用既有確認資料，不會清空", async () => {
+      const id = "f-replan-resume-settle";
+      const run = await awaitingWithConfirm(id);
+      expect(existsSync(join(runDir(id), "confirmations-restored"))).toBe(false);
+      // 同一份已搬空的 .flow/ 再走一次計畫審查與定案：模擬 planSettled 存檔前中斷、resume 重做（不經過 replan 的併回）
+      const done = await advance({ ...run, stage: "plan_review", planWriter: "a" });
+      expect(done.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readJson(detailsPath(id)).acceptance.map((a: { id: string }) => a.id)).toEqual(["AC-3"]);
+    });
+  });
 });
 
 describe("iterate：在同一個 worktree 開第二輪", () => {
