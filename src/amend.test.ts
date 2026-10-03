@@ -75,6 +75,16 @@ describe("decideAmend", () => {
     const again = decideAmend(base({ tasks: first.tasks, acceptance: first.acceptance, counts: { "T-1": 2 } }));
     expect(again.kind).toBe("applied");
   });
+
+  it("修補任務已合併後，同樣的請求視為新請求（計入次數，達上限回報 limit）", () => {
+    const first = decideAmend(base());
+    if (first.kind !== "apply") throw new Error(first.kind);
+    const done = new Set(["T-1", first.task.id]);
+    const again = decideAmend(base({ tasks: first.tasks, acceptance: first.acceptance, done, counts: { "T-1": 1 } }));
+    expect(again.kind).toBe("apply");
+    if (again.kind === "apply") expect(again.task.id).not.toBe(first.task.id);
+    expect(decideAmend(base({ tasks: first.tasks, acceptance: first.acceptance, done, counts: { "T-1": 2 } })).kind).toBe("limit");
+  });
 });
 
 describe("nextId", () => {

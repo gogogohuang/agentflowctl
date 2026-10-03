@@ -50,7 +50,7 @@ export function decideAmend(input: AmendInput): AmendDecision {
   if (!parsed.success) {
     return invalid(`amend-request.json 格式不正確：${parsed.error.issues.map((i) => `${i.path.join(".") || "(根)"} ${i.message}`).join("；")}`);
   }
-  const {target, reason, files, acceptance: reqAcceptance} = parsed.data!;
+  const { target, reason, files, acceptance: reqAcceptance } = parsed.data;
   const requester = input.tasks.find((t) => t.id === input.requesterId);
   if (!requester) return invalid(`找不到提出請求的任務 ${input.requesterId}`);
   if (target === input.requesterId) return invalid("不能修補自己；請在這個任務內完成");
@@ -58,8 +58,8 @@ export function decideAmend(input: AmendInput): AmendDecision {
   if (!input.done.has(target)) {
     return invalid(`${target} 還沒合併；尚未完成的任務請在它自己的任務內處理，或寫進 .flow/handoff-response.json 的 newIssues`);
   }
-  const description = files.length ? `${reason}\n\n預計修改：${files.join("、")}` : reason;
-  if (input.tasks.some((t) => t.kind === "amend" && t.amendOf === target && t.description === description)) {
+  const description = describeAmend(parsed.data);
+  if (input.tasks.some((t) => t.kind === "amend" && t.amendOf === target && t.description === description && !input.done.has(t.id))) {
     return { kind: "applied" };
   }
   const used = input.counts[target] ?? 0;

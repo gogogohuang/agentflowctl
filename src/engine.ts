@@ -1057,7 +1057,7 @@ export async function iterateRun(run: FlowRun, opts: { requirement: string; maxA
   return {
     ...run, requirement, round, stage: "spec", stopAfter: undefined,
     maxAgentRuns: agentRuns(run.id) + quota, maxAgentRunsExplicit: explicit ? true : undefined,
-    attempts: {}, modelRetryAttempts: {}, taskIndex: 0, taskPhase: "tests", doneTasks: undefined,
+    attempts: {}, modelRetryAttempts: {}, taskIndex: 0, taskPhase: "tests", doneTasks: undefined, amendments: undefined,
     taskBase: undefined, testsCommit: undefined, testsRedos: undefined, lastTestsAuthor: undefined,
     fixSource: undefined, skipPlanReview: undefined,
     pausedStage: undefined, pauseReason: undefined, failedStage: undefined, failureReason: undefined, failureCategory: undefined,
@@ -1286,6 +1286,9 @@ function applyAmendRequest(run: FlowRun, raw: string, requesterId: string, tasks
   return { kind: "applied", run: next };
 }
 
+/** 請求者這一步是否留下了修補請求（順序模式由下一輪 implementStage 開頭處理，車道由 driveLane 處理） */
+const requestPending = (run: FlowRun) => existsSync(flowFile(run, "amend-request.json"));
+
 /** 修補達上限時給請求者的指示：停止要求修補，改在自己的任務內完成 */
 const amendLimitFeedback = (reason: string) =>
   `${reason}。不要再提出修補請求：請在自己的任務內完成，或把問題寫進 .flow/handoff-response.json 的 newIssues 交給人決定。`;
@@ -1308,7 +1311,7 @@ async function amendIfRequested(run: FlowRun, tasks: TaskItem[], task: TaskItem)
     const reason = amendLimitFeedback(result.reason);
     mkdirSync(flowDir(run.id), { recursive: true });
     writeFileSync(flowFile(run, "feedback.md"), `# 修補請求未被接受\n\n${reason}\n`);
-    throw new QuotaPause(`${task.id} 的修補請求被拒絕：${result.reason}；請檢查 .flow/feedback.md 後 resume，或用 replan 調整計畫`);
+    throw new QuotaPause(`${task.id} 的修補請求被拒絕：${result.reason}；請檢查 .flow/feedback.md（請求者已被告知改在自己的任務內完成）後 resume`);
   }
   const repo = worktreeDir(run.id);
   if (run.taskPhase === "tests" || !run.taskBase) await discardChanges(repo);
@@ -1394,6 +1397,8 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     );
     const { r, agent: testsAuthor } = outcome;
     const tampered = restorePlan(run, snap);
+    // 請求修補：這一步只寫請求就停，不評估任何關卡；下一輪 implementStage 開頭的 amendIfRequested 會處理並丟棄半成品
+    if (requestPending(run)) return run;
     if (!r.ok) {
       await resetTo(repo, before);
       return retry(run, key, `Agent 執行失敗：${r.summary}`, "implement", "agent_error");
@@ -1472,6 +1477,8 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   );
   const { r, agent: codeAuthor } = outcome;
   const tampered = restorePlan(run, snap);
+  // 請求修補：同紅燈階段，不評估任何關卡（.flow/ 不在 git 內，直接當成「沒有變更」會誤判成略過任務）
+  if (requestPending(run)) return run;
   if (!r.ok) return retry(run, key, `Agent 執行失敗：${r.summary}`, "implement", "agent_error");
   if (tampered.length) {
     await resetTo(repo, testsCommit);
@@ -1673,7 +1680,7 @@ async function amendFromLane(ref: { run: FlowRun }, task: TaskItem, request: str
   if (result.kind === "limit") {
     rmSync(requestFile, { force: true });
     writeFileSync(join(flowDir(id), "feedback.md"), `# 修補請求未被接受\n\n${amendLimitFeedback(result.reason)}\n`);
-    const reason = `${task.id} 的修補請求被拒絕：${result.reason}；請檢查 ${join(flowDir(id), "feedback.md")} 後 resume，或用 replan 調整計畫`;
+    const reason = `${task.id} 的修補請求被拒絕：${result.reason}；請檢查 ${join(flowDir(id), "feedback.md")} 後 resume`;
     saveRun({ ...lane, stage: "paused", pausedStage: "implement", pauseReason: reason });
     return { kind: "paused", reason };
   }

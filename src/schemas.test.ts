@@ -45,6 +45,14 @@ describe("FlowRun.maxAttempts", () => {
   });
 });
 
+describe("FlowRun.amendments", () => {
+  const base = { id: "x", baseBranch: "main", branch: "flow/x", requirement: "r", stage: "implement", autopilot: true, maxAgentRuns: 10, cycle: ["a"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: "t", updatedAt: "t" };
+  it("可省略（舊的 state.json），有值時是任務 id 對次數", () => {
+    expect(FlowRun.safeParse(base).success).toBe(true);
+    expect(FlowRun.safeParse({ ...base, amendments: { "T-1": 1 } }).success).toBe(true);
+  });
+});
+
 describe("FlowRun.stopAfter", () => {
   const base = { id: "f-stop", baseBranch: "main", branch: "flow/f-stop", requirement: "x", stage: "spec", autopilot: true, maxAgentRuns: 60, cycle: ["claude"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: "t", updatedAt: "t" };
 

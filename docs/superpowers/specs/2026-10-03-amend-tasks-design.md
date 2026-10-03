@@ -31,7 +31,7 @@
 - 該 target 已被修補的次數小於 `maxAmendments`（`flow.config.json`，預設 2）。
 - 套用時預算加碼：`maxAgentRuns` 加上 `agentRunsPerTask`（run／resume 明確指定過上限、即 `maxAgentRunsExplicit` 為真時不加）。
 
-不通過時用 `retry()` 把原因寫進 `feedback.md`，請求者重寫；連續超過 `maxAttempts` 照舊讓 run 失敗。達到修補上限則丟既有的 `QuotaPause`，訊息說明被修補的任務與下一步，run 暫停，`stopReport` 印出被修補多次的任務與請求原因，並提示 `resume` 或 `replan`。
+不通過時用 `retry()` 把原因寫進 `feedback.md`，請求者重寫；連續超過 `maxAttempts` 照舊讓 run 失敗。達到修補上限則丟既有的 `QuotaPause`，訊息說明被修補的任務與下一步，run 暫停；暫停原因本身就帶有請求者、被修補的任務與次數／上限，不新增 `stopReport` 輸出。下一步是檢查 `.flow/feedback.md`（車道模式為該車道的 feedback）後 `resume`；停在 implement 階段無法 `replan`。
 
 ### 3. 插入修補任務
 

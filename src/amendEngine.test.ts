@@ -24,6 +24,8 @@ writeFileSync(script, `import { existsSync, readFileSync, renameSync, writeFileS
 const prompt = readFileSync(0, "utf8");
 const phase = prompt.includes("<red_output>") ? "code" : prompt.includes("<no_tdd>") ? "direct" : "tests";
 writeFileSync(\`.flow/prompt-\${phase}.txt\`, prompt);
+if (phase === "direct" && existsSync(".flow/amend-direct-request.txt")) { renameSync(".flow/amend-direct-request.txt", ".flow/amend-request.json"); process.exit(0); }
+if (phase === "tests" && existsSync(".flow/amend-only-request.txt")) { renameSync(".flow/amend-only-request.txt", ".flow/amend-request.json"); process.exit(0); }
 if (phase === "tests" && existsSync(".flow/amend-request.txt")) renameSync(".flow/amend-request.txt", ".flow/amend-request.json");
 if (phase === "code" && existsSync(".flow/amend-code-request.txt")) renameSync(".flow/amend-code-request.txt", ".flow/amend-request.json");
 if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
@@ -31,8 +33,8 @@ else writeFileSync("feature.mjs", "export const answer = 42;\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
 
-async function amendRun(id: string, request: unknown, { amendments, maxAgentRuns = 2, requestIn = "amend-request.txt" }: { amendments?: Record<string, number>; maxAgentRuns?: number; requestIn?: string } = {}) {
-  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+async function amendRun(id: string, request: unknown, { amendments, maxAgentRuns = 2, requestIn = "amend-request.txt", extraTasks = [], t2 = {}, state = {} }: { amendments?: Record<string, number>; maxAgentRuns?: number; requestIn?: string; extraTasks?: object[]; t2?: object; state?: object } = {}) {
+  writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false }, taskConcurrency: 1,
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
   }));
@@ -43,7 +45,8 @@ async function amendRun(id: string, request: unknown, { amendments, maxAgentRuns
   ]));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
     { id: "T-1", title: "第一個", description: "已完成", dependsOn: [], acceptance: ["AC-1"] },
-    { id: "T-2", title: "第二個", description: "匯出 answer", dependsOn: ["T-1"], acceptance: ["AC-2"] },
+    { id: "T-2", title: "第二個", description: "匯出 answer", dependsOn: ["T-1"], acceptance: ["AC-2"], ...t2 },
+    ...extraTasks,
   ]));
   writeFileSync(join(flowDir(id), requestIn), JSON.stringify(request));
   const now = new Date().toISOString();
@@ -51,7 +54,7 @@ async function amendRun(id: string, request: unknown, { amendments, maxAgentRuns
   return advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
     autopilot: true, maxAgentRuns, maxAgentRunsExplicit: true, cycle: ["a", "b"], attempts: {},
-    taskIndex: 1, taskPhase: "tests", ...(amendments ? { amendments } : {}), createdAt: now, updatedAt: now,
+    taskIndex: 1, taskPhase: "tests", ...state, ...(amendments ? { amendments } : {}), createdAt: now, updatedAt: now,
   });
 }
 
@@ -80,6 +83,9 @@ describe("順序模式的修補請求", () => {
     expect(run.amendments).toEqual({ "T-1": 1 });
     expect(run.taskPhase).toBe("code");
     expect(run.testsCommit).toBeDefined();
+    // 請求者的實作 commit 已被丟棄，分支上只剩測試 commit
+    const log = execFileSync("git", ["-C", worktreeDir(run.id), "log", "--format=%s"], { encoding: "utf8" });
+    expect(log).not.toContain("feat(T-2)");
     expect(existsSync(join(flowDir(run.id), "amend-request.json"))).toBe(false);
     // 第三次 agent 執行寫的是修補任務的紅燈
     expect(readFileSync(join(flowDir(run.id), "prompt-tests.txt"), "utf8")).toContain("T-3");
@@ -98,5 +104,24 @@ describe("順序模式的修補請求", () => {
     expect(run.pauseReason).toMatch(/T-1.*上限/);
     expect(tasksOf(run.id).map((t) => t.id)).toEqual(["T-1", "T-2"]);
     expect(readFileSync(join(flowDir(run.id), "feedback.md"), "utf8")).toContain("修補");
+  }, 30_000);
+
+  it("不走 TDD 的請求者只寫請求檔時，修補任務插在它前面，不把它當成沒有變更而略過", async () => {
+    const run = await amendRun("amend-direct", goodRequest, {
+      requestIn: "amend-direct-request.txt", t2: { tdd: false }, state: { taskPhase: "code", taskBase: execFileSync("git", ["-C", root, "rev-parse", "main"], { encoding: "utf8" }).trim() },
+      extraTasks: [{ id: "T-3", title: "第三個", description: "不相干", dependsOn: ["T-1"], acceptance: ["AC-2"] }],
+    });
+    expect(tasksOf(run.id).map((t) => t.id)).toEqual(["T-1", "T-4", "T-2", "T-3"]);
+    expect(tasksOf(run.id)[3]!.dependsOn).toEqual(["T-1"]);
+    expect(tasksOf(run.id)[2]!.dependsOn).toEqual(["T-1", "T-4"]);
+    expect(run.taskIndex).toBe(1);
+    expect(run.doneTasks ?? []).not.toContain("T-2");
+    expect(run.amendments).toEqual({ "T-1": 1 });
+  }, 30_000);
+
+  it("紅燈階段只寫請求檔時，不記成 tests_not_written 重試", async () => {
+    const run = await amendRun("amend-red-only", goodRequest, { requestIn: "amend-only-request.txt" });
+    expect(tasksOf(run.id).map((t) => t.id)).toEqual(["T-1", "T-3", "T-2"]);
+    expect(listRetries(run.id).filter((r) => r.category === "tests_not_written")).toEqual([]);
   }, 30_000);
 });
