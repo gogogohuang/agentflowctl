@@ -62,7 +62,7 @@ import {
   type PlanReviewState,
 } from "./planReview.js";
 import { confirmationChecklist, descriptionWaivesRed, splitHumanItems, orderTasks, outOfScopeFiles, outOfScopeMessage, overlappingParallelTasks, parallelOverlapMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
-import { readJsonFile, renderPrompt, tail } from "./util.js";
+import { readJsonFile, renderPrompt, failureTail, tail } from "./util.js";
 import { brokenPackageImport, foreignFailingTests, packageImports, violatingTestChanges, weakenedChecks, weakenedMessage } from "./testGuard.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
@@ -230,13 +230,19 @@ function finishHandoff(
 const NO_CONCERN = /^(?:無|沒有|无|none|n\/a|na|nil|-+|—+)(?:疑慮|問題)?[。.!！\s]*$/i;
 const CONCERN_MAX = 400;
 
+/** 作者在 <result><concerns> 寫的疑慮；沒有實質內容（「無」「none」…）時回傳 undefined */
+function authorConcerns(outcome: StepOutcome): string | undefined {
+  const text = outcome.r.meta?.concerns.trim();
+  return text && !NO_CONCERN.test(text) ? text : undefined;
+}
+
 /**
  * 作者在 <result><concerns> 寫的疑慮，只有人看得到，審查者看不到。關卡通過後把它記成交接帳本的參考資訊（info），
  * 審查者讀 handoff-context.md 時就會看到，可以優先查證。只是線索：不影響任何關卡，記錄失敗也不能讓步驟失敗。
  */
 function recordConcerns(run: FlowRun, outcome: StepOutcome): void {
-  const text = outcome.r.meta?.concerns.trim();
-  if (!text || NO_CONCERN.test(text)) return;
+  const text = authorConcerns(outcome);
+  if (!text) return;
   const callKey = `concerns:${outcome.callKey}`;
   try {
     acceptHandoff(
@@ -1722,7 +1728,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     if (regressed.length) {
       // 「連續」只算回歸本身：先前因其他原因失敗的嘗試不計入
       const streak = (run.regressions ?? 0) + 1;
-      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${tail(green.output)}\n\`\`\``;
+      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${failureTail(green.output)}\n\`\`\``;
       if (streak >= REGRESSION_PAUSE_AFTER) {
         const attempts = { ...run.attempts };
         delete attempts[key];
@@ -1740,16 +1746,17 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const suspectTests = Boolean(brokenImport) || !codeCommit || failures >= TESTS_REDO_AFTER_FAILURES;
     if (tdd && run.taskBase && (run.testsRedos ?? 0) >= TESTS_REDO_LIMIT && suspectTests) {
       // 已退回測試階段達上限仍然過不了：再自動重試只會燒用量，停下來等人處理（改依賴、補充意見或 replan 之後 resume）
-      await redoTests(run, key, repo, run.taskBase, testsCommit, green.output, brokenImport ? `測試用了已安裝套件沒有的匯出 ${brokenImport}` : codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更", true);
+      await redoTests(run, key, repo, run.taskBase, testsCommit, green.output, brokenImport ? `測試用了已安裝套件沒有的匯出 ${brokenImport}` : codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更", true, authorConcerns(outcome));
       throw new TestsStuckPause(`${key} 已退回測試階段 ${TESTS_REDO_LIMIT} 次，測試仍無法被實作滿足；請檢查測試依賴與 .flow/feedback.md 後 resume（resume 會再給 ${TESTS_REDO_LIMIT} 次退回機會）`);
     }
     if (tdd && run.taskBase && (run.testsRedos ?? 0) < TESTS_REDO_LIMIT && suspectTests) {
       return redoTests(
         run, key, repo, run.taskBase, testsCommit, green.output,
         brokenImport ? `測試用了已安裝套件沒有的匯出 ${brokenImport}` : codeCommit ? `實作者已嘗試 ${failures} 次` : "實作者沒有任何變更",
+        false, authorConcerns(outcome),
       );
     }
-    return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${tail(green.output)}\n\`\`\``, "implement", "tests_not_green");
+    return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${failureTail(green.output)}\n\`\`\``, "implement", "tests_not_green");
   }
   const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, testsCommit);
   if (handoffError) {
@@ -1999,7 +2006,7 @@ async function testPackageImports(repo: string, from: string, to: string, testRe
  * 舊的測試 commit 還留在 git 物件庫，feedback 附上它的 hash 讓作者可以 `git show` 參考。
  */
 async function redoTests(
-  run: FlowRun, key: string, repo: string, taskBase: string, testsCommit: string, output: string, why: string, pause = false,
+  run: FlowRun, key: string, repo: string, taskBase: string, testsCommit: string, output: string, why: string, pause = false, concerns?: string,
 ): Promise<FlowRun> {
   await resetTo(repo, taskBase);
   const redos = pause ? 1 : (run.testsRedos ?? 0) + 1;
@@ -2011,10 +2018,11 @@ async function redoTests(
     `${why}，測試仍未通過。這表示測試本身可能有問題（例如使用專案沒有安裝的 API、匯入不存在的套件、斷言互相矛盾或與驗收條件不符），而實作階段不能修改測試。`,
     `上一版測試已還原，commit 為 ${testsCommit}，可用 \`git show ${testsCommit}\` 查看。請重寫測試：沿用專案實際安裝版本支援的寫法（參考既有測試），並確保失敗原因是功能尚未實作，而不是測試本身寫錯。`,
     "",
+    ...(concerns ? ["實作者回報的疑慮（可能直接指出測試哪裡有問題，請先查證）：", "", concerns.length > CONCERN_MAX ? `${concerns.slice(0, CONCERN_MAX)}…` : concerns, ""] : []),
     "測試輸出：",
     "",
     "```",
-    tail(output),
+    failureTail(output),
     "```",
     "",
   ].join("\n"));
