@@ -20,6 +20,7 @@ if (existsSync(".flow/tamper-review.txt")) writeFileSync(".flow/acceptance.json"
 const context = readFileSync(".flow/handoff-context.md", "utf8");
 const id = context.match(/## ([a-f0-9]+)：/)?.[1];
 const review = mode === "missing" ? { verdict: "approve", items: [] }
+  : mode === "stall" ? { verdict: "changes_requested", items: acs.map((a, i) => (i === 0 ? { ...a, status: "partial", note: "缺外部證據 " + Date.now() } : a)) }
   : mode.startsWith("extra") ? { verdict: "changes_requested", items: [...acs, { criterion: "額外發現：空陣列", status: "not_met", note: "submit 會丟例外", evidence: mode === "extra-bare" ? "" : "feature.ts:1" }] }
   : { verdict: "approve", items: mode.startsWith("plan-") ? [] : acs };
 writeFileSync(mode.startsWith("plan-") ? ".flow/plan-review.json" : ".flow/review.json", JSON.stringify(review));
@@ -671,6 +672,34 @@ describe("任務級審查／修正來回圈數上限", () => {
     const run = await verifyFailing("f-rounds-cap-1", 1, { maxTaskRounds: 1 });
     expect(run.stage).toBe("paused");
   });
+});
+
+describe("整體審查連續回報同一組未通過條件", () => {
+  it("第 3 次同一組 AC 未通過就暫停，狀態停在修正階段，resume 重新計數", async () => {
+    const id = "f-review-stall";
+    writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+      agents: { a: { adapter: "command", command: ["node", script] }, b: { adapter: "command", command: ["node", script] } },
+      cycle: ["a", "b"], install: "true", checks: [], maxAttempts: 10,
+    }));
+    await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+    writeFileSync(join(worktreeDir(id), "feature.ts"), "export const answer = 42;\n");
+    await commitAll(worktreeDir(id), "feat: 測試功能 [a]");
+    mkdirSync(flowDir(id), { recursive: true });
+    writeFileSync(join(flowDir(id), "review-mode.txt"), "stall");
+    writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "x" }, { id: "AC-2", description: "y" }]));
+    const now = new Date().toISOString();
+    const run = await advance({
+      id, baseBranch: "main", branch: `flow/${id}`, requirement: "x", stage: "review", autopilot: true,
+      maxAgentRuns: 60, cycle: ["a", "b"], attempts: {}, taskIndex: 0, taskPhase: "tests", lastWriter: "a",
+      createdAt: now, updatedAt: now,
+    });
+    expect(run.stage).toBe("paused");
+    expect(run.pausedStage).toBe("fix");
+    expect(run.pauseReason).toContain("連續 3 次");
+    expect(run.pauseReason).toContain("AC-1 partial");
+    expect(run.reviewStall).toBeUndefined();
+    expect(listRetries(id).filter((r) => r.key === "review")).toHaveLength(3);
+  }, SLOW_TEST_MS);
 });
 
 describe("重試前短發散", () => {

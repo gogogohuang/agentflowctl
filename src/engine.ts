@@ -11,6 +11,8 @@ import { validateProposal } from "./generateDetected.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
 import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
 import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
+import { uncoveredAcceptanceCommands, uncoveredMessage } from "./acceptanceChecks.js";
+import { nextReviewStall, REVIEW_STALL_PAUSE_AFTER, unmetCriteriaKey } from "./reviewStall.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
 import { confirmationDetailsPath, confirmationsPath, confirmationsRestoredPath, divergePath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { CMD_AGENT, nextLogFile, redStepName } from "./logs.js";
@@ -103,6 +105,8 @@ export class BaselineRedPause extends TestsStuckPause {}
 export class RegressionPause extends TestsStuckPause {}
 /** 任務的審查／驗證／修正來回超過 maxTaskRounds 圈：停下等人，不再燒用量 */
 export class TaskRoundsPause extends QuotaPause {}
+/** 整體審查連續回報同一組未通過的驗收條件：修正者多半做不到（例如要外部證據），停下等人 */
+export class ReviewStalledPause extends QuotaPause {}
 
 /** 這次執行中已確認額度用完的 agent；程序結束即清空，resume 時會重新嘗試 */
 const exhausted = new Set<string>();
@@ -755,6 +759,15 @@ function announceTasks(run: FlowRun, ordered: TaskItem[]): void {
 }
 
 /** 計畫定案後：預設直接開始實作；--manual-plan 時才停下來等人 */
+/** 驗收條件要求的檢查指令不在 verify 會跑的指令裡：只提醒，不擋關 */
+function warnUncoveredCommands(run: FlowRun): void {
+  const ac = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  if (!ac.ok) return;
+  const cfg = loadRepoConfig();
+  const found = uncoveredAcceptanceCommands(ac.data, [cfg.install, cfg.test, ...cfg.checks.map((c) => c.cmd)]);
+  if (found.length) info(run, uncoveredMessage(found));
+}
+
 function planSettled(run: FlowRun, key: string): FlowRun {
   const pending = openActions(readHandoff(run.id), "plan");
   if (pending.length) return retry(run, "plan-handoff", `計畫仍有未結交接事項：${pending.map((item) => item.id).join("、")}`, "plan_fix", "open_handoff");
@@ -763,6 +776,7 @@ function planSettled(run: FlowRun, key: string): FlowRun {
   const ordered = loadOrderedTasks(run);
   announceTasks(run, ordered);
   announceConfirmations(run);
+  warnUncoveredCommands(run);
   if (!run.autopilot) {
     info(run, `✋ 計畫已通過審查，請檢視 ${flowFile(run, "plan.md")}，確認後執行 agentflowctl approve ${run.id}`);
   }
@@ -2434,12 +2448,20 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     attemptKey: "review",
   });
   if ("run" in result) return result.run;
-  if (!result.objector) return succeed(result.state, "review", "pr");
-  return {
+  if (!result.objector) return { ...succeed(result.state, "review", "pr"), reviewStall: undefined };
+  const stall = nextReviewStall(result.state.reviewStall, unmetCriteriaKey(result.issues));
+  const next: FlowRun = {
     ...retry(result.state, "review", `程式碼審查要求修改：\n\n${result.issues.join("\n\n")}`, "fix", "review_changes"),
     fixSource: "review",
     lastReviewer: result.objector,
+    reviewStall: stall,
   };
+  if (next.stage !== "failed" && stall && stall.count >= REVIEW_STALL_PAUSE_AFTER) {
+    // 狀態已在修正階段、feedback 已寫好；先存檔（重新計數）再暫停，resume 後從修正接續
+    saveRun({ ...next, reviewStall: undefined });
+    throw new ReviewStalledPause(`程式碼審查已連續 ${stall.count} 次回報同一組未通過的驗收條件（${stall.key.replaceAll(":", " ")}），修正者多半做不到：常見原因是條件要求外部證據（例如 shellcheck、run-tests.sh 在沙箱內跑不了，而審查者只認 .flow/verify.json）。請檢查 .flow/feedback.md 與交接事項；需要的話把該指令加進 flow.config.json 的 checks 後 resume（resume 會重新計數）`);
+  }
+  return next;
 }
 
 async function prStage(run: FlowRun): Promise<FlowRun> {
@@ -2519,7 +2541,9 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
       const latest = getRun(run.id) ?? run;
       if (err instanceof QuotaPause) {
         info(run, `⏸️  暫停：${err.message}`);
-        return saveRun({ ...latest, stage: "paused", pausedStage: stage, pauseReason: err.message });
+        // 審查停滯時狀態已退到修正階段：resume 要從修正接續，不是重審
+        const resumeAt = err instanceof ReviewStalledPause ? latest.stage : stage;
+        return saveRun({ ...latest, stage: "paused", pausedStage: resumeAt as Stage, pauseReason: err.message });
       }
       if (err instanceof AgentBudgetError) {
         return saveRun({ ...latest, stage: "failed", failedStage: stage, failureCategory: "agent_budget", failureReason: err.message });

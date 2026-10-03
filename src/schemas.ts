@@ -398,6 +398,8 @@ export const FlowRun = z.object({
   testsRedos: z.number().int().optional(),
   /** 目前任務已經「審查或驗證未通過 → 修正」幾圈（超過 maxTaskRounds 暫停） */
   taskRounds: z.number().int().optional(),
+  /** 整體審查連續回報同一組未通過驗收條件的次數（達 REVIEW_STALL_PAUSE_AFTER 暫停） */
+  reviewStall: z.object({ key: z.string(), count: z.number().int() }).optional(),
   /** 目前任務連續幾次綠燈失敗的是別的任務的測試（達上限暫停） */
   regressions: z.number().int().optional(),
   /** 目前任務的測試實際由誰撰寫（可能是代打） */
