@@ -21,6 +21,7 @@ export const RETRY_LABEL: Record<RetryCategory, string> = {
   merge_conflict: "平行任務合併衝突",
   merge_tests_failed: "平行任務合併後測試失敗",
   checks_failed: "專案檢查失敗",
+  amend_invalid: "修補請求不合格",
 };
 
 export const FAILURE_LABEL: Record<FailureCategory | "unknown", string> = {

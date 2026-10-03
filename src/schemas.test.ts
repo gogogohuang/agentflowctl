@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConsistentReviewResult, DivergePick, DivergeRecord, FlowRun, RepoConfig } from "./schemas.js";
+import { AmendRequest, ConsistentReviewResult, DivergePick, DivergeRecord, FlowRun, RepoConfig, TaskItem } from "./schemas.js";
 
 describe("審查結果的 verdict 與 items 一致性", () => {
   const unmet = { criterion: "AC-1", status: "not_met", note: "src/form.tsx 缺少錯誤訊息" };
@@ -42,6 +42,14 @@ describe("FlowRun.maxAttempts", () => {
     expect(FlowRun.safeParse(base).success).toBe(true);
     expect(FlowRun.safeParse({ ...base, maxAttempts: 8 }).success).toBe(true);
     expect(FlowRun.safeParse({ ...base, maxAttempts: 2 }).success).toBe(false);
+  });
+});
+
+describe("FlowRun.amendments", () => {
+  const base = { id: "x", baseBranch: "main", branch: "flow/x", requirement: "r", stage: "implement", autopilot: true, maxAgentRuns: 10, cycle: ["a"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: "t", updatedAt: "t" };
+  it("可省略（舊的 state.json），有值時是任務 id 對次數", () => {
+    expect(FlowRun.safeParse(base).success).toBe(true);
+    expect(FlowRun.safeParse({ ...base, amendments: { "T-1": 1 } }).success).toBe(true);
   });
 });
 
@@ -120,5 +128,26 @@ describe("DivergeRecord", () => {
     expect(DivergeRecord.safeParse({ ...base, retriesSeen: 2 }).success).toBe(true);
     expect(DivergeRecord.safeParse(base).success).toBe(true);
     expect(DivergeRecord.safeParse({ ...base, retriesSeen: -1 }).success).toBe(false);
+  });
+});
+
+describe("修補請求", () => {
+  it("AmendRequest 補上 files 預設值，並要求至少一條驗收條件", () => {
+    const ok = AmendRequest.safeParse({ target: "T-1", reason: "回傳值要改成物件", acceptance: ["answer 為物件"] });
+    expect(ok.success && ok.data.files).toEqual([]);
+    expect(AmendRequest.safeParse({ target: "T-1", reason: "x", acceptance: [] }).success).toBe(false);
+    expect(AmendRequest.safeParse({ target: "task1", reason: "x", acceptance: ["a"] }).success).toBe(false);
+    expect(AmendRequest.safeParse({ target: "T-1", reason: "  ", acceptance: ["a"] }).success).toBe(false);
+  });
+
+  it("TaskItem 接受 amend 種類與 amendOf", () => {
+    const task = TaskItem.parse({ id: "T-4", title: "修補", description: "d", acceptance: ["AC-3"], kind: "amend", amendOf: "T-1" });
+    expect(task.kind).toBe("amend");
+    expect(task.amendOf).toBe("T-1");
+  });
+
+  it("RepoConfig 的 maxAmendments 預設 2", () => {
+    expect(RepoConfig.parse({}).maxAmendments).toBe(2);
+    expect(RepoConfig.safeParse({ maxAmendments: 0 }).success).toBe(false);
   });
 });

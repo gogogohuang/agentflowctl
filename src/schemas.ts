@@ -96,10 +96,21 @@ export const TaskItem = z.object({
   complexity: z.enum(["low", "medium", "high"]).optional(),
   /** false＝這個任務不適合先寫會失敗的測試（建置流程、設定、文件、純重構、實作前就會通過的特徵化測試等），略過紅燈直接實作；沒寫視為 true。描述寫明不要求紅燈時必須為 false */
   tdd: z.boolean().optional(),
-  /** confirm＝不進入實作佇列，另存給使用者確認；沒寫視為要實作。舊 tasks.json 沒有此欄位 */
-  kind: z.enum(["implement", "confirm"]).optional(),
+  /** confirm＝不進入實作佇列，另存給使用者確認；amend＝後面任務提出修正請求後由引擎插入的修補任務；沒寫視為要實作。舊 tasks.json 沒有此欄位 */
+  kind: z.enum(["implement", "confirm", "amend"]).optional(),
+  /** amend 任務修補的是哪個已合併的任務 */
+  amendOf: z.string().optional(),
 });
 export type TaskItem = z.infer<typeof TaskItem>;
+
+/** agent 發現必須改變已合併任務的行為時寫的 .flow/amend-request.json */
+export const AmendRequest = z.object({
+  target: z.string().regex(/^T-\d+$/, "target 格式必須是 T-<數字>"),
+  reason: z.string().trim().min(1, "reason 不可為空"),
+  files: z.array(z.string().min(1)).default([]),
+  acceptance: z.array(z.string().trim().min(1)).min(1, "至少要寫一條修補後可驗證的條件"),
+});
+export type AmendRequest = z.infer<typeof AmendRequest>;
 
 /** 排好的實作清單與另存的確認清單都可以是空的 */
 export const OrderedTaskList = z.array(TaskItem);
@@ -259,6 +270,8 @@ export const RepoConfig = z.object({
   maxAgentRuns: z.number().int().positive().default(60),
   /** 計畫定案後，上限改為「已執行次數 + 任務數 × 這個值」；run／resume 明確指定 --max-agent-runs 時不改算 */
   agentRunsPerTask: z.number().int().positive().default(20),
+  /** 同一個已合併任務最多被後面的任務要求修補幾次；超過就暫停等人處理 */
+  maxAmendments: z.number().int().min(1).default(2),
   /** 同一關連續失敗幾次後停止；至少 3，修正與審查才來得及往返一輪 */
   maxAttempts: z.number().int().min(3).default(5),
   /** 終端機是否印出 agent 的文字、工具呼叫與專案指令；命令列 -v 也能開啟 */
@@ -327,6 +340,8 @@ export const FlowRun = z.object({
   taskIndex: z.number().int().nonnegative(),
   /** 平行任務模式下已合併回 run 分支的任務 id（舊 state.json 沒有此欄位） */
   doneTasks: z.array(z.string()).optional(),
+  /** 各已合併任務被修補過幾次（舊 state.json 沒有此欄位） */
+  amendments: z.record(z.string(), z.number().int().nonnegative()).optional(),
   /** 平行任務的車道專用：這個任務在整份任務清單裡的位置，讓角色輪替與依序執行時一致 */
   taskOffset: z.number().int().nonnegative().optional(),
   /** 目前任務進行到哪一步：寫測試 → 實作 → 審查 → 驗證，審查或驗證未通過時進入修正 */

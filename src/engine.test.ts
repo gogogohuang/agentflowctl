@@ -1459,7 +1459,7 @@ describe("iterate：在同一個 worktree 開第二輪", () => {
     return saveRun({
       id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能\n第二行", stage: "done", autopilot: true,
       maxAgentRuns: 40, cycle: ["a", "b"], attempts: { review: 1 }, taskIndex: 3, taskPhase: "review",
-      doneTasks: ["T-1"], taskBase: "abc", testsCommit: "def", testsRedos: 1, lastTestsAuthor: "a", fixSource: "review",
+      doneTasks: ["T-1"], amendments: { "T-1": 1 }, taskBase: "abc", testsCommit: "def", testsRedos: 1, lastTestsAuthor: "a", fixSource: "review",
       prUrl: "https://github.com/x/y/pull/1", stopAfter: "pr", createdAt: now, updatedAt: now, ...extra,
     });
   }
@@ -1481,6 +1481,7 @@ describe("iterate：在同一個 worktree 開第二輪", () => {
     expect(next.requirement).toContain(".flow/round-1/");
     expect(next.attempts).toEqual({});
     expect([next.taskIndex, next.taskPhase, next.doneTasks]).toEqual([0, "tests", undefined]);
+    expect(next.amendments).toBeUndefined();
     expect([next.taskBase, next.testsCommit, next.testsRedos, next.lastTestsAuthor, next.fixSource, next.stopAfter]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
     expect(next.prUrl).toBe(run.prUrl);
     for (const f of ["confirmations.json", "plan-arbitration.json", "diverge.json", "parallel-review", "lanes"]) expect(existsSync(join(runDir(run.id), f))).toBe(false);

@@ -146,3 +146,57 @@ describe("車道排程", () => {
     expect(result.done.size).toBe(4);
   });
 });
+
+describe("scheduleLanes：修補請求", () => {
+  it("amend 結果交給 hooks.amend；回 restart 後不再開新車道，已在跑的車道收尾合併，結果標記 restart", async () => {
+    const started: string[] = [];
+    const merged: string[] = [];
+    const result = await scheduleLanes([task("T-1"), task("T-2"), task("T-3", ["T-1"])], new Set(), 2, {
+      async start(t): Promise<LaneOutcome> {
+        started.push(t.id);
+        return t.id === "T-1" ? { kind: "amend", request: "{}" } : { kind: "done" };
+      },
+      async merge(t) { merged.push(t.id); return "merged" as const; },
+      async amend() { return "restart" as const; },
+    });
+    expect(result.restart).toBe(true);
+    expect(started).toEqual(["T-1", "T-2"]);
+    expect(merged).toEqual(["T-2"]);
+    expect(result.done.has("T-1")).toBe(false);
+  });
+
+  it("amend 回 retry 時讓同一個任務重跑", async () => {
+    let calls = 0;
+    const result = await scheduleLanes([task("T-1")], new Set(), Infinity, {
+      async start(): Promise<LaneOutcome> { calls += 1; return calls === 1 ? { kind: "amend", request: "{}" } : { kind: "done" }; },
+      async merge() { return "merged" as const; },
+      async amend() { return "retry" as const; },
+    });
+    expect(calls).toBe(2);
+    expect(result.done.has("T-1")).toBe(true);
+    expect(result.restart).toBeUndefined();
+  });
+
+  it("amend 回 paused 或 failed 時照一般的暫停／失敗處理", async () => {
+    const paused = await scheduleLanes([task("T-1")], new Set(), Infinity, {
+      async start(): Promise<LaneOutcome> { return { kind: "amend", request: "{}" }; },
+      async merge() { return "merged" as const; },
+      async amend() { return { kind: "paused" as const, reason: "修補達上限" }; },
+    });
+    expect(paused.paused).toBe("修補達上限");
+    const failed = await scheduleLanes([task("T-1")], new Set(), Infinity, {
+      async start(): Promise<LaneOutcome> { return { kind: "amend", request: "{}" }; },
+      async merge() { return "merged" as const; },
+      async amend() { return { kind: "failed" as const, reason: "重試達上限", category: "retry_limit" }; },
+    });
+    expect(failed.failed?.reason).toBe("重試達上限");
+  });
+
+  it("沒有提供 hooks.amend 時，amend 結果視為失敗", async () => {
+    const result = await scheduleLanes([task("T-1")], new Set(), Infinity, {
+      async start(): Promise<LaneOutcome> { return { kind: "amend", request: "{}" }; },
+      async merge() { return "merged" as const; },
+    });
+    expect(result.failed?.reason).toMatch(/修補/);
+  });
+});

@@ -3,3 +3,4 @@ dist/
 .pnpm-store/
 .devlog/
 .superpowers/
+.worktrees/
