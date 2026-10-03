@@ -17,6 +17,8 @@ export function projectRoot(): string {
 
 export const agentflowctlDir = () => join(projectRoot(), ".agentflowctl");
 export const runsDir = () => join(agentflowctlDir(), "runs");
+/** 動態偵測的結果；專案層級，不屬於單一 run。以專案根目錄定位，方便測試 */
+export const detectedPathIn = (root: string) => join(root, ".agentflowctl", "detected.json");
 
 /**
  * 平行任務的「車道」：每個沒有相依關係的任務在自己的 worktree 與分支上跑完整的任務流程，完成後合併回 run 的分支。

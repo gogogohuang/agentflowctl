@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { attachWorktree, branchCheckedOutAt, git } from "./git.js";
-import { flowDir, projectRoot, runDir, worktreeDir } from "./paths.js";
+import { detectedPathIn, flowDir, projectRoot, runDir, worktreeDir } from "./paths.js";
 import { FlowRun } from "./schemas.js";
 import { getRun, saveRun } from "./store.js";
 
@@ -45,6 +45,8 @@ export async function dumpRun(id: string, outDir: string): Promise<void> {
   for (const name of RUN_ENTRIES) copy(join(runDir(id), name), join("run", name), `run/${name}`);
   copy(flowDir(id), "flow", "flow");
   copy(join(projectRoot(), "flow.config.json"), "flow.config.json", "flow.config.json");
+  // 專案層級的動態偵測結果（可能不存在，不算缺檔）
+  if (existsSync(detectedPathIn(projectRoot()))) cpSync(detectedPathIn(projectRoot()), join(outDir, "detected.json"));
 
   const meta = {
     runId: id,

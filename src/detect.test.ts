@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { describeDetected, detectProjectDefaults, withProjectDefaults } from "./detect.js";
+import { describeDetected, detectProjectDefaults, findFiles, NO_INSTALL, withProjectDefaults } from "./detect.js";
 import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
 function project(files: Record<string, string | object>): string {
@@ -36,10 +36,10 @@ describe("detectProjectDefaults", () => {
     expect(names({ "package.json": {}, "index.html": "" })).toContain("build");
   });
 
-  it("有 build script 時一律跑它；沒有 package.json 的全新專案維持預設 build", () => {
+  it("有 build script 時一律跑它；空資料夾是未知類型，不跑任何檢查", () => {
     const d = detectProjectDefaults(project({ "package.json": { scripts: { build: "tsc" } } }));
     expect(d.checks.find((c) => c.name === "build")?.cmd).toBe("npm run build");
-    expect(detectProjectDefaults(project({})).checks.some((c) => c.name === "build")).toBe(true);
+    expect(detectProjectDefaults(project({})).checks).toEqual([]);
   });
 
   it("依依賴與 test script 判斷有沒有測試框架", () => {
@@ -52,8 +52,8 @@ describe("detectProjectDefaults", () => {
     expect(detectProjectDefaults(project({ "package.json": { scripts: { test: placeholder } } })).testFramework).toBe(false);
   });
 
-  it("沒有 package.json 時仍回傳 npm 的預設值", () => {
-    const d = detectProjectDefaults(project({}));
+  it("只有 lockfile 沒有 package.json 時仍回傳 npm 的預設值", () => {
+    const d = detectProjectDefaults(project({ "package-lock.json": "{}" }));
     expect(d.manager).toBe("npm");
     expect(d.install).toBe(RepoConfig.parse({}).install);
   });
@@ -141,6 +141,129 @@ describe("detectProjectDefaults", () => {
     const d = detectProjectDefaults(project({ "package.json": "{", "pnpm-lock.yaml": "" }));
     expect(d.manager).toBe("pnpm");
   });
+  it("沒有任何可辨識的專案檔（含空資料夾）時是未知類型：不安裝、沒有檢查、不走紅綠燈", () => {
+    const d = detectProjectDefaults(project({ "README.md": "# hi" }));
+    expect(d.ecosystem).toBe("unknown");
+    expect(d.install).toBe(NO_INSTALL);
+    expect(d.checks).toEqual([]);
+    expect(d.testFramework).toBe(false);
+    expect(d.testPattern).toBeUndefined();
+  });
+
+  it("只有 Node lockfile 沒有 package.json 仍視為 Node 專案", () => {
+    expect(detectProjectDefaults(project({ "pnpm-lock.yaml": "" })).ecosystem).toBe("node");
+  });
+
+  it("findFiles 略過 node_modules、.git、.agentflowctl 等目錄，並回傳以 / 分隔的相對路徑", () => {
+    const dir = project({ "a_test.go": "" });
+    mkdirSync(join(dir, "pkg"));
+    writeFileSync(join(dir, "pkg", "b_test.go"), "");
+    mkdirSync(join(dir, "node_modules"));
+    writeFileSync(join(dir, "node_modules", "c_test.go"), "");
+    expect(findFiles(dir, /_test\.go$/).sort()).toEqual(["a_test.go", "pkg/b_test.go"]);
+  });
+});
+
+describe("detectProjectDefaults：Go 與 Rust", () => {
+  it("Go：go.mod 加上既有的 *_test.go 視為有測試框架", () => {
+    const d = detectProjectDefaults(project({ "go.mod": "module x\n", "a_test.go": "" }));
+    expect(d.ecosystem).toBe("go");
+    expect(d.install).toBe("go mod download");
+    expect(d.test).toBe("go test ./...");
+    expect(d.checks).toEqual([
+      { name: "test", cmd: "go test ./..." },
+      { name: "vet", cmd: "go vet ./...", finalOnly: true },
+      { name: "build", cmd: "go build ./..." },
+    ]);
+    expect(d.testFramework).toBe(true);
+    expect(new RegExp(d.testPattern!).test("pkg/a_test.go")).toBe(true);
+    expect(new RegExp(d.testPattern!).test("pkg/a.go")).toBe(false);
+  });
+
+  it("Go：還沒有任何 *_test.go 時視為沒有測試框架（不走紅綠燈）", () => {
+    expect(detectProjectDefaults(project({ "go.mod": "module x\n" })).testFramework).toBe(false);
+  });
+
+  it("Rust：Cargo.toml 加上 *_test.rs 視為有測試框架，沒有測試檔就沒有", () => {
+    const d = detectProjectDefaults(project({ "Cargo.toml": "[package]\n", "a_test.rs": "" }));
+    expect(d.ecosystem).toBe("rust");
+    expect(d.install).toBe("cargo fetch");
+    expect(d.checks).toEqual([
+      { name: "test", cmd: "cargo test" },
+      { name: "clippy", cmd: "cargo clippy", finalOnly: true },
+      { name: "build", cmd: "cargo build" },
+    ]);
+    expect(d.testFramework).toBe(true);
+    expect(new RegExp(d.testPattern!).test("tests/api.rs")).toBe(true);
+    expect(new RegExp(d.testPattern!).test("src/lib.rs")).toBe(false);
+    expect(detectProjectDefaults(project({ "Cargo.toml": "[package]\n" })).testFramework).toBe(false);
+  });
+
+  it("package.json 優先於其他專案檔（混合專案以 Node 為準）", () => {
+    expect(detectProjectDefaults(project({ "package.json": {}, "go.mod": "module x\n" })).ecosystem).toBe("node");
+  });
+});
+
+describe("detectProjectDefaults：Python", () => {
+  const pyproject = (body: string) => ({ "pyproject.toml": body });
+
+  it("pip 專案：有 requirements.txt 就裝它，pytest 出現在依賴裡視為有測試框架", () => {
+    const d = detectProjectDefaults(project({ "requirements.txt": "pytest>=8\n" }));
+    expect(d.ecosystem).toBe("python");
+    expect(d.manager).toBe("pip");
+    expect(d.install).toBe("python3 -m pip install -r requirements.txt");
+    expect(d.test).toBe("pytest");
+    expect(d.checks).toEqual([{ name: "test", cmd: "pytest" }]);
+    expect(d.testFramework).toBe(true);
+  });
+
+  it("只有 pyproject.toml 時用 pip install -e .", () => {
+    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).install).toBe("python3 -m pip install -e .");
+  });
+
+  it("uv 與 poetry：依 lockfile 選安裝與執行前綴", () => {
+    const uv = detectProjectDefaults(project({ ...pyproject("[tool.pytest.ini_options]\n"), "uv.lock": "" }));
+    expect(uv.manager).toBe("uv");
+    expect(uv.install).toBe("uv sync");
+    expect(uv.test).toBe("uv run pytest");
+    const poetry = detectProjectDefaults(project({ ...pyproject("[tool.poetry]\n"), "poetry.lock": "", "test_a.py": "" }));
+    expect(poetry.install).toBe("poetry install --no-interaction");
+    expect(poetry.test).toBe("poetry run python3 -m unittest discover");
+  });
+
+  it("沒有測試框架字樣也沒有測試檔時視為沒有測試框架；有 test_*.py 就有", () => {
+    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).testFramework).toBe(false);
+    expect(detectProjectDefaults(project({ ...pyproject("[project]\nname='x'\n"), "test_a.py": "" })).testFramework).toBe(true);
+  });
+
+  it("pyproject 有 ruff 設定時加上只在最後驗證的 lint", () => {
+    const d = detectProjectDefaults(project(pyproject("[tool.ruff]\nline-length = 100\n[tool.pytest.ini_options]\n")));
+    expect(d.checks).toEqual([
+      { name: "test", cmd: "pytest" },
+      { name: "lint", cmd: "ruff check .", finalOnly: true },
+    ]);
+  });
+
+  it("testPattern 認得 test_*.py 與 *_test.py", () => {
+    const re = new RegExp(detectProjectDefaults(project(pyproject("[project]\n"))).testPattern!);
+    expect(re.test("tests/test_a.py")).toBe(true);
+    expect(re.test("pkg/a_test.py")).toBe(true);
+    expect(re.test("pkg/a.py")).toBe(false);
+  });
+});
+
+describe("withProjectDefaults：未知專案手寫 test", () => {
+  const unknown = detectProjectDefaults(project({}));
+
+  it("手寫 test、沒寫 checks 時補一個 test 檢查", () => {
+    const out = withProjectDefaults({ test: "make test" }, unknown) as { checks: unknown[] };
+    expect(out.checks).toEqual([{ name: "test", cmd: "make test" }]);
+  });
+
+  it("有手寫 checks 時以手寫為準", () => {
+    const out = withProjectDefaults({ test: "make test", checks: [] }, unknown) as { checks: unknown[] };
+    expect(out.checks).toEqual([]);
+  });
 });
 
 describe("withProjectDefaults", () => {
@@ -174,6 +297,14 @@ describe("withProjectDefaults", () => {
     expect(withProjectDefaults([], detected)).toEqual([]);
     expect(withProjectDefaults(null, detected)).toBeNull();
   });
+
+  it("偵測有 testPattern 時補上，手寫的 testPattern 優先", () => {
+    const go = detectProjectDefaults(project({ "go.mod": "module x\n" }));
+    expect((withProjectDefaults({}, go) as { testPattern?: string }).testPattern).toBe(go.testPattern);
+    expect((withProjectDefaults({ testPattern: "x" }, go) as { testPattern?: string }).testPattern).toBe("x");
+    const node = detectProjectDefaults(project({ "package.json": {} }));
+    expect("testPattern" in (withProjectDefaults({}, node) as object)).toBe(false);
+  });
 });
 
 describe("describeDetected", () => {
@@ -200,5 +331,26 @@ describe("describeDetected", () => {
 
   it("三個欄位都手動設定時不輸出", () => {
     expect(describeDetected({ install: "x", test: "y", checks: [] }, detected)).toEqual([]);
+  });
+
+  it("未知類型：什麼都沒設時印未辨識訊息；只手設部分欄位時不印偵測標頭", () => {
+    const unknown = detectProjectDefaults(project({}));
+    expect(describeDetected({}, unknown)[0]).toContain("未辨識專案類型");
+    const partial = describeDetected({ test: "make test" }, unknown).join("\n");
+    expect(partial).not.toContain("（未辨識）");
+    expect(partial).not.toContain("沒有可辨識的專案檔");
+  });
+
+  it("動態偵測全被丟掉時印未辨識訊息，不印 install：true", () => {
+    const generated = { ...detectProjectDefaults(project({})), ecosystem: "generated" as const, manager: "動態偵測", source: ".agentflowctl/detected.json", testFramework: false };
+    const lines = describeDetected({}, generated);
+    expect(lines.join("\n")).toContain("未辨識專案類型");
+    expect(lines.join("\n")).not.toContain("install：true");
+  });
+
+  it("非 Node 專案會列出偵測到的 testPattern", () => {
+    const go = detectProjectDefaults(project({ "go.mod": "module x\n" }));
+    expect(describeDetected({}, go).some((l) => l.includes("testPattern") && l.includes("_test"))).toBe(true);
+    expect(describeDetected({ testPattern: "x" }, go).some((l) => l.includes("testPattern"))).toBe(false);
   });
 });

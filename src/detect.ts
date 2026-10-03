@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
@@ -10,16 +10,25 @@ import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./sche
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type Check = { name: string; cmd: string; finalOnly?: boolean; changedOnly?: boolean };
 
+export type Ecosystem = "node" | "python" | "go" | "rust" | "unknown" | "generated";
+
 export interface ProjectDefaults {
-  manager: PackageManager;
-  /** 判斷套件管理器的依據，給人看 */
+  ecosystem: Ecosystem;
+  /** 套件管理器或建置工具（npm、uv、go、cargo…） */
+  manager: string;
+  /** 判斷的依據，給人看 */
   source: string;
   install: string;
   test: string;
   checks: Check[];
-  /** package.json 看得出有測試框架；沒有就不做紅綠燈 */
+  /** 看得出有測試框架；沒有就不做紅綠燈 */
   testFramework: boolean;
+  /** 這類專案的測試檔命名；Node 不填，沿用 schema 預設 */
+  testPattern?: string;
 }
+
+/** 不需要安裝時的指令：install 在 `&&` 串接裡也要是合法的 shell */
+export const NO_INSTALL = "true";
 
 const LOCKFILES: [string, PackageManager][] = [
   ["pnpm-lock.yaml", "pnpm"],
@@ -105,7 +114,7 @@ const withExec = (cmd: string, manager: PackageManager) => cmd.replace(/^npx /, 
 const withArgs = (run: string, args: string, manager: PackageManager) =>
   `${run}${manager === "npm" ? " --" : ""} ${args}`;
 
-export function detectProjectDefaults(root: string): ProjectDefaults {
+function detectNode(root: string): ProjectDefaults {
   const pkg = readPackageJson(root);
   const { manager, source } = detectManager(root, pkg);
   const defaults = RepoConfig.parse({});
@@ -133,7 +142,110 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
   const testScript = scripts.test;
   const hasRealScript = typeof testScript === "string" && !/no test specified/i.test(testScript);
   const test = hasRealScript ? (checks.find((c) => c.name === "test")?.cmd ?? withExec(defaults.test, manager)) : withExec(defaults.test, manager);
-  return { manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg) };
+  return { ecosystem: "node", manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg) };
+}
+
+const GO_TEST_PATTERN = String.raw`_test\.go$`;
+const RUST_TEST_PATTERN = String.raw`(^|/)tests/.*\.rs$|_test\.rs$`;
+const PYTHON_TEST_PATTERN = String.raw`(^|/)(test_[^/]*|[^/]*_test)\.py$`;
+
+const SKIP_DIRS = new Set(["node_modules", ".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "venv", ".venv", "target", "dist", "build", "__pycache__"]);
+
+/** 有界遞迴找出符合的檔案（深度 6、最多看 5000 個檔），略過依賴與建置產物目錄 */
+export function findFiles(root: string, re: RegExp, max = 5000): string[] {
+  const found: string[] = [];
+  let visited = 0;
+  const walk = (dir: string, rel: string, depth: number) => {
+    if (depth > 6 || visited >= max) return;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (visited >= max) return;
+      const path = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name), path, depth + 1);
+      } else {
+        visited++;
+        if (re.test(path)) found.push(path);
+      }
+    }
+  };
+  walk(root, "", 0);
+  return found;
+}
+
+function detectGo(root: string): ProjectDefaults {
+  return {
+    ecosystem: "go", manager: "go", source: "go.mod",
+    install: "go mod download", test: "go test ./...",
+    checks: [
+      { name: "test", cmd: "go test ./..." },
+      { name: "vet", cmd: "go vet ./...", finalOnly: true },
+      { name: "build", cmd: "go build ./..." },
+    ],
+    testFramework: findFiles(root, new RegExp(GO_TEST_PATTERN)).length > 0,
+    testPattern: GO_TEST_PATTERN,
+  };
+}
+
+function detectRust(root: string): ProjectDefaults {
+  return {
+    ecosystem: "rust", manager: "cargo", source: "Cargo.toml",
+    install: "cargo fetch", test: "cargo test",
+    checks: [
+      { name: "test", cmd: "cargo test" },
+      { name: "clippy", cmd: "cargo clippy", finalOnly: true },
+      { name: "build", cmd: "cargo build" },
+    ],
+    testFramework: findFiles(root, new RegExp(RUST_TEST_PATTERN)).length > 0,
+    testPattern: RUST_TEST_PATTERN,
+  };
+}
+
+function detectPython(root: string): ProjectDefaults {
+  const has = (name: string) => existsSync(join(root, name));
+  const text = (name: string) => {
+    try {
+      return readFileSync(join(root, name), "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const requirements = readdirSync(root).filter((f) => /^requirements.*\.txt$/.test(f));
+  const config = ["pyproject.toml", "setup.cfg", "setup.py", "tox.ini", ...requirements].map(text).join("\n");
+  const [manager, source, install, run]: [string, string, string, string] = has("uv.lock")
+    ? ["uv", "uv.lock", "uv sync", "uv run "]
+    : has("poetry.lock")
+      ? ["poetry", "poetry.lock", "poetry install --no-interaction", "poetry run "]
+      : has("requirements.txt")
+        ? ["pip", "requirements.txt", "python3 -m pip install -r requirements.txt", ""]
+        : ["pip", "pyproject.toml／setup.py", "python3 -m pip install -e .", ""];
+  const pytest = /\bpytest\b/.test(config) || has("pytest.ini") || has("conftest.py");
+  const unittest = /\bunittest\b/.test(config);
+  const testFiles = findFiles(root, new RegExp(PYTHON_TEST_PATTERN));
+  const test = `${run}${pytest ? "pytest" : "python3 -m unittest discover"}`;
+  const checks: Check[] = [{ name: "test", cmd: test }];
+  if (/\[tool\.ruff/.test(text("pyproject.toml")) || has("ruff.toml") || has(".ruff.toml")) {
+    checks.push({ name: "lint", cmd: `${run}ruff check .`, finalOnly: true });
+  }
+  return { ecosystem: "python", manager, source, install, test, checks, testFramework: pytest || unittest || testFiles.length > 0, testPattern: PYTHON_TEST_PATTERN };
+}
+
+function detectUnknown(): ProjectDefaults {
+  return { ecosystem: "unknown", manager: "（未辨識）", source: "沒有可辨識的專案檔", install: NO_INSTALL, test: NO_INSTALL, checks: [], testFramework: false };
+}
+
+export function detectProjectDefaults(root: string): ProjectDefaults {
+  const has = (name: string) => existsSync(join(root, name));
+  if (has("package.json") || LOCKFILES.some(([file]) => has(file))) return detectNode(root);
+  if (has("go.mod")) return detectGo(root);
+  if (has("Cargo.toml")) return detectRust(root);
+  if (["pyproject.toml", "setup.py", "setup.cfg"].some(has) || readdirSync(root).some((f) => /^requirements.*\.txt$/.test(f))) return detectPython(root);
+  return detectUnknown();
 }
 
 /** 手動設定 test 指令就當作有測試框架 */
@@ -145,17 +257,29 @@ export function withProjectDefaults(raw: unknown, detected: ProjectDefaults): un
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
   const { install, test } = detected;
   // 沒有測試框架也沒手動設定 test 時，預設的檢查不含 test
-  const checks = usesTestFramework(raw, detected) ? detected.checks : detected.checks.filter((c) => c.name !== "test");
-  return { install, test, checks, ...raw };
+  let checks = usesTestFramework(raw, detected) ? detected.checks : detected.checks.filter((c) => c.name !== "test");
+  // 未知專案沒有偵測到任何檢查：手寫了 test 卻沒寫 checks 時，verify 也要跑它
+  const hand = raw as Record<string, unknown>;
+  if (detected.ecosystem === "unknown" && typeof hand.test === "string" && !("checks" in hand)) checks = [{ name: "test", cmd: hand.test }];
+  return { install, test, checks, ...(detected.testPattern ? { testPattern: detected.testPattern } : {}), ...raw };
 }
 
 /** run 開始時印出的說明：只列出這次用了偵測結果的欄位 */
 export function describeDetected(raw: Record<string, unknown>, detected: ProjectDefaults): string[] {
-  const lines: string[] = [];
+  const nothingDetected = detected.ecosystem === "unknown"
+    || (detected.ecosystem === "generated" && detected.install === NO_INSTALL && !detected.testFramework && !detected.checks.length && !detected.testPattern);
   const framework = usesTestFramework(raw, detected);
+  if (nothingDetected) {
+    // 沒有任何偵測結果可說明：只有在手動設定也沒給出測試時才提醒
+    if (framework || "checks" in raw) return [];
+    const why = detected.ecosystem === "generated" ? "動態偵測沒有可用結果" : "沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等";
+    return [`ℹ️  未辨識專案類型（${why}），略過安裝、檢查與紅綠燈；在 flow.config.json 設定 install、test、checks 可改回來`];
+  }
+  const lines: string[] = [];
   if (!("install" in raw)) lines.push(`   install：${detected.install}`);
   if (!("test" in raw) && framework) lines.push(`   test：${detected.test}`);
   if (!("checks" in raw)) lines.push(...detected.checks.filter((c) => framework || c.name !== "test").map((c) => `   checks.${c.name}：${c.cmd}${c.finalOnly ? "（只在最後驗證，" + (c.changedOnly ? "只檢查改過的檔案）" : "整個專案）") : ""}`));
+  if (!("testPattern" in raw) && detected.testPattern) lines.push(`   testPattern：${detected.testPattern}`);
   if (!framework) lines.push("ℹ️  未偵測到測試框架，所有任務略過紅綠燈，也不跑 test 檢查（在 flow.config.json 設定 test 可改回來）");
   if (!lines.length) return [];
   const why = detected.source === "預設" ? "預設" : `依 ${detected.source}`;
