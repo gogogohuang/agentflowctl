@@ -5,6 +5,8 @@ import type { TaskItem } from "./schemas.js";
 const task = (id: string, dependsOn: string[] = [], extra: Partial<TaskItem> = {}): TaskItem =>
   ({ id, title: id, description: id, dependsOn, acceptance: ["AC-1"], ...extra }) as TaskItem;
 
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
 const diamond = [task("T-1"), task("T-2", ["T-1"]), task("T-3", ["T-1"]), task("T-4", ["T-2", "T-3"])];
 
 describe("可平行的任務", () => {
@@ -26,8 +28,6 @@ describe("可平行的任務", () => {
 });
 
 describe("車道排程", () => {
-  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
-
   it("相依鏈上的任務同時只跑一個，沒有相依的同時跑，合併後才解鎖下游", async () => {
     const log: string[] = [];
     let live = 0;
@@ -198,5 +198,100 @@ describe("scheduleLanes：修補請求", () => {
       async merge() { return "merged" as const; },
     });
     expect(result.failed?.reason).toMatch(/修補/);
+  });
+
+  it("start 例外：停止派發、等其他車道收束，並把例外報成帶 task 的失敗", async () => {
+    const tasks = [task("T-1"), task("T-2"), task("T-3", ["T-1"])];
+    const log: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = scheduleLanes(tasks, new Set(), Infinity, {
+      async start(t) {
+        log.push(`start ${t.id}`);
+        if (t.id === "T-1") throw new Error("建立車道失敗");
+        await gate;
+        return { kind: "done" };
+      },
+      async merge(t) {
+        log.push(`merge ${t.id}`);
+        return "merged";
+      },
+    });
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false); // T-2 還在跑，排程不能先回傳
+    release();
+    const result = await pending;
+    expect(result.failed?.task.id).toBe("T-1");
+    expect(result.failed?.reason).toContain("建立車道失敗");
+    expect(log).toContain("merge T-2");
+    expect(log).not.toContain("start T-3");
+    expect([...result.done]).toEqual(["T-2"]);
+  });
+
+  it("start 同步丟出例外也收束成失敗，非 Error 的值轉成字串", async () => {
+    const result = await scheduleLanes([task("T-1")], new Set(), Infinity, {
+      start() { throw "壞掉了"; },
+      async merge() { return "merged"; },
+    });
+    expect(result.failed).toMatchObject({ reason: "壞掉了" });
+    expect(result.failed?.task.id).toBe("T-1");
+  });
+
+  it("merge 例外：等其他車道的合併完成，失敗指向丟例外的任務，下游不啟動", async () => {
+    const tasks = [task("T-1"), task("T-2"), task("T-3", ["T-1"])];
+    const log: string[] = [];
+    const result = await scheduleLanes(tasks, new Set(), Infinity, {
+      async start() {
+        await tick();
+        return { kind: "done" };
+      },
+      async merge(t) {
+        if (t.id === "T-1") throw new Error("合併基礎設施失敗");
+        await tick();
+        log.push(`merged ${t.id}`);
+        return "merged";
+      },
+    });
+    expect(result.failed?.task.id).toBe("T-1");
+    expect(result.failed?.reason).toContain("合併基礎設施失敗");
+    expect(log).toEqual(["merged T-2"]);
+    expect([...result.done]).toEqual(["T-2"]);
+  });
+
+  it("amend 例外：同樣收束成失敗", async () => {
+    const tasks = [task("T-1"), task("T-2")];
+    const log: string[] = [];
+    const result = await scheduleLanes(tasks, new Set(), Infinity, {
+      async start(t) {
+        if (t.id === "T-1") return { kind: "amend", request: "{}" };
+        await tick();
+        await tick();
+        return { kind: "done" };
+      },
+      async merge(t) {
+        log.push(`merge ${t.id}`);
+        return "merged";
+      },
+      async amend() { throw new Error("找不到車道紀錄"); },
+    });
+    expect(result.failed?.task.id).toBe("T-1");
+    expect(result.failed?.reason).toContain("找不到車道紀錄");
+    expect(log).toEqual(["merge T-2"]);
+  });
+
+  it("多個失敗：第一個是 failed，其餘的原因併進訊息而不是消失", async () => {
+    const tasks = [task("T-1"), task("T-2")];
+    const result = await scheduleLanes(tasks, new Set(), Infinity, {
+      async start(t) {
+        if (t.id === "T-2") await tick();
+        throw new Error(`${t.id} 出事了`);
+      },
+      async merge() { return "merged"; },
+    });
+    expect(result.failed?.task.id).toBe("T-1");
+    expect(result.failed?.reason).toContain("T-1 出事了");
+    expect(result.failed?.reason).toContain("T-2：T-2 出事了");
   });
 });

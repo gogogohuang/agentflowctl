@@ -580,10 +580,10 @@ if (prompt.includes("發散分支")) {
     // 真實流程是先記 retry、再存 state，所以 updatedAt 不會早於已有的 retry；否則 addRetry 會把同 key、同 attempt 的紀錄當成重複
     updatedAt: new Date().toISOString(),
   });
-  /** failed（預算用完）的 run 再多給一步的額度 */
-  const oneMoreStep = (run: FlowRun) => ({
+  /** failed（預算用完）的 run 再給 calls 次 agent 呼叫的額度：額度逐次呼叫把關，一個階段有幾次呼叫就要給幾次 */
+  const oneMoreStep = (run: FlowRun, calls = 1) => ({
     ...run, stage: "implement" as const, failedStage: undefined, failureCategory: undefined, failureReason: undefined,
-    maxAgentRuns: agentRuns(run.id) + 1,
+    maxAgentRuns: agentRuns(run.id) + calls,
   });
 
   it("綠燈第二次失敗退回測試後，下一次寫測試前才發散；回到 code 階段不會再發散", async () => {
@@ -598,7 +598,7 @@ if (prompt.includes("發散分支")) {
     expect(agentRuns(id)).toBe(1);
 
     // 下一個階段：2 個分支 + 1 個評審 + 1 次寫測試
-    const second = await advance(oneMoreStep(first));
+    const second = await advance(oneMoreStep(first, 4));
         const record = JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8"));
     expect(record.status).toBe("done");
     expect(record.stamp).toBe("T-1:tests:0:1");
@@ -638,7 +638,7 @@ if (prompt.includes("發散分支")) {
     writeFileSync(join(runDir(id), "diverge.json"), JSON.stringify({
       stamp: "T-1:tests:0:1", status: "running", key: "T-1:tests", frames: ["acceptance", "split"], branches: [],
     }));
-    await advance({ ...base(id, o), taskPhase: "tests", testsRedos: 1 });
+    await advance({ ...base(id, o), maxAgentRuns: 4, taskPhase: "tests", testsRedos: 1 });
     expect(JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8")).status).toBe("done");
     expect(agentRuns(id)).toBe(4);
   });
@@ -1296,6 +1296,39 @@ describe("平行任務", () => {
     const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { maxAgentRuns: 2, config: {} });
     expect(run.stage).toBe("failed");
     expect(run.failureCategory).toBe("agent_budget");
+  });
+
+  it("剩餘一格額度時兩條同時開始的車道只會啟動一個 agent，用量不超過上限", async () => {
+    const id = "f-lanes-one-slot";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { maxAgentRuns: 1, config: {} });
+    expect(run.stage).toBe("failed");
+    expect(run.failureCategory).toBe("agent_budget");
+    expect(run.failureReason).toContain("--max-agent-runs");
+    expect(laneSteps()).toHaveLength(1); // 只有一個 agent 命令被啟動
+    expect(agentRuns(id)).toBe(1);
+  });
+
+  it("車道額度不足不是一般錯誤：車道不標成失敗，調高上限 resume 後接續", async () => {
+    const id = "f-lanes-budget-resume";
+    const failed = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { maxAgentRuns: 3, config: {} });
+    expect(failed.failureCategory).toBe("agent_budget");
+    expect(failed.failureCategory).not.toBe("error");
+    rmSync(laneLog, { force: true });
+    const resumed = await advance({ ...failed, maxAgentRuns: 60, stage: failed.failedStage!, attempts: {}, failedStage: undefined, failureReason: undefined, failureCategory: undefined });
+    expect(resumed.failureReason).toBeUndefined();
+    expect([...(resumed.doneTasks ?? [])].sort()).toEqual(["T-1", "T-2"]);
+  });
+
+  it("車道建立失敗（prepareLane）：其他車道仍跑完並合併，run 以帶任務 id 的失敗收尾", async () => {
+    const id = "f-lanes-prepare";
+    // 預先建一個與車道分支同路徑前綴的分支（git 的目錄／檔案 ref 衝突），讓 T-2 建立車道的 git worktree add 失敗
+    await git(root, "branch", `flow/${id}+T-2/擋住`, "main");
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { config: {}, maxAttempts: 3 });
+    expect(run.stage).toBe("failed");
+    expect(run.failureReason).toMatch(/^T-2：/);
+    expect(run.failureCategory).toBe("error");
+    expect(run.doneTasks).toEqual(["T-1"]);
+    expect(existsSync(join(worktreeDir(id), "T-1.mjs"))).toBe(true);
   });
 });
 

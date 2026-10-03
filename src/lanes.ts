@@ -49,13 +49,28 @@ export function readyTasks(tasks: readonly TaskItem[], done: ReadonlySet<string>
     && t.dependsOn.every((dep) => done.has(dep) || !known.has(dep)));
 }
 
+/** thrown 的不一定是 Error；顯示失敗原因時不能再丟例外 */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function scheduleLanes(tasks: readonly TaskItem[], initiallyDone: ReadonlySet<string>, limit: number, hooks: LaneHooks): Promise<LaneResult> {
   const result: LaneResult = { done: new Set(initiallyDone) };
   const running = new Map<string, Promise<{ task: TaskItem; outcome: LaneOutcome }>>();
+  // 車道的基礎設施例外（建立 worktree、合併、修補）一律轉成失敗：rejection 穿透 Promise.race 會讓排程中止，
+  // 留下仍在執行的車道，之後的 rejection 也沒有人接
   const launch = (task: TaskItem) => {
-    running.set(task.id, hooks.start(task).then((outcome) => ({ task, outcome })));
+    running.set(task.id, new Promise<LaneOutcome>((resolve) => resolve(hooks.start(task))).then((outcome) => ({ task, outcome }), (error): { task: TaskItem; outcome: LaneOutcome } => (
+      { task, outcome: { kind: "failed", reason: errorMessage(error) } }
+    )));
   };
   let stopped = false;
+  // 第一個失敗是 result.failed；之後的失敗原因併進去，不要因為 ??= 而消失
+  const fail = (task: TaskItem, reason: string, category?: string) => {
+    stopped = true;
+    if (!result.failed) result.failed = { task, reason, category };
+    else result.failed.reason += `\n${task.id}：${reason}`;
+  };
   for (;;) {
     if (!stopped) {
       for (const task of readyTasks(tasks, result.done, new Set(running.keys()))) {
@@ -67,9 +82,14 @@ export async function scheduleLanes(tasks: readonly TaskItem[], initiallyDone: R
     const { task, outcome } = await Promise.race(running.values());
     running.delete(task.id);
     if (outcome.kind === "amend") {
-      const resolution: AmendResolution = hooks.amend
-        ? await hooks.amend(task, outcome.request)
-        : { kind: "failed", reason: `${task.id} 提出修補請求，但這個流程不支援修補` };
+      let resolution: AmendResolution;
+      try {
+        resolution = hooks.amend
+          ? await hooks.amend(task, outcome.request)
+          : { kind: "failed", reason: `${task.id} 提出修補請求，但這個流程不支援修補` };
+      } catch (error) {
+        resolution = { kind: "failed", reason: errorMessage(error) };
+      }
       if (resolution === "retry") {
         if (!stopped) launch(task);
       } else if (resolution === "restart") {
@@ -79,23 +99,25 @@ export async function scheduleLanes(tasks: readonly TaskItem[], initiallyDone: R
         stopped = true;
         result.paused ??= resolution.reason;
       } else {
-        stopped = true;
-        result.failed ??= { task, reason: resolution.reason, category: resolution.category };
+        fail(task, resolution.reason, resolution.category);
       }
     } else if (outcome.kind === "failed") {
-      stopped = true;
-      result.failed ??= { task, reason: outcome.reason, category: outcome.category };
+      fail(task, outcome.reason, outcome.category);
     } else if (outcome.kind === "paused") {
       stopped = true;
       result.paused ??= outcome.reason;
     } else {
-      const merged = await hooks.merge(task);
+      let merged: Awaited<ReturnType<LaneHooks["merge"]>>;
+      try {
+        merged = await hooks.merge(task);
+      } catch (error) {
+        merged = { kind: "failed", reason: errorMessage(error) };
+      }
       if (merged === "merged") result.done.add(task.id);
       else if (merged === "redo") {
         if (!stopped) launch(task);
       } else {
-        stopped = true;
-        result.failed ??= { task, reason: merged.reason, category: merged.category };
+        fail(task, merged.reason, merged.category);
       }
     }
   }

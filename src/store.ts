@@ -144,6 +144,30 @@ export function agentRuns(id: string): number {
   return listUsage(id).length;
 }
 
+/** 已保留但還沒寫入用量的執行次數；只存在程序記憶體，以所屬 run 為單位（車道與所屬 run 共用） */
+const reservations = new Map<string, number>();
+
+/** 在 CLI 啟動前保留一次執行額度：已寫入的用量加上保留數達上限就回傳 false。判斷與遞增在同一個同步區段，平行呼叫不會同時通過 */
+export function reserveAgentRun(id: string, max: number): boolean {
+  const key = sharedRunDir(id);
+  const held = reservations.get(key) ?? 0;
+  if (agentRuns(id) + held >= max) return false;
+  reservations.set(key, held + 1);
+  return true;
+}
+
+export function releaseAgentRun(id: string): void {
+  const key = sharedRunDir(id);
+  const held = reservations.get(key) ?? 0;
+  if (held <= 1) reservations.delete(key);
+  else reservations.set(key, held - 1);
+}
+
+/** 只供測試使用：清掉程序內的保留，模擬新啟動的程序 */
+export function resetAgentRunReservations(): void {
+  reservations.clear();
+}
+
 export interface Substitution {
   step: string;
   planned: string;

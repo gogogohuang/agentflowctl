@@ -34,8 +34,8 @@ import {
   type HandoffLedger,
   type Stage,
 } from "./schemas.js";
-import { addRetry, addSubstitution, addUsage, agentRuns, getRun, listRetries, saveRun, type RetryCategory } from "./store.js";
-import { doneSet, readyTasks, scheduleLanes, type AmendResolution, type LaneOutcome } from "./lanes.js";
+import { addRetry, addSubstitution, addUsage, agentRuns, getRun, listRetries, releaseAgentRun, reserveAgentRun, resetAgentRunReservations, saveRun, type RetryCategory } from "./store.js";
+import { doneSet, errorMessage, readyTasks, scheduleLanes, type AmendResolution, type LaneOutcome } from "./lanes.js";
 import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
 import {
   applyReviewVerdicts,
@@ -81,6 +81,13 @@ export class QuotaPause extends Error {
   }
 }
 
+/** agent 執行次數（maxAgentRuns）用完：不是等額度恢復的暫停，而是以 agent_budget 失敗，使用者調高上限後 resume */
+export class AgentBudgetError extends Error {
+  constructor(runs: number, max: number) {
+    super(`已執行 agent ${runs} 次，達到上限 ${max}（可用 resume --max-agent-runs 調高）`);
+  }
+}
+
 /** 測試一再被退回仍過不了而停下等人：沿用 QuotaPause 的暫停流程（run 與車道都會存成 paused，resume 接續） */
 export class TestsStuckPause extends QuotaPause {}
 
@@ -93,6 +100,7 @@ const exhausted = new Set<string>();
 /** 只供測試使用：清掉這個程序內記下的額度用完 agent，模擬新啟動的程序 */
 export function resetQuotaState(): void {
   exhausted.clear();
+  resetAgentRunReservations();
 }
 
 /**
@@ -159,14 +167,22 @@ async function agentStep(
       /^T-\d+-/.test(step) ? loadOrderedTasks(run)[run.taskIndex]?.complexity : undefined,
       mode.kind === "review" ? agent : undefined, mode.modelScope);
     say(`🤖 ${step}：${agent} 使用 ${selected.name ?? "CLI 預設（名稱未知）"}${selected.effort ? `（effort ${selected.effort}）` : ""}${selected.insufficient ? `（低於目標 ${selected.targetStrength}）` : ""}`);
+    // 啟動 CLI 前先保留一次額度：平行的車道與審查者在用量寫入前看到的次數都一樣，只靠已寫入的次數會超賣
+    const owner = ownerId(run.id);
+    if (!reserveAgentRun(owner, run.maxAgentRuns)) throw new AgentBudgetError(agentRuns(owner), run.maxAgentRuns);
     const callKey = handoffKey(run, step, mode.slot ?? 0, agent);
-    prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false, mode.workspace?.flow);
-    const r = await runAgent(agent, { ...resolveAgent(cfg, agent), model: selected.name, effort: selected.effort },
-      { ...target(run, step, agent, mode.workspace?.dir), strength: selected.strength, targetStrength: selected.targetStrength }, prompt);
-    if (r.resolvedModel && r.resolvedModel !== selected.name) say(`   ↳ CLI 回報實際模型：${r.resolvedModel}`);
-    addUsage(run.id, { stage: step, agent, model: selected.name, resolvedModel: r.resolvedModel,
-      strength: selected.strength, targetStrength: selected.targetStrength, usageReported: r.usageReported,
-      inputTokens: r.inputTokens, outputTokens: r.outputTokens, cacheReadTokens: r.cacheReadTokens, cacheWriteTokens: r.cacheWriteTokens });
+    let r: AgentResult;
+    try {
+      prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false, mode.workspace?.flow);
+      r = await runAgent(agent, { ...resolveAgent(cfg, agent), model: selected.name, effort: selected.effort },
+        { ...target(run, step, agent, mode.workspace?.dir), strength: selected.strength, targetStrength: selected.targetStrength }, prompt);
+      if (r.resolvedModel && r.resolvedModel !== selected.name) say(`   ↳ CLI 回報實際模型：${r.resolvedModel}`);
+      addUsage(run.id, { stage: step, agent, model: selected.name, resolvedModel: r.resolvedModel,
+        strength: selected.strength, targetStrength: selected.targetStrength, usageReported: r.usageReported,
+        inputTokens: r.inputTokens, outputTokens: r.outputTokens, cacheReadTokens: r.cacheReadTokens, cacheWriteTokens: r.cacheWriteTokens });
+    } finally {
+      releaseAgentRun(owner);
+    }
     if (!r.quotaExhausted) {
       reportMeta(run, agent, r);
       return { r, agent, step, callKey };
@@ -607,12 +623,12 @@ const readIfExists = (path: string) => (existsSync(path) ? readFileSync(path, "u
  * 平行階段：每位審查者在自己的臨時 worktree 執行，成功的結果立刻存檔。
  * 這個階段不改 run、不寫交接帳本、不呼叫 retry。
  * - 已有同一輪存檔、且仍有效的呼叫直接沿用（resume）；帳本在它啟動後被本輪以外的呼叫（例如修正者）動過就作廢重跑
- * - 預算（maxAgentRuns）不夠時只啟動預算內的，回傳 undefined，呼叫端應原樣回傳 run，由 advance 判定 agent_budget
+ * - 預算（maxAgentRuns）不夠時，agentStep 的保留讓超出的呼叫不啟動；已開始的審查跑完並存檔，最後丟 AgentBudgetError
  * - 有呼叫額度用完時，其他呼叫照常跑完並存檔，最後才丟 QuotaPause
  */
 async function executeReviewCalls(
   run: FlowRun, cfg: RepoConfig, scope: string, fingerprint: string, calls: ReviewCall[],
-): Promise<{ dir: string; finished: Finished[] } | undefined> {
+): Promise<{ dir: string; finished: Finished[] }> {
   if (calls.length === 0) return { dir: "", finished: [] };
   // openRound、loadCalls 與有效性檢查都要在 runPool 啟動任何呼叫之前（loadCalls 會刪 .tmp）
   const dir = openRound(run.id, scope, fingerprint);
@@ -624,22 +640,21 @@ async function executeReviewCalls(
     dropCall(dir, key);
     saved.delete(key);
   }
-  let budget = run.maxAgentRuns - agentRuns(run.id);
-  // 已有存檔的不花預算；其餘依序佔預算，超出的這次不啟動
-  const launch = calls.filter((call) => saved.has(call.key) || budget-- > 0);
+  const launch = calls;
   const limit = cfg.reviewConcurrency ?? Infinity;
   const tagged = limit > 1 && launch.filter((call) => !saved.has(call.key)).length > 1;
-  // 預算內能跑的照跑並存檔，之後 resume 加大預算就不必重付
+  // 能跑的照跑並存檔，之後 resume 加大預算就不必重付；額度由 agentStep 的保留逐一把關
   const executed = await runPool(launch, limit, (call) => executeOne(run, dir, saved, call, tagged));
   const quota = executed.find((item): item is { quota: string } => "quota" in item);
   if (quota) throw new QuotaPause(quota.quota);
-  if (launch.length < calls.length) return undefined;
+  const budget = executed.find((item): item is { budget: AgentBudgetError } => "budget" in item);
+  if (budget) throw budget.budget;
   return { dir, finished: executed as Finished[] };
 }
 
 async function executeOne(
   run: FlowRun, dir: string, saved: Map<string, StoredCall>, call: ReviewCall, tagged: boolean,
-): Promise<Finished | { quota: string }> {
+): Promise<Finished | { quota: string } | { budget: AgentBudgetError }> {
   const reused = saved.get(call.key);
   if (reused) {
     info(run, `   ↪ 沿用本輪已完成的審查（${call.reviewer}）`);
@@ -665,6 +680,7 @@ async function executeOne(
     });
   } catch (err) {
     if (err instanceof QuotaPause) return { quota: err.message };
+    if (err instanceof AgentBudgetError) return { budget: err };
     throw err;
   }
 }
@@ -773,7 +789,6 @@ async function planReviewFull(run: FlowRun, cfg: RepoConfig): Promise<FlowRun> {
   }));
   for (const spec of specs) info(run, `🧐 計畫審查第 ${round} 輪（${spec.reviewer}，作者 ${author}）`);
   const ran = await executeReviewCalls(run, cfg, "plan-review", `${round}:${currentPlanKey(run)}`, specs);
-  if (!ran) return run;
 
   const calls: Collected[] = [];
   for (const [i, spec] of specs.entries()) {
@@ -900,7 +915,6 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
   // 平行執行還沒套用的呼叫；沿用的（已套用、記在進度檔裡）不再跑
   const pending = items.filter((item) => !item.reused);
   const ran = await executeReviewCalls(run, cfg, "plan-review", `${round}:${planKey}`, pending.map((item) => item.spec));
-  if (!ran) return run;
 
   // 序列收尾，依原本的順序逐一套用；每套用一個就寫進度檔，中途被中斷也不會重複套用
   const applied = new Map<string, PlanReviewCall>();
@@ -1585,29 +1599,31 @@ async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, task
 
 /** 讓車道裡的任務走完整個任務流程（紅燈、綠燈、任務審查、任務驗證、修正）；結束時車道的 stage 是 verify */
 async function driveLane(parent: FlowRun, task: TaskItem, offset: number, tasks: TaskItem[], done: ReadonlySet<string>): Promise<LaneOutcome> {
-  let lane = await prepareLane(parent, task, offset, tasks, done);
+  let lane: FlowRun | undefined;
   try {
+    lane = await prepareLane(parent, task, offset, tasks, done);
     for (;;) {
       const requestFile = join(flowDir(lane.id), "amend-request.json");
       if (existsSync(requestFile)) return { kind: "amend", request: readFileSync(requestFile, "utf8") };
       if (lane.stage === "verify") return { kind: "done" };
       if (lane.stage !== "implement") return { kind: "failed", reason: lane.failureReason ?? `車道停在 ${lane.stage}`, category: lane.failureCategory };
-      const runs = agentRuns(parent.id);
-      if (runs >= parent.maxAgentRuns) {
-        return { kind: "failed", category: "agent_budget", reason: `已執行 agent ${runs} 次，達到上限 ${parent.maxAgentRuns}（可用 resume --max-agent-runs 調高）` };
-      }
       lane = saveRun(await implementStage(lane));
       // 車道只有這一個任務：做完 taskIndex 變 1，停在這裡等合併
       if (lane.stage === "implement" && lane.taskIndex >= 1) lane = saveRun({ ...lane, stage: "verify" });
     }
   } catch (err) {
-    if (err instanceof QuotaPause) {
-      info(lane, `⏸️  暫停：${err.message}`);
-      saveRun({ ...(getRun(lane.id) ?? lane), stage: "paused", pausedStage: "implement", pauseReason: err.message });
-      return { kind: "paused", reason: err.message };
+    const message = errorMessage(err);
+    // prepareLane 還沒建好車道就失敗：沒有車道紀錄可存，只回報失敗
+    const current = lane ? (getRun(lane.id) ?? lane) : undefined;
+    if (err instanceof QuotaPause && current) {
+      info(current, `⏸️  暫停：${message}`);
+      saveRun({ ...current, stage: "paused", pausedStage: "implement", pauseReason: message });
+      return { kind: "paused", reason: message };
     }
-    saveRun({ ...lane, stage: "failed", failedStage: "implement", failureCategory: "error", failureReason: (err as Error).message });
-    return { kind: "failed", category: "error", reason: (err as Error).message };
+    // 額度（maxAgentRuns）不足不是車道自己的錯：車道停在原處，調高上限 resume 後接續
+    if (err instanceof AgentBudgetError) return { kind: "failed", category: "agent_budget", reason: message };
+    if (current) saveRun({ ...current, stage: "failed", failedStage: "implement", failureCategory: "error", failureReason: message });
+    return { kind: "failed", category: "error", reason: message };
   }
 }
 
@@ -1999,7 +2015,6 @@ async function codeReview(
   for (const spec of specs) info(run, `👀 ${opts.label}（${spec.reviewer}）`);
   // 指紋含 HEAD：程式碼被修過就不沿用舊的審查結果
   const ran = await executeReviewCalls(run, cfg, opts.step, `${opts.seed}|${await headCommit(repo)}|${opts.base}`, specs);
-  if (!ran) return { run };
 
   const issues: string[] = [];
   let objector: string | undefined;
@@ -2135,6 +2150,9 @@ export async function advance(initial: FlowRun): Promise<FlowRun> {
       if (err instanceof QuotaPause) {
         info(run, `⏸️  暫停：${err.message}`);
         return saveRun({ ...latest, stage: "paused", pausedStage: stage, pauseReason: err.message });
+      }
+      if (err instanceof AgentBudgetError) {
+        return saveRun({ ...latest, stage: "failed", failedStage: stage, failureCategory: "agent_budget", failureReason: err.message });
       }
       return saveRun({ ...latest, stage: "failed", failedStage: stage, failureCategory: "error", failureReason: (err as Error).message });
     }
