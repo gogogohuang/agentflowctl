@@ -204,6 +204,54 @@ describe("detectProjectDefaults：Go 與 Rust", () => {
   });
 });
 
+describe("detectProjectDefaults：Python", () => {
+  const pyproject = (body: string) => ({ "pyproject.toml": body });
+
+  it("pip 專案：有 requirements.txt 就裝它，pytest 出現在依賴裡視為有測試框架", () => {
+    const d = detectProjectDefaults(project({ "requirements.txt": "pytest>=8\n" }));
+    expect(d.ecosystem).toBe("python");
+    expect(d.manager).toBe("pip");
+    expect(d.install).toBe("pip install -r requirements.txt");
+    expect(d.test).toBe("pytest");
+    expect(d.checks).toEqual([{ name: "test", cmd: "pytest" }]);
+    expect(d.testFramework).toBe(true);
+  });
+
+  it("只有 pyproject.toml 時用 pip install -e .", () => {
+    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).install).toBe("pip install -e .");
+  });
+
+  it("uv 與 poetry：依 lockfile 選安裝與執行前綴", () => {
+    const uv = detectProjectDefaults(project({ ...pyproject("[tool.pytest.ini_options]\n"), "uv.lock": "" }));
+    expect(uv.manager).toBe("uv");
+    expect(uv.install).toBe("uv sync");
+    expect(uv.test).toBe("uv run pytest");
+    const poetry = detectProjectDefaults(project({ ...pyproject("[tool.poetry]\n"), "poetry.lock": "", "test_a.py": "" }));
+    expect(poetry.install).toBe("poetry install --no-interaction");
+    expect(poetry.test).toBe("poetry run python -m unittest discover");
+  });
+
+  it("沒有測試框架字樣也沒有測試檔時視為沒有測試框架；有 test_*.py 就有", () => {
+    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).testFramework).toBe(false);
+    expect(detectProjectDefaults(project({ ...pyproject("[project]\nname='x'\n"), "test_a.py": "" })).testFramework).toBe(true);
+  });
+
+  it("pyproject 有 ruff 設定時加上只在最後驗證的 lint", () => {
+    const d = detectProjectDefaults(project(pyproject("[tool.ruff]\nline-length = 100\n[tool.pytest.ini_options]\n")));
+    expect(d.checks).toEqual([
+      { name: "test", cmd: "pytest" },
+      { name: "lint", cmd: "ruff check .", finalOnly: true },
+    ]);
+  });
+
+  it("testPattern 認得 test_*.py 與 *_test.py", () => {
+    const re = new RegExp(detectProjectDefaults(project(pyproject("[project]\n"))).testPattern!);
+    expect(re.test("tests/test_a.py")).toBe(true);
+    expect(re.test("pkg/a_test.py")).toBe(true);
+    expect(re.test("pkg/a.py")).toBe(false);
+  });
+});
+
 describe("withProjectDefaults", () => {
   const detected = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { devDependencies: { vitest: "^3" } } }));
 

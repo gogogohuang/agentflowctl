@@ -147,6 +147,7 @@ function detectNode(root: string): ProjectDefaults {
 
 const GO_TEST_PATTERN = String.raw`_test\.go$`;
 const RUST_TEST_PATTERN = String.raw`(^|/)tests/.*\.rs$|_test\.rs$`;
+const PYTHON_TEST_PATTERN = String.raw`(^|/)(test_[^/]*|[^/]*_test)\.py$`;
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "venv", ".venv", "target", "dist", "build", "__pycache__"]);
 
@@ -205,6 +206,35 @@ function detectRust(root: string): ProjectDefaults {
   };
 }
 
+function detectPython(root: string): ProjectDefaults {
+  const has = (name: string) => existsSync(join(root, name));
+  const text = (name: string) => {
+    try {
+      return readFileSync(join(root, name), "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const requirements = readdirSync(root).filter((f) => /^requirements.*\.txt$/.test(f));
+  const config = ["pyproject.toml", "setup.cfg", "setup.py", "tox.ini", ...requirements].map(text).join("\n");
+  const [manager, source, install, run]: [string, string, string, string] = has("uv.lock")
+    ? ["uv", "uv.lock", "uv sync", "uv run "]
+    : has("poetry.lock")
+      ? ["poetry", "poetry.lock", "poetry install --no-interaction", "poetry run "]
+      : has("requirements.txt")
+        ? ["pip", "requirements.txt", "pip install -r requirements.txt", ""]
+        : ["pip", "pyproject.toml／setup.py", "pip install -e .", ""];
+  const pytest = /\bpytest\b/.test(config) || has("pytest.ini") || has("conftest.py");
+  const unittest = /\bunittest\b/.test(config);
+  const testFiles = findFiles(root, new RegExp(PYTHON_TEST_PATTERN));
+  const test = `${run}${pytest ? "pytest" : "python -m unittest discover"}`;
+  const checks: Check[] = [{ name: "test", cmd: test }];
+  if (/\[tool\.ruff/.test(text("pyproject.toml")) || has("ruff.toml") || has(".ruff.toml")) {
+    checks.push({ name: "lint", cmd: `${run}ruff check .`, finalOnly: true });
+  }
+  return { ecosystem: "python", manager, source, install, test, checks, testFramework: pytest || unittest || testFiles.length > 0, testPattern: PYTHON_TEST_PATTERN };
+}
+
 function detectUnknown(): ProjectDefaults {
   return { ecosystem: "unknown", manager: "（未辨識）", source: "沒有可辨識的專案檔", install: NO_INSTALL, test: NO_INSTALL, checks: [], testFramework: false };
 }
@@ -214,6 +244,7 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
   if (has("package.json") || LOCKFILES.some(([file]) => has(file))) return detectNode(root);
   if (has("go.mod")) return detectGo(root);
   if (has("Cargo.toml")) return detectRust(root);
+  if (["pyproject.toml", "setup.py", "setup.cfg"].some(has) || readdirSync(root).some((f) => /^requirements.*\.txt$/.test(f))) return detectPython(root);
   return detectUnknown();
 }
 
