@@ -119,7 +119,11 @@ export function detectProjectDefaults(root: string): ProjectDefaults {
     const scriptCmd = name === "test" && /\bvitest\b/.test(String(scripts[script])) ? withArgs(run, VITEST_WORKTREE_EXCLUDES, manager) : run;
     return [{ name, cmd: scriptCmd }];
   });
-  return { manager, source, install: INSTALL[manager], test: withExec(defaults.test, manager), checks, testFramework: hasTestFramework(pkg) };
+  // 紅綠燈與 checks.test 要跑同一個框架：專案有 test script 就用它（例如 node:test 專案），否則用預設的 vitest
+  const testScript = scripts.test;
+  const hasRealScript = typeof testScript === "string" && !/no test specified/i.test(testScript);
+  const test = hasRealScript ? (checks.find((c) => c.name === "test")?.cmd ?? withExec(defaults.test, manager)) : withExec(defaults.test, manager);
+  return { manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg) };
 }
 
 /** 手動設定 test 指令就當作有測試框架 */

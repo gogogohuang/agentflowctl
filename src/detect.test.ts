@@ -100,7 +100,18 @@ describe("detectProjectDefaults", () => {
   it("test script 不是 vitest 時不附加 vitest 的排除", () => {
     const d = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { scripts: { test: "jest" } } }));
     expect(d.checks.find((c) => c.name === "test")?.cmd).toBe("pnpm run test");
-    expect(d.test).toBe(`pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}`);
+    expect(d.test).toBe("pnpm run test");
+  });
+
+  it("專案有 test script 時，紅綠燈用的 test 指令也跑它（例如 node:test 專案不能被 vitest 接手）", () => {
+    const d = detectProjectDefaults(project({ "package.json": { scripts: { test: "node --test cli/*.test.js" } } }));
+    expect(d.test).toBe("npm run test");
+  });
+
+  it("test script 是 vitest 時，紅綠燈的 test 指令附加排除；佔位 script 與沒有 script 時維持預設 vitest", () => {
+    expect(detectProjectDefaults(project({ "package.json": { scripts: { test: "vitest run" } } })).test).toBe(`npm run test -- ${VITEST_WORKTREE_EXCLUDES}`);
+    expect(detectProjectDefaults(project({ "package.json": { scripts: { test: 'echo "Error: no test specified" && exit 1' } } })).test).toBe(`npx vitest run ${VITEST_WORKTREE_EXCLUDES}`);
+    expect(detectProjectDefaults(project({ "package.json": {} })).test).toBe(`npx vitest run ${VITEST_WORKTREE_EXCLUDES}`);
   });
 
   it("typecheck 也認得不含連字號的 script 名稱", () => {
