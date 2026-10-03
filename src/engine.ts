@@ -170,9 +170,10 @@ async function agentStep(
     // 啟動 CLI 前先保留一次額度：平行的車道與審查者在用量寫入前看到的次數都一樣，只靠已寫入的次數會超賣
     const owner = ownerId(run.id);
     if (!reserveAgentRun(owner, run.maxAgentRuns)) throw new AgentBudgetError(agentRuns(owner), run.maxAgentRuns);
-    const callKey = handoffKey(run, step, mode.slot ?? 0, agent);
     let r: AgentResult;
+    let callKey: string;
     try {
+      callKey = handoffKey(run, step, mode.slot ?? 0, agent);
       prepareHandoff(run.id, callKey, handoffTarget(run), mode.blind ?? false, mode.workspace?.flow);
       r = await runAgent(agent, { ...resolveAgent(cfg, agent), model: selected.name, effort: selected.effort },
         { ...target(run, step, agent, mode.workspace?.dir), strength: selected.strength, targetStrength: selected.targetStrength }, prompt);
@@ -1044,9 +1045,16 @@ export function canReplan(run: FlowRun): boolean {
 export function replanRun(run: FlowRun, opts: { note?: string; noReview?: boolean }): FlowRun {
   if (!canReplan(run)) throw new Error(`run 目前在 ${run.stage}，只有等待核准，或停在計畫階段的 run 可以重做計畫`);
   const note = opts.note?.trim();
+  // 併回 .flow/ 後驗證不過就整個還原：否則 run 仍在 awaiting_approval，approve 會帶著被併回的人工專屬驗收條件進實作
+  const snap = snapshotPlan(run);
+  const hadMarker = existsSync(confirmationsRestoredPath(run.id));
   restoreHumanItems(run);
   const ordered = validatePlan(run);
-  if (typeof ordered === "string") throw new Error(`計畫檔案沒有通過檢查，請先修正 ${flowDir(run.id)}：\n${ordered}`);
+  if (typeof ordered === "string") {
+    restorePlan(run, snap);
+    if (!hadMarker) rmSync(confirmationsRestoredPath(run.id), { force: true });
+    throw new Error(`計畫檔案沒有通過檢查，請先修正 ${flowDir(run.id)}：\n${ordered}`);
+  }
   acceptPlan(run, ordered);
   // 重新計輪：之前的審查、仲裁與僵持紀錄都不適用於人工改過的計畫
   const attempts = { ...run.attempts };

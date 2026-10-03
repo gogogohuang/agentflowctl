@@ -28,7 +28,7 @@ npx agentflowctl run --req "登入表單加入驗證與錯誤訊息"
 
 ```bash
 agentflowctl replan <id> --note "T-2 要改用既有的 helper"   # 補充意見，只改相關任務
-agentflowctl replan <id>                                    # 手改 .flow/ 的計畫檔後重新檢查
+agentflowctl replan <id>                                    # 手改 .flow/ 的計畫檔後重新檢查（人工確認項目會先併回 .flow/，改完依計畫檔重建清單）
 ```
 
 run 完成後還想再改：`agentflowctl iterate <id> --req "改用既有的 helper"` 會在同一個 worktree 與分支上開第二輪（補充需求從 spec 重來，程式碼與 PR 沿用，推送後更新同一個 PR；PR 已合併則改用 `run`）。

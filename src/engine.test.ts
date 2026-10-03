@@ -1578,6 +1578,22 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
       expect(text).not.toContain("請目視確認畫面");
     });
 
+    it("replan 驗證失敗：還原 .flow/ 與標記，之後 approve 不會帶著人工專屬的驗收條件進實作", async () => {
+      const id = "f-replan-invalid-rollback";
+      const run = await awaitingWithConfirm(id);
+      // 手改成引用不存在的驗收條件：檔案能解析（所以會先併回確認項目），之後 validatePlan 才失敗
+      const edited = JSON.stringify([{ id: "T-1", title: "實作", description: "完成", dependsOn: [], acceptance: ["AC-9"] }]);
+      writeFileSync(join(flowDir(id), "tasks.json"), edited);
+      const beforeAc = readFileSync(join(flowDir(id), "acceptance.json"), "utf8");
+      const beforePlan = readFileSync(join(flowDir(id), "plan.md"), "utf8");
+      expect(() => replanRun(run, { note: "補充" })).toThrow("計畫檔案沒有通過檢查");
+      expect(readFileSync(join(flowDir(id), "tasks.json"), "utf8")).toBe(edited);
+      expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).toBe(beforeAc);
+      expect(readFileSync(join(flowDir(id), "plan.md"), "utf8")).toBe(beforePlan);
+      expect(existsSync(join(runDir(id), "confirmations-restored"))).toBe(false);
+      expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).not.toContain("AC-3");
+    });
+
     it("沒有任何確認任務時，兩份資料檔仍存在且為空資料", async () => {
       const id = "f-replan-empty";
       const run = await planSettledRun(id, { maxAgentRuns: 50, autopilot: false, stopAfter: undefined });
