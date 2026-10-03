@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { decideAmend } from "./amend.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
+import { effectiveDefaults } from "./detectedFile.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
 import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
 import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
@@ -377,7 +378,7 @@ function pauseAtStopAfter(run: FlowRun, next: FlowRun): FlowRun {
 /** 讀取 flow.config.json；沒寫的 install、test、checks 依專案現況偵測 */
 export function loadRepoConfig(): RepoConfig {
   const root = projectRoot();
-  const detected = detectProjectDefaults(root);
+  const detected = effectiveDefaults(root);
   const p = join(root, "flow.config.json");
   if (!existsSync(p)) return RepoConfig.parse(withProjectDefaults({}, detected));
   const r = readJsonFile(p, z.preprocess((raw) => withProjectDefaults(raw, detected), RepoConfig));
@@ -390,7 +391,7 @@ function hasTestFramework(): boolean {
   const root = projectRoot();
   const p = join(root, "flow.config.json");
   const r = existsSync(p) ? readJsonFile(p, z.unknown()) : undefined;
-  return usesTestFramework(r?.ok ? r.data : {}, detectProjectDefaults(root));
+  return usesTestFramework(r?.ok ? r.data : {}, effectiveDefaults(root));
 }
 
 /** 這個任務要不要走紅綠燈：沒有測試框架一律不走，其餘依 planner 標記（沒標視為要走） */

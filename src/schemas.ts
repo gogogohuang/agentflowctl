@@ -323,6 +323,23 @@ export const RepoConfig = z.object({
 });
 export type RepoConfig = z.infer<typeof RepoConfig>;
 
+/** agent 對未知類型專案提出的指令；尚未經程式驗證 */
+export const DetectionProposal = z.object({
+  install: z.string().optional(),
+  test: z.string().optional(),
+  checks: z.array(z.object({ name: z.string(), cmd: z.string(), finalOnly: z.boolean().optional() })).default([]),
+  testPattern: z.string().optional(),
+});
+export type DetectionProposal = z.infer<typeof DetectionProposal>;
+
+/** `.agentflowctl/detected.json`：通過驗證的欄位，以及被丟掉的欄位與原因；沒有的欄位代表沒有可用的結果 */
+export const DetectedFile = DetectionProposal.extend({
+  fingerprint: z.string(),
+  generatedAt: z.string(),
+  dropped: z.array(z.object({ field: z.string(), reason: z.string() })).default([]),
+});
+export type DetectedFile = z.infer<typeof DetectedFile>;
+
 /** 讓 run 進入 failed 的原因：關卡重試達上限以外，還有仲裁停止、PR 前仍有未結事項、agent 次數用完、例外與使用者取消 */
 export const FailureCategory = z.enum(["retry_limit", "arbitration_stop", "open_handoff", "agent_budget", "error", "cancelled"]);
 export type FailureCategory = z.infer<typeof FailureCategory>;
