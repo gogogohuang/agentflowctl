@@ -4,6 +4,8 @@
 
 ## 處理進度
 
+A 類已在 PR #65（分支 `fix/review-gates`）處理，B 到 F 類尚未動。各項的細節在下面對應章節的「修改結果」。
+
 | 項目 | 狀態 |
 |---|---|
 | A1 審查覆蓋表 | 已修：`reviewCoverage.ts`，審查 prompt 改為逐條回報 |
@@ -13,6 +15,8 @@
 | A5 範圍守衛 | 已修：認得目錄與根目錄檔案；守衛達次數上限放行時印警告。沒有任何任務提到的檔案仍不受限，這是刻意保留 |
 | A6 仲裁分歧 | 已修：不改預設值，沒核准的意見記成程式碼類 `action`，最終審查必須結案 |
 | A7 reviewQuorum 預設 1 | 只補文件警語，**沒有改預設值**（改成 2 會讓每次審查成本加倍，需要你決定） |
+
+驗證：`pnpm run typecheck`、`pnpm test`（636 個）、`pnpm run build` 在本機通過。PR 推送後的 CI 結果沒有記在這裡。
 
 ## 範圍與方法
 
@@ -45,12 +49,29 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 - 對比：計畫階段已經做到「每條 AC 恰好由一個任務負責」（`orderTasks`），所以資料基礎齊備，缺的只是最終審查的覆蓋表。
 - 建議：`approve` 時要求回報每條 AC 為 `met`（可以讓 items 多一種 `met` 的紀錄，目前 schema 已有 `met` 這個 status 但 prompt 說 approve 時 items 為空），程式比對 AC id 集合；缺漏視為格式錯誤重審。
 
+**修改結果（PR #65）**
+
+- 新增 `src/reviewCoverage.ts` 的 `checkReviewCoverage`。`codeReview` 讀到 `review.json` 後呼叫它：範圍內每條 `AC-n` 都要有一筆回報；`items` 提到不存在的編號不合格。任務審查的範圍是該任務的 `acceptance`，整體審查是 `acceptance.json` 全部；任務審查時其他任務的真實編號放行。
+- 不合格時以 `format_invalid` 走原本的 `fail()`：丟掉該審查者的存檔、記一次重試、整輪重審，feedback 會寫出缺哪幾條。
+- `prompts/review.md`、`task-review.md` 的輸出格式改成「每條各一筆，通過寫 `met`」，並移除「approve 時 items 為空」的舊說法。
+- 限制：只檢查結構，不判斷審查者的 `met` 對不對。這一關擋的是「漏看」，不是「看錯」。
+- 測試：新增 `reviewCoverage.test.ts`；`engine.test.ts` 新增漏報與額外發現缺 evidence 兩個重審案例。原有測試裡假審查者原本一律回空的 `items`，已改成逐條回報。
+
 ### A2. review ⇄ fix 沒有範圍約束，審查者可無限提需求【已確認】
 
 - `reviewStage` 把所有 `not_met`／`partial` 的 item 原樣寫進 feedback 交給 fix。`review.md` 允許「額外發現的重要問題」，這類 item 不需要對應任何 AC。
 - `applyFix` 的防護只有：不可改鎖定檔、不可刪測試、`scopeGuard`（只比對路徑）、交接結清。沒有任何機制檢查「這條意見是否在規格內」。
 - 後果：審查者可以用「額外發現」持續擴大範圍，直到撞到 `maxAttempts`（預設 5）使 run 失敗；失敗時使用者看到的是 `retry_limit`，不是範圍膨脹。
 - 建議：item 分成兩類——對應 AC（可直接進 fix）與額外發現（必須附 evidence，分開標示；可設定為只當交接事項的 `info`，或需另一位審查者附議才進 fix）。
+
+**修改結果（PR #65）**
+
+- `ReviewResult` 的 item 新增 `evidence` 欄位（預設空字串，舊資料可讀）。`criterion` 不是 `AC-n` 的項目視為額外發現，沒通過的額外發現必須有 `evidence`，否則 `format_invalid`。
+- `feedback.md` 裡用 `<extra_finding status evidence>` 與驗收條件的 `<issue>` 分開標示。`prompts/fix.md` 說明：額外發現要先依 evidence 確認是這次變更的缺陷才改，認為是新需求就不實作，改在 `newIssues` 以 `info` 寫明不採納的理由。審查 prompt 也寫明額外發現只限缺陷，不可是新需求、風格偏好或「有更小的做法」。
+- 範圍膨脹的剎車：`EXTRA_BLOCK_ATTEMPTS = 1`。該關的重試計數為 0（第一次審查）時，額外發現可以擋關；修過一輪之後若這位審查者只剩額外發現，視同核准，這些發現以 `info` 記進交接帳本。只要還有驗收條件未通過，額外發現仍會一起進 fix。
+- 沒做：「需另一位審查者附議才進 fix」。
+- 限制：降為 `info` 的額外發現目前不會出現在 PR 描述裡（見 B4）。
+- 測試：`engine.test.ts` 新增「第一次擋關且分開標示」與「修過一輪後降為 info」兩個案例。
 
 ### A3. verify 只看 exit code，fix 階段沒有紅綠約束【已確認】
 
@@ -59,12 +80,27 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 - 沒有測試框架時（`hasTestFramework()` 為 false），綠燈直接視為通過（`implementStage` 的 `green` 分支），之後只剩審查把關。
 - 建議：fix 提交後比較測試檔 diff，偵測新增的 `skip`／`only`／`todo` 與被刪除的斷言行數；最低限度把偵測結果列進 feedback 或直接退回。
 
+**修改結果（PR #65）**
+
+- 依 `weakenedChecks`（`testGuard.ts`）比對 `git diff`：每個檔案的新增與移除相抵，所以搬移程式碼不會誤判。偵測三類：測試檔新增 `skip`／`only`／`todo`（含 `xit`、`xdescribe`）、程式碼檔案新增 `@ts-ignore`／`@ts-nocheck`／`eslint-disable`、測試檔的斷言（`expect`／`assert*`）變少。`.flow/` 與已刪除的檔案不看；文件與鎖定檔提到抑制字樣不算。
+- `applyFix`（任務修正與最終修正共用）：前兩類一律還原並以新分類 `checks_weakened` 重試；斷言變少只在前 `SCOPE_GUARD_ATTEMPTS`（2）次嘗試擋下，之後放行並印警告，因為可能是合理地刪掉重複的斷言。綠燈階段的實作只擋抑制註解。
+- 限制：沒有處理「把 `toBe(5)` 改成 `toBeDefined()`」這類換成較弱的比對；`@ts-expect-error` 不算在內（型別測試會合理使用）；`verify` 本身仍只看 exit code，沒有 coverage 檢查；沒有測試框架時綠燈仍直接視為通過，未處理。
+- 測試：`testGuard.test.ts` 新增 `weakenedChecks` 的單元測試；`engine.test.ts` 新增修正階段被退回的案例。
+
 ### A4. 非 TDD 任務「沒有任何變更」會被靜默略過【已確認】
 
 - `implementStage`：`if (!tdd && !codeCommit)` → 印出「沒有檔案變更，略過這個任務」並 `finishTask`。
 - 這個任務的 AC 沒有被實作也一樣前進。只有任務審查（fast 模式沒有）與最終審查能發現。
 - 與 A1 疊加：fast 模式只有最終審查，最終審查又沒有 AC 覆蓋檢查，所以非 TDD 任務被略過在 fast 下幾乎沒有程式化的保險。
 - 建議：非 TDD 任務沒有變更時，要求 agent 在 `<result>` 或 handoff 說明為什麼不需要變更，且由審查階段強制檢查（或直接視為 `tests_not_written` 類的重試）。
+
+**修改結果（PR #65）：決定不強制審查，改為留紀錄**
+
+- 原本的建議（沒有變更就強制審查）過頭了：設定、文件、純重構或行為早已存在的任務，沒有變更是合理的，強制審查會對正常情況多付一次審查費。
+- 真正的缺口是沒有人核對那條驗收條件，這由 A1 的覆蓋表處理：整體審查必須逐條回報全部驗收條件，被略過的任務若其實沒做到，審查者要回報 `not_met`。
+- 另外在略過時（`noteSkippedTask`）於交接帳本記一筆 `info`，說明 T-n 沒有檔案變更、請確認其驗收條件在既有程式碼上本來就成立。審查者讀 `handoff-context.md` 時會看到。
+- 限制：這只是提示，不是程式強制；若審查者忽略它又在覆蓋表誤標 `met`，仍然漏得過去。fast 模式沒有任務審查，只剩整體審查。
+- 測試：略過任務的既有案例新增了對帳本 `info` 的斷言。
 
 ### A5. 範圍守衛（`outOfScopeFiles`）只認得「後面任務描述裡出現過的路徑」【已確認】
 
@@ -73,16 +109,35 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 - 守衛只在前 `SCOPE_GUARD_ATTEMPTS` 次嘗試生效（`engine.ts:1585` 附近），超過後放行，是刻意的退讓，但也代表守衛可以被「多試幾次」繞過。
 - 影響：車道平行時，兩個任務若動到沒被任何描述提到的同一檔案，會在合併時衝突後整條重做（見 C2）。
 
+**修改結果（PR #65）**
+
+- `tasks.ts` 新增 `describedDirs`，並讓 `describedPaths` 認得根目錄檔案（`package.json`、`tsconfig.json`、`README.md` 等常見副檔名）。`outOfScopeFiles` 改成：動到後面任務明寫的檔案，或後面任務描述的目錄（至少兩層、結尾有斜線，例如 `src/auth/`）底下的檔案，算越界；自己描述了同一目錄或檔案就不算。
+- 守衛達 `SCOPE_GUARD_ATTEMPTS` 後放行時，現在會印警告（原本是靜默放行），實作與修正兩處都是。
+- 限制（刻意保留）：沒有任何任務提到的檔案仍不受限，因為新增 helper、鎖定檔等無法事先列舉；守衛仍會在達次數上限後放行；描述裡的 `Next.js` 這類字會被當成根目錄檔案，但只拿來和實際變更的檔名比對，不會造成誤擋。
+- C1（計畫階段偵測平行任務路徑重疊）沒有處理，所以車道衝突整條重做的成本沒有變。
+- 測試：`tasks.test.ts` 新增目錄、根目錄檔案與放行情況。
+
 ### A6. 計畫仲裁僵持時預設往前走（fail-open）【已確認】
 
 - `tieBreak` 預設 `"proceed"`（`schemas.ts:286`）。仲裁小組意見分歧（有人核准、有人不核准）時，預設繼續實作。
 - 一個不核准的仲裁意見只被寫進 `plan.md` 的「仲裁紀錄」。這些意見沒有進入交接帳本，後續任務不會被要求處理。
 - 建議：預設改 `stop`，或至少把不核准一方的意見轉成交接 `action`，讓最終審查把關。
 
+**修改結果（PR #65）**
+
+- `tieBreak` 預設值沒有改，維持 `proceed`（改成 `stop` 是不相容的行為改變）。
+- 改為：仲裁分歧而繼續實作時（`recordArbitrationDissent`），沒核准的仲裁者的每則意見記成 `targetStage: "code"` 的待處理事項（`action`）。程式碼類的待處理事項必須由最終審查結案（`resolved` 或 `accepted`），否則審查核准會被判矛盾、PR 階段也會因 `open_handoff` 失敗，所以不再只留在 `plan.md`。重複回報由既有的 `isDuplicateIssue` 去重，同一輪重播以 `arbitration-dissent:<輪次>:<仲裁者>` 為鍵不會重複記。
+- 測試：既有的仲裁分歧案例改成預期帳本多出一筆 `code` 類 `action`。
+
 ### A7. `reviewQuorum` 預設為 1【已確認】
 
 - 預設只有一位審查者。`codeReview` 的 panel 在 quorum 為 1 時，單一模型的盲點直接成為最終關卡。
 - 這是設計取捨（成本），但文件和 README 若沒強調，使用者容易高估「多家互審」的保證。
+
+**修改結果（PR #65）**
+
+- 只改文件：`docs/reference.md` 與 `docs/configuration.md` 的 `reviewQuorum` 說明加上「預設只有一位審查者，單一模型的盲點就是最後一道關卡；重要專案建議設 2 以上，代價是每次審查多花一次 agent 呼叫」。
+- 預設值沒有改，因為改成 2 會讓每次審查成本加倍，這是需要使用者決定的取捨。
 
 ---
 
@@ -220,11 +275,11 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 | 比較文件的項目 | 目前狀態 |
 |---|---|
 | 可借鏡 #1 輕量路徑 | **已完成**（`run --fast`）。但 `FastCheck` 是 agent 自述旗標，見 E4 |
-| 可借鏡 #2 審查發現須可追溯 | 未做，對應本文 A2 |
-| 可借鏡 #3 驗收編號覆蓋表 | **半完成**：計畫層（任務 ↔ AC）已強制，審查層沒有，對應 A1 |
+| 可借鏡 #2 審查發現須可追溯 | **已做（PR #65）**：額外發現須附 evidence、分開標示、只在第一次審查能擋關；沒做「對得上規格或驗收條件才進 fix」的硬性要求，對不上驗收條件的發現只要有證據仍會進 fix，見 A2 |
+| 可借鏡 #3 驗收編號覆蓋表 | **已完成（PR #65）**：計畫層（任務 ↔ AC）本來就強制，審查層現在也由程式比對編號，對應 A1 |
 | 可借鏡 #4 Minimality 審查項 | 未做，對應 E2 |
 | 可借鏡 #5 security-scan 選配階段 | 未做，對應 E3 |
-| 「我們的 review 迴圈直接採納意見」 | 確認屬實，A2 |
+| 「我們的 review 迴圈直接採納意見」 | 確認屬實，A2 已用 evidence 與擋關次數限制緩解，沒有完全消除 |
 
 比較文件**沒有**提到、本文新增的類別：B（base 漂移、PR 錯誤處理、CI 回饋）、C（車道重做成本）、D1（flaky）、A3／A4／A5（既有關卡的漏洞）。
 
@@ -234,20 +289,20 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 
 | 順位 | 項目 | 理由 | 規模 |
 |---|---|---|---|
-| 1 | A1 審查覆蓋表＋A2 發現分類 | 影響最大；純程式關卡，符合專案原則；資料基礎已在 | 中：schema、`codeReview`、兩份 review prompt、測試 |
+| 1 | A1 審查覆蓋表＋A2 發現分類（**已完成，PR #65**） | 影響最大；純程式關卡，符合專案原則；資料基礎已在 | 中：schema、`codeReview`、兩份 review prompt、測試 |
 | 2 | D1 verify 失敗先原樣重跑一次 | 直接省 fix agent 的呼叫；風險低 | 小 |
 | 3 | B2 `gh pr create`／push 失敗不標 done | 目前會留下「完成但沒有 PR」的假象 | 小 |
 | 4 | B1 開 PR 前對 base 做 fetch／合併檢查 | 避免推出已過時的分支；先確認 B1 的【未驗證】 | 中 |
-| 5 | A4 非 TDD 任務無變更不可靜默略過 | 與 A1 疊加，fast 下尤其沒有保險 | 小 |
-| 6 | A3 fix 後偵測測試被放寬 | 關卡一致性 | 中 |
+| 5 | A4 非 TDD 任務無變更不可靜默略過（**已改為留紀錄，PR #65**，不強制審查） | 與 A1 疊加，fast 下尤其沒有保險 | 小 |
+| 6 | A3 fix 後偵測測試被放寬（**已完成，PR #65**） | 關卡一致性 | 中 |
 | 7 | E2 Minimality 審查項 | 只改 prompt | 小 |
-| 8 | A6 `tieBreak` 預設改 `stop`，或把不核准意見轉成交接事項 | 屬 breaking default，需版本說明 | 小 |
+| 8 | A6 `tieBreak` 預設改 `stop`，或把不核准意見轉成交接事項（**已採後者，PR #65**；預設值沒改） | 屬 breaking default，需版本說明 | 小 |
 | 9 | C1 計畫階段偵測平行任務路徑重疊 | 降低衝突重做 | 中 |
 | 10 | B3 `--wait-ci` 選配 | 補上最後一哩，但範圍較大 | 大 |
 | 11 | E1 delta 審查 | 省成本，需處理 `roles.ts` 不變式 | 中 |
 | 12 | E3 安全審查選配階段 | 需要觸發條件設計 | 大 |
 
-做任何一項前，依 AGENTS.md：改行為要同步更新 `README.md`；新增 run 狀態欄位要設 optional；改 `roles.ts` 要補 `roles.test.ts`；改 adapter 要用真實 JSON 行補測試。
+尚未處理：D1、B2、B1、E2、C1、B3、E1、E3 與 B4、C2、C3、D2 到 D4、E4、E5、F。做任何一項前，依 AGENTS.md：改行為要同步更新 `README.md`；新增 run 狀態欄位要設 optional；改 `roles.ts` 要補 `roles.test.ts`；改 adapter 要用真實 JSON 行補測試。
 
 ## 不建議做的事（延續比較文件的結論並補充）
 
@@ -258,4 +313,5 @@ spec → plan ⇄ plan_review ⇄ plan_fix →（僵持時）仲裁
 ## 已知限制
 
 - 本文沒有跑過任何 run，也沒有實測任一缺陷；A1、A2、A4、D1 都建議先寫一個會失敗的測試重現後再動手（`engine.test.ts` 已有大量情境可沿用）。
+- PR #65 的測試是實作之後才補的，我沒有逐一驗證它們在修改前會失敗。它們證明新行為存在，不證明舊行為確實有該缺陷。
 - 沒讀的範圍（見開頭）可能已經處理了部分問題，也可能有本文沒列到的缺陷。特別是計畫修訂與分層審查（`planFixStage`、`planReviewLayered`）和各 adapter 的額度偵測（`QUOTA_PATTERNS` 只在執行失敗時檢查，若 CLI 以成功碼回報額度不足會被漏掉）值得再單獨審一輪。
