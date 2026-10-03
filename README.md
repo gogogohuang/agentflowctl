@@ -33,6 +33,8 @@ agentflowctl replan <id>                                    # 手改 .flow/ 的�
 
 run 完成後還想再改：`agentflowctl iterate <id> --req "改用既有的 helper"` 會在同一個 worktree 與分支上開第二輪（補充需求從 spec 重來，程式碼與 PR 沿用，推送後更新同一個 PR；PR 已合併則改用 `run`）。
 
+**修補任務**：後面的任務發現必須改變已合併任務的行為時，agent 會寫 `.flow/amend-request.json`。引擎檢查格式、目標是否已合併與次數上限後，插入一個依賴該任務的修補任務（`kind: "amend"`，走完整的紅燈、綠燈、任務審查、任務驗證），請求者丟棄半成品，等修補合併後從最新的分支重做；修補任務會讓 agent 執行次數上限加上 `agentRunsPerTask`（明確指定 `--max-agent-runs` 時不加）。達到 `maxAmendments`（同一個已合併任務最多被修補幾次，預設 2）時 run 暫停，`resume` 前請檢查 `.flow/feedback.md`。
+
 要在某階段先取用產出，用 `--stop-after <spec|plan|implement|verify|review|pr>`，之後 `resume <id>` 接續。
 
 各階段的規則見[執行流程細節](docs/workflow.md)。
