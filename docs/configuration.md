@@ -150,6 +150,7 @@ Codex 另有幾點差異：
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者核准 |
 | `taskConcurrency` | 不限 | 沒有相依關係的任務最多幾個同時執行（各在自己的 worktree）；`1` 為一次一個任務，等同關閉平行任務；說明見[平行執行任務](#平行執行任務) |
 | `checksConcurrency` | 不限 | 同一次驗證裡 typecheck、lint、test、build 等檢查最多幾個同時執行；`1` 為一次一個。install 仍先單獨跑完 |
+| `rerunFailedChecks` | `true` | 檢查失敗時先原樣重跑失敗的那幾項一次：第二次通過視為 flaky（暫時性失敗），放行並記進 `flaky.jsonl`；兩次都失敗才交給修正者。代價是真的失敗時多跑一次檢查；設 `false` 則一失敗就進修正 |
 | `reviewConcurrency` | 不限 | 同一輪審查最多幾位審查者同時執行；`1` 為一次一位；說明見表格下方，`config doctor` 會顯示目前的設定 |
 | `planArbiter` | `true` | 計畫審查僵持，或修訂一次後仍被要求修改時是否啟用仲裁 |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 任務夠多時把計畫審查拆成索引與任務群；說明見表格下方 |

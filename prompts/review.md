@@ -14,7 +14,7 @@
 ```
 
 新增事項格式：{ "kind": "action 或 info", "summary": "具體問題", "evidence": "檔案位置或檢查證據", "targetStage": "plan 或 code" }。
-處置格式：{ "id": "既有事項 ID", "status": "proposed_resolved、resolved 或 accepted", "reason": "具體處理理由", "evidence": "檔案、commit 或檢查結果" }。只有「待處理事項」（action）可以處置：撰寫者只能用 proposed_resolved 提出修正；審查者可以用 resolved 或 accepted 結案。「參考資訊」（info）只供參考，不要放進 dispositions。重要疑慮必須放在這份檔案，不能只寫在回覆的 <concerns>。
+處置格式：{ "id": "既有事項 ID", "status": "proposed_resolved、resolved 或 accepted", "reason": "具體處理理由", "evidence": "檔案、commit 或檢查結果" }。只有「待處理事項」（action）可以處置：撰寫者只能用 proposed_resolved 提出修正；審查者可以用 resolved 或 accepted 結案。「參考資訊」（info）只供參考，不要放進 dispositions；其中「作者回報的疑慮」是作者自己標出的風險，優先查證它是否真的被處理，但那是線索不是結論，不能因此省略逐條核對。重要疑慮必須放在這份檔案，不能只寫在回覆的 <concerns>。
 </handoff>
 
 <inputs>
@@ -27,7 +27,8 @@
 <review_focus>
 1. 逐條確認每個驗收條件是否真的被實作，而且有對應的測試真正驗證它（不是空洞的測試）。
 2. 是否有明顯的錯誤、邊界情況遺漏、安全問題或效能問題。
-3. 是否符合專案既有的架構與慣例。
+3. 最小化：逐一嘗試在變更裡刪掉、合併或改用既有行為——有沒有任何驗收條件都不需要的程式碼（多餘的參數、分支、設定、匯出、抽象）、有沒有重寫了專案裡已經有的函式或元件。能刪掉或重用而所有驗收條件仍然成立的，列為額外發現，`evidence` 要同時寫出多餘程式碼的位置，以及可重用的既有位置（或說明沒有任何驗收條件依賴它）；只是「我會換另一種寫法」不算。
+4. 是否符合專案既有的架構與慣例。
 
 先根據 diff 與驗收條件定位需要查閱的檔案；只在證據不足時讀取其他檔案。自動化檢查已由外部流程執行，不必為了審查重跑全套檢查。
 
@@ -49,7 +50,7 @@
 ```
 
 - `items` 必須逐條回報驗收條件（.flow/acceptance.json 的每一條）：每一條各一筆，`criterion` 填驗收條件編號（例如 `AC-1`），通過寫 `met`，未通過寫 `not_met` 或 `partial`。漏掉任何一條、或寫出不存在的編號，會被視為格式錯誤並重新審查。
-- 另外發現、但不屬於任何驗收條件的問題，`criterion` 寫簡短描述（不要用 AC 編號），`status` 只能是 `not_met` 或 `partial`，而且必須在 `evidence` 寫出檔案位置或檢查證據，沒寫會被視為格式錯誤。額外發現只限這次變更裡的缺陷（錯誤、邊界遺漏、安全問題、回歸）；不可以把新需求、風格偏好、「有更小的做法」寫成額外發現。
+- 另外發現、但不屬於任何驗收條件的問題，`criterion` 寫簡短描述（不要用 AC 編號），`status` 只能是 `not_met` 或 `partial`，而且必須在 `evidence` 寫出檔案位置或檢查證據，沒寫會被視為格式錯誤。額外發現只限這次變更裡的缺陷（錯誤、邊界遺漏、安全問題、回歸）；不可以把新需求、風格偏好、「換個設計也行」寫成額外發現；唯一的例外是下面「最小化」查到的過度實作。
 - `verdict`：全部驗收條件都是 `met`、且沒有額外發現時為 `approve`，否則為 `changes_requested`。
 - `approve` 時 items 不可有 `not_met` 或 `partial`；`changes_requested` 時至少要有一筆 `not_met` 或 `partial`。兩者不一致會被視為格式錯誤並重新審查。
 </output_format>

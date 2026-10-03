@@ -34,10 +34,10 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enable
 }));
 
 const { addWorktree, commitAll, git } = await import("./git.js");
-const { advance, canReplan, iterateRun, replanRun, resetQuotaState, runChecks, withFiles } = await import("./engine.js");
-const { mergeHandoff, readHandoff } = await import("./handoff.js");
+const { advance, canReplan, iterateRun, NO_WRITER_CONTEXT, replanRun, resetQuotaState, runChecks, TASK_RESET, withFiles } = await import("./engine.js");
+const { mergeHandoff, prepareHandoff, readHandoff } = await import("./handoff.js");
 const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
-const { addRetry, agentRuns, getRun, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
+const { addRetry, agentRuns, getRun, listFlaky, listRetries, listSubstitutions, listUsage, saveRun } = await import("./store.js");
 
 // 會連續啟動多個 node 子程序的測試，本機約 2 到 3 秒；CI 的 macOS 較慢，預設 5 秒不夠
 const SLOW_TEST_MS = 30_000;
@@ -348,12 +348,13 @@ if (noop) rmSync(noopFile);
 else if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
 else writeFileSync("feature.mjs", "export const answer = 42;\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+if (existsSync(\`.flow/concerns-\${phase}.txt\`)) console.log("<result><status>done</status><summary>完成</summary><concerns>" + readFileSync(\`.flow/concerns-\${phase}.txt\`, "utf8") + "</concerns></result>");
 `);
 
 async function implementRun(
   id: string,
   acceptance: unknown,
-  { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs", description = "匯出 answer", noop, kind }: { maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null; description?: string; noop?: boolean; kind?: "confirm" } = {},
+  { maxAgentRuns = 2, tamper, tdd, test = "node feature.test.mjs", description = "匯出 answer", noop, kind, concerns }: { concerns?: { phase: "tests" | "code"; text: string }; maxAgentRuns?: number; tamper?: "tests" | "code"; tdd?: boolean; test?: string | null; description?: string; noop?: boolean; kind?: "confirm" } = {},
 ) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", implementer] }])),
@@ -367,6 +368,7 @@ async function implementRun(
     { id: "T-1", title: "回傳答案", description, dependsOn: [], acceptance: ["AC-2"], ...(tdd === undefined ? {} : { tdd }), ...(kind ? { kind } : {}) },
   ]));
   if (noop) writeFileSync(join(flowDir(id), "noop-direct.txt"), "");
+  if (concerns) writeFileSync(join(flowDir(id), `concerns-${concerns.phase}.txt`), concerns.text);
   if (tamper) writeFileSync(join(flowDir(id), `tamper-${tamper}.txt`), "");
   const now = new Date().toISOString();
   // 紅燈、綠燈各執行一次 agent（加上重試次數）後就達到上限而停在任務審查前，只檢查紅綠燈的結果
@@ -378,6 +380,23 @@ async function implementRun(
 }
 
 describe("實作階段", () => {
+  it("作者在 <concerns> 寫的疑慮記成交接帳本的參考資訊，讓審查者看得到", async () => {
+    const run = await implementRun("f-impl-concerns", [{ id: "AC-2", description: "匯出 answer 為 42" }], { concerns: { phase: "code", text: "answer 寫死 42，沒有處理來源變動" } });
+    const info = readHandoff(run.id).issues.filter((i) => i.kind === "info");
+    expect(info).toHaveLength(1);
+    expect(info[0]).toMatchObject({ targetStage: "code", status: "open" });
+    expect(info[0]!.summary).toContain("作者回報的疑慮（");
+    expect(info[0]!.summary).toContain("answer 寫死 42");
+    // 審查者讀的 handoff-context.md 會列出它
+    prepareHandoff(run.id, "review", "code", false);
+    expect(readFileSync(join(flowDir(run.id), "handoff-context.md"), "utf8")).toContain("作者回報的疑慮");
+  });
+
+  it("沒有實質內容的疑慮（「無」）不記", async () => {
+    const run = await implementRun("f-impl-concerns-none", [{ id: "AC-2", description: "匯出 answer 為 42" }], { concerns: { phase: "code", text: "無" } });
+    expect(readHandoff(run.id).issues).toEqual([]);
+  });
+
   it("紅綠燈 prompt 只帶入目前任務的驗收條件", async () => {
     const run = await implementRun("f-impl-ac", [
       { id: "AC-1", description: "其他任務的條件" },
@@ -1680,6 +1699,17 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
       expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).not.toContain("AC-3");
     });
 
+    it("沒有相依關係的任務描述同一個檔案時，計畫檔案沒有通過檢查；加上相依後通過", async () => {
+      const id = "f-replan-parallel-overlap";
+      const run = await awaitingWithConfirm(id);
+      const task = (n: number, dependsOn: string[]) => ({ id: `T-${n}`, title: `任務 ${n}`, description: `改 src/index.ts 與 src/f${n}.ts`, dependsOn, acceptance: [`AC-${n}`] });
+      writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "一" }, { id: "AC-2", description: "二" }]));
+      writeFileSync(join(flowDir(id), "tasks.json"), JSON.stringify([task(1, []), task(2, [])]));
+      expect(() => replanRun(run, { note: "補充" })).toThrow(/T-1 與 T-2 沒有相依關係，但都描述了 src\/index\.ts/);
+      writeFileSync(join(flowDir(id), "tasks.json"), JSON.stringify([task(1, []), task(2, ["T-1"])]));
+      expect(() => replanRun(run, { note: "補充" })).not.toThrow();
+    });
+
     it("沒有任何確認任務時，兩份資料檔仍存在且為空資料", async () => {
       const id = "f-replan-empty";
       const run = await planSettledRun(id, { maxAgentRuns: 50, autopilot: false, stopAfter: undefined });
@@ -2091,6 +2121,7 @@ ${body}
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(agents.map((name) => [name, { adapter: "command", command: ["node", script] }])),
     cycle: agents, planReviewQuorum: opts.quorum ?? 1, planArbiter: opts.planArbiter ?? true, reviewConcurrency: opts.concurrency ?? 1,
+    taskConcurrency: 1, // 這組夾具的任務共用同兩個檔案，測的是計畫審查而不是車道
     ...(opts.layers ? { planReviewLayers: opts.layers } : {}),
   }));
   await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
@@ -2669,14 +2700,59 @@ describe("lint 與型別檢查只在最後驗證", () => {
   });
 
   it("checksConcurrency 為 1 時一次只跑一個檢查", async () => {
-    const run = await concurrentRun("f-chk-serial", { checksConcurrency: 1 });
+    const run = await concurrentRun("f-chk-serial", { checksConcurrency: 1, rerunFailedChecks: false });
     const report = await runChecks(run);
     expect(report).toContain("one 失敗");
   }, SLOW_TEST_MS);
+
+  describe("失敗的檢查先原樣重跑一次", () => {
+    const counter = (id: string) => join(worktreeDir(id), "runs.txt");
+    const runs = (id: string) => readFileSync(counter(id), "utf8").trim().split("\n").length;
+    /** 每次執行先記一筆；failTimes 次以內失敗 */
+    const failing = (failTimes: number) =>
+      `node -e "const fs=require('fs');fs.appendFileSync('runs.txt','x\\n');const n=fs.readFileSync('runs.txt','utf8').trim().split('\\n').length;if(n<=${failTimes})process.exit(1)"`;
+
+    it("第一次失敗、重跑通過：視為 flaky，放行並記進 flaky.jsonl", async () => {
+      const run = await concurrentRun("f-chk-flaky", { checks: [{ name: "flaky", cmd: failing(1) }] });
+      expect(await runChecks(run)).toBeUndefined();
+      expect(runs(run.id)).toBe(2);
+      expect(listFlaky(run.id).map((e) => [e.scope, e.check])).toEqual([["final", "flaky"]]);
+      expect(JSON.parse(readFileSync(join(flowDir(run.id), "verify.json"), "utf8"))).toEqual([expect.objectContaining({ name: "flaky", ok: true })]);
+      expect(readdirSync(logDir(run.id)).some((f) => f.includes("-flaky-rerun-"))).toBe(true);
+    });
+
+    it("兩次都失敗：照舊回報失敗，只多跑一次，不算 flaky", async () => {
+      const run = await concurrentRun("f-chk-real-fail", { checks: [{ name: "broken", cmd: failing(99) }] });
+      expect(await runChecks(run)).toContain("broken 失敗");
+      expect(runs(run.id)).toBe(2);
+      expect(listFlaky(run.id)).toEqual([]);
+    });
+
+    it("只重跑失敗的那幾項，通過的不重跑", async () => {
+      const run = await concurrentRun("f-chk-only-failed", { checks: [{ name: "ok", cmd: "node -e \"require('fs').appendFileSync('ok.txt','x')\"" }, { name: "broken", cmd: failing(99) }] });
+      await runChecks(run);
+      expect(readFileSync(join(worktreeDir(run.id), "ok.txt"), "utf8")).toBe("x");
+    });
+
+    it("rerunFailedChecks 為 false 時一失敗就回報", async () => {
+      const run = await concurrentRun("f-chk-no-rerun", { rerunFailedChecks: false, checks: [{ name: "flaky", cmd: failing(1) }] });
+      expect(await runChecks(run)).toContain("flaky 失敗");
+      expect(runs(run.id)).toBe(1);
+    });
+  });
 
   it("withFiles：npm run 用 -- 轉給 script，檔名加引號", () => {
     expect(withFiles("pnpm run lint", ["src/a.ts"])).toBe("pnpm run lint 'src/a.ts'");
     expect(withFiles("npm run lint", ["a b.ts", "it's.ts"])).toBe("npm run lint -- 'a b.ts' 'it'\\''s.ts'");
     expect(withFiles("npm run lint -- --ignore-pattern 'x'", ["a.ts"])).toBe("npm run lint -- --ignore-pattern 'x' 'a.ts'");
+  });
+});
+
+describe("任務級狀態重置", () => {
+  it("TASK_RESET 涵蓋所有任務級欄位，套在髒的 run 上全部歸零", () => {
+    expect(Object.keys(TASK_RESET).sort()).toEqual(["lastTestsAuthor", "taskBase", "taskPhase", "testsCommit", "testsRedos"]);
+    const dirty = { taskPhase: "review" as const, taskBase: "a", testsCommit: "b", lastTestsAuthor: "x", testsRedos: 2, lastWriter: "w", fixSource: "verify" as const };
+    expect({ ...dirty, ...TASK_RESET }).toMatchObject({ taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined, testsRedos: undefined, lastWriter: "w" });
+    expect({ ...dirty, ...TASK_RESET, ...NO_WRITER_CONTEXT }).toMatchObject({ lastWriter: undefined, lastReviewer: undefined, fixSource: undefined });
   });
 });

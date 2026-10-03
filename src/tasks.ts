@@ -207,6 +207,51 @@ export function outOfScopeFiles(tasks: TaskItem[], index: number, changed: strin
   return found;
 }
 
+/** 任務的所有直接與間接相依 */
+function ancestors(tasks: readonly TaskItem[], id: string): Set<string> {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const seen = new Set<string>();
+  const stack = [...(byId.get(id)?.dependsOn ?? [])];
+  while (stack.length) {
+    const dep = stack.pop()!;
+    if (seen.has(dep)) continue;
+    seen.add(dep);
+    stack.push(...(byId.get(dep)?.dependsOn ?? []));
+  }
+  return seen;
+}
+
+/**
+ * 沒有相依關係（任一方向的相依鏈都連不到對方）、卻描述了同一個檔案或同一個目錄底下檔案的任務配對。
+ * 這樣的任務會各在自己的車道同時執行，合併時才發現衝突，整條車道得從寫測試重來。
+ * 人工確認的任務不進實作，不算。
+ */
+export function overlappingParallelTasks(tasks: readonly TaskItem[]): { a: string; b: string; paths: string[] }[] {
+  const active = tasks.filter((t) => t.kind !== "confirm");
+  const deps = new Map(active.map((t) => [t.id, ancestors(tasks, t.id)]));
+  const owned = new Map(active.map((t) => [t.id, { files: describedPaths(t.description), dirs: describedDirs(t.description) }]));
+  const found: { a: string; b: string; paths: string[] }[] = [];
+  for (const [i, a] of active.entries()) {
+    for (const b of active.slice(i + 1)) {
+      if (deps.get(a.id)!.has(b.id) || deps.get(b.id)!.has(a.id)) continue;
+      const fa = owned.get(a.id)!;
+      const fb = owned.get(b.id)!;
+      const paths = new Set<string>();
+      for (const file of fa.files) if (fb.files.has(file) || fb.dirs.some((dir) => file.startsWith(dir))) paths.add(file);
+      for (const file of fb.files) if (fa.dirs.some((dir) => file.startsWith(dir))) paths.add(file);
+      for (const dir of fa.dirs) if (fb.dirs.some((other) => dir.startsWith(other) || other.startsWith(dir))) paths.add(dir);
+      if (paths.size) found.push({ a: a.id, b: b.id, paths: [...paths] });
+    }
+  }
+  return found;
+}
+
+export function parallelOverlapMessage(found: { a: string; b: string; paths: string[] }[]): string {
+  return found
+    .map((item) => `${item.a} 與 ${item.b} 沒有相依關係，但都描述了 ${item.paths.join("、")}，平行執行時會在合併時衝突、整條車道重做。請用 dependsOn 讓其中一個排在另一個之後（共用的檔案由先做的任務處理），或把兩個任務合併成一個。`)
+    .join("\n");
+}
+
 export function outOfScopeMessage(found: { file: string; owner: string }[]): string {
   return `這些檔案是後面的任務負責的，不屬於這個任務，已還原你的變更：${found.map((item) => `${item.file}（${item.owner}）`).join("、")}。只改這個任務描述提到、或完成它必須動的檔案；若認為任務切分有誤，請寫進 .flow/handoff-response.json 的 newIssues，不要順手做掉。`;
 }

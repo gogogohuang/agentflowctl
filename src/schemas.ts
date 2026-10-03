@@ -264,6 +264,8 @@ export const RepoConfig = z.object({
   taskConcurrency: z.number().int().min(1).optional(),
   /** 同一次驗證裡 typecheck、lint、test、build 等檢查最多幾個同時執行；沒寫不限，1 為一次一個 */
   checksConcurrency: z.number().int().min(1).optional(),
+  /** 檢查失敗時先原樣重跑失敗的那幾項一次；第二次通過視為 flaky、放行並留下紀錄，兩次都失敗才叫修正者。false＝一失敗就進修正 */
+  rerunFailedChecks: z.boolean().default(true),
   /** 計畫審查僵持不下（達到重試上限或意見不再變化）時，交給第三方 agent 仲裁，而不是停下來等人 */
   planArbiter: z.boolean().default(true),
   /** 任務夠多、能依檔案分群時，計畫審查改成每輪一次索引加上只審有變動的任務群 */
