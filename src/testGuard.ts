@@ -66,13 +66,14 @@ export function brokenPackageImport(output: string, imports: Set<string>): strin
 export function foreignFailingTests(output: string, taskTests: string[]): string[] {
   // eslint-disable-next-line no-control-regex
   const plain = output.replace(/\u001b\[[0-9;]*m/g, "");
-  const base = (f: string) => f.split("/").pop() ?? f;
-  const mine = new Set(taskTests.map(base));
+  // 輸出的路徑可能相對於不同目錄，以路徑結尾比對；只比檔名會把同名的別處測試誤認成本任務的
+  const norm = (f: string) => f.replace(/^\.\//, "");
+  const isMine = (f: string) => taskTests.some((t) => norm(t) === norm(f) || norm(t).endsWith(`/${norm(f)}`) || norm(f).endsWith(`/${norm(t)}`));
   const foreign = new Set<string>();
   for (const line of plain.split("\n")) {
     if (!/\bFAIL\b|[❯×✗✕]/.test(line)) continue;
     for (const m of line.matchAll(/[\w@.\/-]+\.(?:test|spec)\.[cm]?[jt]sx?/g)) {
-      if (!mine.has(base(m[0]))) foreign.add(m[0]);
+      if (!isMine(m[0])) foreign.add(m[0]);
     }
   }
   return [...foreign];
