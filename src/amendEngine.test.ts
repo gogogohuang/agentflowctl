@@ -25,12 +25,13 @@ const prompt = readFileSync(0, "utf8");
 const phase = prompt.includes("<red_output>") ? "code" : prompt.includes("<no_tdd>") ? "direct" : "tests";
 writeFileSync(\`.flow/prompt-\${phase}.txt\`, prompt);
 if (phase === "tests" && existsSync(".flow/amend-request.txt")) renameSync(".flow/amend-request.txt", ".flow/amend-request.json");
+if (phase === "code" && existsSync(".flow/amend-code-request.txt")) renameSync(".flow/amend-code-request.txt", ".flow/amend-request.json");
 if (phase === "tests") writeFileSync("feature.test.mjs", 'import { answer } from "./feature.mjs";\\nif (answer !== 42) process.exit(1);\\n');
 else writeFileSync("feature.mjs", "export const answer = 42;\\n");
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
 `);
 
-async function amendRun(id: string, request: unknown, { amendments, maxAgentRuns = 2 }: { amendments?: Record<string, number>; maxAgentRuns?: number } = {}) {
+async function amendRun(id: string, request: unknown, { amendments, maxAgentRuns = 2, requestIn = "amend-request.txt" }: { amendments?: Record<string, number>; maxAgentRuns?: number; requestIn?: string } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
@@ -44,7 +45,7 @@ async function amendRun(id: string, request: unknown, { amendments, maxAgentRuns
     { id: "T-1", title: "第一個", description: "已完成", dependsOn: [], acceptance: ["AC-1"] },
     { id: "T-2", title: "第二個", description: "匯出 answer", dependsOn: ["T-1"], acceptance: ["AC-2"] },
   ]));
-  writeFileSync(join(flowDir(id), "amend-request.txt"), JSON.stringify(request));
+  writeFileSync(join(flowDir(id), requestIn), JSON.stringify(request));
   const now = new Date().toISOString();
   // T-1 在 taskIndex 之前，視為已完成；T-2 從紅燈開始，maxAgentRuns 讓第二次 agent 執行後就停下
   return advance({
@@ -70,6 +71,18 @@ describe("順序模式的修補請求", () => {
     expect(readFileSync(join(flowDir(run.id), "prompt-tests.txt"), "utf8")).toContain("T-3");
     expect(existsSync(join(flowDir(run.id), "amend-request.json"))).toBe(false);
     expect(run.taskPhase).toBe("code");
+  }, 30_000);
+
+  it("請求者在綠燈階段提出請求時，丟棄實作並回到紅燈，先做修補任務", async () => {
+    // 紅燈照常完成並提交，綠燈階段的 agent 才寫出請求；請求檔被消耗後 run 回到紅燈
+    const run = await amendRun("amend-code", goodRequest, { requestIn: "amend-code-request.txt", maxAgentRuns: 3 });
+    expect(tasksOf(run.id).map((t) => t.id)).toEqual(["T-1", "T-3", "T-2"]);
+    expect(run.amendments).toEqual({ "T-1": 1 });
+    expect(run.taskPhase).toBe("code");
+    expect(run.testsCommit).toBeDefined();
+    expect(existsSync(join(flowDir(run.id), "amend-request.json"))).toBe(false);
+    // 第三次 agent 執行寫的是修補任務的紅燈
+    expect(readFileSync(join(flowDir(run.id), "prompt-tests.txt"), "utf8")).toContain("T-3");
   }, 30_000);
 
   it("無效的請求用 retry 把原因寫給請求者，不改任務清單", async () => {

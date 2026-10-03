@@ -1299,9 +1299,12 @@ async function amendIfRequested(run: FlowRun, tasks: TaskItem[], task: TaskItem)
   if (!existsSync(file)) return undefined;
   const raw = readFileSync(file, "utf8");
   const result = applyAmendRequest(run, raw, task.id, tasks, doneSet(tasks, run.taskIndex, run.doneTasks));
-  rmSync(file, { force: true });
-  if (result.kind === "invalid") return retry(run, `${task.id}:amend`, result.reason, "implement", "amend_invalid");
+  if (result.kind === "invalid") {
+    rmSync(file, { force: true });
+    return retry(run, `${task.id}:amend`, result.reason, "implement", "amend_invalid");
+  }
   if (result.kind === "limit") {
+    rmSync(file, { force: true });
     const reason = amendLimitFeedback(result.reason);
     mkdirSync(flowDir(run.id), { recursive: true });
     writeFileSync(flowFile(run, "feedback.md"), `# 修補請求未被接受\n\n${reason}\n`);
@@ -1311,10 +1314,13 @@ async function amendIfRequested(run: FlowRun, tasks: TaskItem[], task: TaskItem)
   if (run.taskPhase === "tests" || !run.taskBase) await discardChanges(repo);
   else await resetTo(repo, run.taskBase);
   const attempts = Object.fromEntries(Object.entries(result.run.attempts).filter(([key]) => !key.startsWith(`${task.id}:`)));
-  return {
+  const reset = saveRun({
     ...result.run, attempts, taskPhase: "tests", taskBase: undefined, testsCommit: undefined, lastTestsAuthor: undefined,
     testsRedos: undefined, lastWriter: undefined, lastReviewer: undefined, fixSource: undefined,
-  };
+  });
+  // 請求檔最後才刪：中途中斷時檔案還在，decideAmend 會判斷為已套用，重置（可重複執行）再做一次
+  rmSync(file, { force: true });
+  return reset;
 }
 
 async function implementStage(run: FlowRun): Promise<FlowRun> {
