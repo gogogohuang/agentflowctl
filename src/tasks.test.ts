@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TaskItem } from "./schemas.js";
-import { confirmationChecklist, splitHumanItems, confirmationLines, confirmationTasks, describedPaths, orderTasks, outOfScopeFiles, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
+import { confirmationChecklist, splitHumanItems, confirmationLines, confirmationTasks, describedDirs, describedPaths, orderTasks, outOfScopeFiles, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 
 const task = (id: string, dependsOn: string[] = [], acceptance = ["AC-1"]) =>
   TaskItem.parse({ id, title: id, description: id, dependsOn, acceptance });
@@ -190,5 +190,27 @@ describe("任務範圍", () => {
   it("前面任務的檔案、最後一個任務都不受限", () => {
     expect(outOfScopeFiles(tasks, 1, ["src/utils/getPageContainer.ts"])).toEqual([]);
     expect(outOfScopeFiles(tasks, 2, ["src/components/CreateRewardForm.tsx"])).toEqual([]);
+  });
+});
+
+describe("範圍守衛認得目錄與根目錄檔案", () => {
+  const mk = (id: string, description: string) => ({ id, title: id, description, dependsOn: [], acceptance: ["AC-1"] });
+
+  it("描述裡的目錄與根目錄檔案也當成該任務負責的範圍", () => {
+    expect(describedDirs("整理 src/auth/ 底下的檔案，並更新 ./docs/api/")).toEqual(["src/auth/", "docs/api/"]);
+    expect(describedDirs("改 src/auth/login.ts，網址是 https://example.com/x/")).toEqual([]);
+    expect(describedDirs("改 src/ 底下")).toEqual([]);
+    expect([...describedPaths("調整 package.json 與 tsconfig.json，改成 Next.js 的寫法")]).toEqual(["package.json", "tsconfig.json", "Next.js"]);
+  });
+
+  it("目前任務動到後面任務描述的目錄底下的檔案，算越界；自己描述了同一個目錄就不算", () => {
+    const tasks = [mk("T-1", "新增 src/a.ts"), mk("T-2", "整理 src/auth/ 底下的檔案")];
+    expect(outOfScopeFiles(tasks, 0, ["src/a.ts", "src/auth/login.ts"])).toEqual([{ file: "src/auth/login.ts", owner: "T-2" }]);
+    expect(outOfScopeFiles([mk("T-1", "整理 src/auth/"), mk("T-2", "整理 src/auth/")], 0, ["src/auth/login.ts"])).toEqual([]);
+  });
+
+  it("後面任務描述的根目錄檔案也受保護；沒有任何任務提到的檔案放行", () => {
+    const tasks = [mk("T-1", "新增 src/a.ts"), mk("T-2", "更新 package.json")];
+    expect(outOfScopeFiles(tasks, 0, ["package.json", "src/helper.ts"])).toEqual([{ file: "package.json", owner: "T-2" }]);
   });
 });

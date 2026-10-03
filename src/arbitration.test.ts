@@ -20,7 +20,7 @@ describe("計畫仲裁結果", () => {
       items: [{ criterion: "AC-12", status: "not_met", note: "車資輸入沒有行為測試" }],
     })).toEqual({
       verdict: "changes_requested",
-      items: [{ criterion: "AC-12", status: "not_met", note: "車資輸入沒有行為測試" }],
+      items: [{ criterion: "AC-12", status: "not_met", note: "車資輸入沒有行為測試", evidence: "" }],
     });
   });
 

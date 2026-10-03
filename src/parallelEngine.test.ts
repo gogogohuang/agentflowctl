@@ -37,6 +37,7 @@ import { basename } from "node:path";
 const ROOT = ${JSON.stringify(root)};
 const slot = basename(process.cwd());
 const mode = readFileSync(".flow/review-mode.txt", "utf8").trim();
+const acs = existsSync(".flow/acceptance.json") ? JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })) : [];
 appendFileSync(ROOT + "/events.log", "start " + slot + "\\n");
 if (existsSync(ROOT + "/quota-" + slot)) { console.error("usage limit reached"); process.exit(1); }
 if (existsSync(ROOT + "/barrier")) {
@@ -48,7 +49,7 @@ if (existsSync(ROOT + "/sleep")) await new Promise((r) => setTimeout(r, Number(r
 if (existsSync(ROOT + "/tamper")) { writeFileSync("feature.ts", "亂改"); writeFileSync(".flow/acceptance.json", "[]"); }
 const context = readFileSync(".flow/handoff-context.md", "utf8");
 const id = context.match(/## ([a-f0-9]+)：/)?.[1];
-writeFileSync(mode.startsWith("plan-") ? ".flow/plan-review.json" : ".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+writeFileSync(mode.startsWith("plan-") ? ".flow/plan-review.json" : ".flow/review.json", JSON.stringify({ verdict: "approve", items: mode.startsWith("plan-") ? [] : acs }));
 writeFileSync(".flow/handoff-response.json", JSON.stringify({
   newIssues: [],
   dispositions: mode.endsWith("close") && id ? [{ id, status: "resolved", reason: "已核對", evidence: "src/api.test.ts:25" }] : [],
@@ -440,12 +441,12 @@ const slot = basename(process.cwd());
 const context = readFileSync(".flow/handoff-context.md", "utf8");
 const id = context.match(/## ([a-f0-9]+)：/)?.[1];
 if (slot === "slot-0") {
-  writeFileSync(".flow/review.json", JSON.stringify({ verdict: "changes_requested", items: [{ criterion: "AC-1", status: "not_met", note: "沒做" }] }));
+  writeFileSync(".flow/review.json", JSON.stringify({ verdict: "changes_requested", items: [{ criterion: "AC-1", status: "not_met", note: "沒做" }, ...JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })).filter((a) => a.criterion !== "AC-1")] }));
   writeFileSync(".flow/handoff-response.json", JSON.stringify({
     newIssues: [{ kind: "action", summary: "並行新增程式碼事項", evidence: "feature.ts:1", targetStage: "code" }], dispositions: [],
   }));
 } else {
-  writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: [] }));
+  writeFileSync(".flow/review.json", JSON.stringify({ verdict: "approve", items: JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).map((a) => ({ criterion: a.id, status: "met", note: "" })) }));
   writeFileSync(".flow/handoff-response.json", JSON.stringify({
     newIssues: [], dispositions: id ? [{ id, status: "resolved", reason: "已核對", evidence: "src/api.test.ts:25" }] : [],
   }));

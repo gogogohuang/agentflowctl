@@ -242,6 +242,7 @@ stderr：
 | `code_not_written` | 未實作 | 舊版：略過 TDD 的實作沒有 commit 時重試。現在沒有檔案變更會略過該任務，不再寫入這個分類 |
 | `tests_not_red` | 紅燈測試未失敗 | 實作前測試就全過 |
 | `tests_modified` | 實作改了測試 | 綠燈階段動到測試檔 |
+| `checks_weakened` | 繞過檢查 | 修正或實作新增了 `skip`／`only`／`todo`、`@ts-ignore`、`@ts-nocheck`、`eslint-disable`，或修正讓測試檔的斷言變少 |
 | `tests_not_green` | 測試仍未通過 | 實作後測試失敗 |
 | `tests_deleted` | 刪除測試檔 | fix 刪測試 |
 | `merge_tests_failed` | 平行任務合併後測試失敗 | 車道合併回 run 分支後全套測試未通過（沒有文字衝突的語意衝突），還原合併並讓車道重做 |
@@ -316,11 +317,11 @@ run 因 Ctrl-C、失敗、額度暫停或等待核准而停下時，終端機會
 | `defaultModels` | `{}` | 依 `claude`、`codex`、`gemini` adapter 指定全域預設 model；agent 的 `model` 優先，兩者都沒設時使用各 CLI 的預設。`command` adapter 不套用 |
 | `fixStrategy` | `ring` | `ring`：審查意見隨機交給審查者以外的一家；`author`：交回最後作者 |
 | `tddSplit` | `true` | 測試與實作是否分開 |
-| `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve`（任務審查與最後的程式碼審查都適用） |
+| `reviewQuorum` | `1` | 程式碼需要幾位不同審查者都 `approve`（任務審查與最後的程式碼審查都適用）。預設只有一位，單一模型的盲點就是最後一道關卡；重要專案建議設 `2` 以上，代價是每次審查多花一次 agent 呼叫 |
 | `planReviewQuorum` | `1` | 計畫需要幾位不同審查者都 `approve` |
 | `planArbiter` | `true` | 計畫審查僵持，或第 2 輪（修訂過一次）仍有人要求修改時交付仲裁，不等到重試上限。關掉之後，僵持時照常退回修訂，要求修改的審查輪數達到 `maxAttempts` 時 run 失敗（重試達上限） |
 | `planReviewLayers` | `{ "enabled": true, "minTasks": 7, "maxGroups": 5, "tasksPerGroup": 3 }` | 計畫分層審查（見「計畫」一節）。`enabled`：`false` 時一律整份審查；`minTasks`：任務數達到這個值才考慮分層，整數至少 2；`maxGroups`：每輪最多幾群，整數至少 2；`tasksPerGroup`：群數也不超過任務數除以這個值（無條件捨去），整數至少 1。子欄位都可省略；寫了未知子欄位會驗證失敗 |
-| `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續並記錄爭議；`stop` 停下 |
+| `tieBreak` | `proceed` | 兩家仲裁意見分歧時：`proceed` 繼續，沒核准的那一方的每則意見另記成程式碼類的待處理事項（`action`），最終審查必須結案或明確接受，否則不能開 PR；`stop` 停下 |
 | `maxAgentRuns` | `60` | 單一 run 最多執行幾次 agent |
 | `maxAttempts` | `5` | 同一關連續失敗幾次後停止，至少 3 |
 | `verbose` | `false` | 顯示 agent 文字、工具呼叫與專案指令，效果同 `-v` |
@@ -509,7 +510,7 @@ agentflowctl model stage taskReview high
 | 兩家 | 兩家各自在全新 context 裡判斷 | 都核准就繼續；都不核准就依裁決意見修訂並重新審查；分歧依 `tieBreak` |
 | 一家 | 同一家 | 由它自己仲裁 |
 
-兩家時的仲裁是雙盲的。仲裁者只看計畫、`.flow/plan-replies.md`（審查意見的處理結果；沒有這份檔表示尚未回應），以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、任務審查、verify 與程式碼審查。
+兩家時的仲裁是雙盲的。仲裁者只看計畫、`.flow/plan-replies.md`（審查意見的處理結果；沒有這份檔表示尚未回應），以及一份不含審查者名稱的爭議清單（`.flow/dispute.md`）。爭議清單用 `<issue>` 包住每則意見；給修訂者的 `.flow/feedback.md` 則用 `<opinion author="…">` 包住每位審查者的意見，避免意見內文與外層結構混淆。帶有名稱的審查紀錄移到 worktree 以外。`tieBreak` 預設 `proceed`，因為後面還有測試紅燈、綠燈、任務審查、verify 與程式碼審查；分歧時沒核准的意見會記進交接帳本，最終審查必須處理，不會只留在 `plan.md`。
 
 計畫定案或仲裁最終停止時，裁決與每位仲裁者的理由附在 `plan.md` 最後的「仲裁紀錄」。需再修訂時，裁決理由寫進 `.flow/feedback.md`，供修訂者處理；重新審查會從第一輪計數。原始審查與每輪仲裁紀錄在 `.agentflowctl/runs/<id>/reviews/`。兩家都要求修改時不因仲裁輪數而直接失敗；整個 run 仍受 `maxAgentRuns` 限制。
 
@@ -539,7 +540,10 @@ agentflowctl model stage taskReview high
 每個任務的寫測試與寫實作 prompt 只帶入該任務對應的驗收條件；agent 優先讀任務與相關程式碼，遇到資訊不足或矛盾才查規格、計畫的相關段落。agent 可先跑相關測試，紅燈與完整測試仍由外部流程執行與判定，減少重複讀取文件和全套測試輸出所用的 token。
 計畫定案後（實作、修正、程式碼審查）不可修改 `.flow/` 裡的規格與計畫檔（`spec.md`、`acceptance.json`、`plan.md`、`tasks.json`、`tasks.ordered.json`）；實作與修正時被改就還原並重試，因為寫出的程式碼可能依賴被改過的規格，必須重寫；審查者只交出審查結果，修改直接還原即可，不必重跑審查。對規格有疑慮要寫進交接事項。
 每個任務綠燈後先做任務審查：審查者只看這個任務寫測試前到目前的 diff（`.flow/diff.patch`）與這個任務的驗收條件，審查紀錄存成 `.flow/review-<任務>-<審查者>.json`。審查者依輪替排定，而且一定避開最後實作者；有第三家可選時也避開測試作者，只有兩家或審查人數不足時才由測試作者審查。任務審查不要求結清所有交接事項（可能屬於後面的任務），最後的程式碼審查才會擋。審查通過後執行任務驗證（與 verify 相同的 `install` 與 `checks`）。審查要求修改或驗證失敗都進入任務修正，修正者的挑法與 fix 相同，修完回到任務審查再驗證。審查執行或任務修正若先失敗、後成功，會清除各自的連續失敗次數。所有任務完成後，仍照原本流程對整份變更跑一次 verify 與程式碼審查。
-程式碼審查仍逐條核對所有驗收條件，但只在 `review.json` 列出未通過或其他重要問題；先看 diff 與相關檔案，驗收條件不清楚時才查規格。修正階段先依 `feedback.md` 定位問題並執行相關檢查，完整檢查仍由後續 verify 執行，以減少反覆讀取完整文件與測試輸出。
+程式碼審查（任務審查與最後的整體審查）逐條核對驗收條件，`review.json` 的 `items` 必須**每條驗收條件各一筆**（`criterion` 填 `AC-n`，通過寫 `met`，未通過寫 `not_met` 或 `partial`）：任務審查只需涵蓋該任務對應的條件，整體審查涵蓋 `acceptance.json` 全部。程式比對編號，漏掉任何一條、或寫出不存在的編號，視為 `format_invalid`，整輪審查重跑。審查者另外發現、不屬於任何驗收條件的問題是「額外發現」：`criterion` 寫簡短描述（不可用 `AC-n`），必須在 `evidence` 寫出檔案位置或檢查證據（沒寫同樣是 `format_invalid`），且只限這次變更的缺陷，不可是新需求或風格偏好。額外發現在 `feedback.md` 以 `<extra_finding>` 與驗收條件的 `<issue>` 分開標示，修正者先依 evidence 確認屬實才改，認為是新需求就不實作並以 `info` 寫進 `newIssues`。為避免審查者靠不斷提新發現讓範圍膨脹，額外發現只在該關第一次審查時能擋關（重試計數為 0）；修過一輪後若只剩額外發現，審查視同核准，這些發現改記成交接帳本裡的 `info`。審查時先看 diff 與相關檔案，驗收條件不清楚才查規格。
+不走 TDD 的任務沒有任何檔案變更而被略過時，程式在交接帳本留一筆 `info`，最後的整體審查要核對該任務的驗收條件是否本來就成立。
+修正階段新增 `skip`／`only`／`todo`（測試檔）或 `@ts-ignore`／`@ts-nocheck`／`eslint-disable`（程式碼檔案）會被還原並以 `checks_weakened` 重試；測試檔的斷言變少在前兩次嘗試也會擋下，之後放行並印出警告（可能是合理地刪掉重複的斷言）。綠燈階段的實作同樣不可新增型別或 lint 抑制註解。範圍守衛（動到後面任務負責的檔案）除了明寫的檔案路徑，也認得描述裡的目錄（至少兩層，結尾有斜線，例如 `src/auth/`）與根目錄檔案（`package.json` 等）；沒有任何任務提到的檔案不受限，守衛達次數上限放行時會印出警告。
+修正階段先依 `feedback.md` 定位問題並執行相關檢查，完整檢查仍由後續 verify 執行，以減少反覆讀取完整文件與測試輸出。
 
 ## Prompt 結構
 

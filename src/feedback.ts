@@ -9,6 +9,11 @@ export function reviewIssue(criterion: string, status: string, note: string): st
   return `<issue criterion="${escapeXml(criterion)}" status="${escapeXml(status)}">${escapeXml(note)}</issue>`;
 }
 
+/** 審查者提出、不屬於任何驗收條件的額外發現：和 <issue> 分開標示，修正者要先確認證據屬實、確實是缺陷才處理 */
+export function extraFinding(status: string, note: string, evidence: string): string {
+  return `<extra_finding status="${escapeXml(status)}" evidence="${escapeXml(evidence)}">${escapeXml(note)}</extra_finding>`;
+}
+
 export function opinion(author: string, issues: string[], verdict?: string): string {
   const name = escapeXml(author);
   const outcome = verdict ? ` verdict="${escapeXml(verdict)}"` : "";

@@ -135,9 +135,13 @@ export const ReviewResult = z.object({
       criterion: z.string(),
       status: z.enum(["met", "not_met", "partial"]),
       note: z.string().default(""),
+      /** 程式碼審查的「額外發現」（criterion 不是 AC 編號）必須附上檔案位置或檢查證據；對應驗收條件的項目可以不寫 */
+      evidence: z.string().default(""),
     }),
   ),
 });
+
+export type ReviewResult = z.infer<typeof ReviewResult>;
 
 export const DivergeFrame = z.enum(["acceptance", "split", "invert"]);
 export type DivergeFrame = z.infer<typeof DivergeFrame>;

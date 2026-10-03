@@ -77,3 +77,57 @@ export function foreignFailingTests(output: string, taskTests: string[]): string
   }
   return [...foreign];
 }
+
+export interface Weakening {
+  file: string;
+  /** skip＝新增 skip／only／todo；suppress＝新增 @ts-ignore／@ts-nocheck／eslint-disable；assertions＝測試檔的斷言變少 */
+  kind: "skip" | "suppress" | "assertions";
+  count: number;
+}
+
+const SKIP_RE = /\b(?:it|test|describe|context)\.(?:skip|todo|only)\b|\b(?:xit|xtest|xdescribe)\s*\(|\.only\s*\(/;
+const SUPPRESS_RE = /@ts-ignore|@ts-nocheck|eslint-disable/;
+/** 抑制註解只在程式碼檔案才有意義；文件、設定與鎖定檔提到它們不算 */
+const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
+const ASSERT_RE = /\b(?:expect|assert\w*)\s*[(.]/;
+
+/**
+ * 從 unified diff 找出「讓檢查變容易過」的變更。以每個檔案新增與移除的行數相抵，所以搬移程式碼不會誤判。
+ * skip／suppress 沒有正當理由；assertions 可能是合理地刪掉重複的斷言，由呼叫端決定是否擋下。
+ * .flow/ 是交接檔，不看。
+ */
+export function weakenedChecks(diff: string, testRe: RegExp): Weakening[] {
+  const files = new Map<string, { added: string[]; removed: string[] }>();
+  let current: { added: string[]; removed: string[] } | undefined;
+  let name = "";
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ ")) {
+      name = line.slice(4).replace(/^b\//, "");
+      current = name === "/dev/null" || name.startsWith(".flow/") ? undefined : (files.get(name) ?? files.set(name, { added: [], removed: [] }).get(name));
+    } else if (line.startsWith("--- ")) {
+      current = undefined;
+    } else if (current && line.startsWith("+")) {
+      current.added.push(line.slice(1));
+    } else if (current && line.startsWith("-")) {
+      current.removed.push(line.slice(1));
+    }
+  }
+  const net = (lines: { added: string[]; removed: string[] }, re: RegExp) =>
+    lines.added.filter((l) => re.test(l)).length - lines.removed.filter((l) => re.test(l)).length;
+  const found: Weakening[] = [];
+  for (const [file, lines] of files) {
+    const isTest = testRe.test(file);
+    const skipped = isTest ? net(lines, SKIP_RE) : 0;
+    if (skipped > 0) found.push({ file, kind: "skip", count: skipped });
+    const suppressed = SOURCE_FILE.test(file) ? net(lines, SUPPRESS_RE) : 0;
+    if (suppressed > 0) found.push({ file, kind: "suppress", count: suppressed });
+    const lost = isTest ? -net(lines, ASSERT_RE) : 0;
+    if (lost > 0) found.push({ file, kind: "assertions", count: lost });
+  }
+  return found;
+}
+
+export function weakenedMessage(found: Weakening[]): string {
+  const label = { skip: "新增 skip／only／todo", suppress: "新增 @ts-ignore／@ts-nocheck／eslint-disable", assertions: "斷言變少" } as const;
+  return `這次變更讓檢查變得比較容易通過，已還原你的變更：${found.map((w) => `${w.file}（${label[w.kind]} ${w.count} 處）`).join("、")}。請從根本原因修正，不要用跳過測試、抑制型別或 lint、減少斷言的方式讓檢查通過；測試本身確實有誤時，只修正有誤的斷言並在 <concerns> 說明理由。`;
+}

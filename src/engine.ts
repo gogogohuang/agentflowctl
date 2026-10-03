@@ -5,7 +5,8 @@ import { config } from "./config.js";
 import { decideAmend } from "./amend.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
-import { escapeXml, opinion, reviewIssue } from "./feedback.js";
+import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
+import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
 import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
 import { confirmationDetailsPath, confirmationsPath, confirmationsRestoredPath, divergePath, flowDir, laneId, laneParts, lanesDir, logDir, ownerId, planArbitrationPath, planReviewStatePath, projectRoot, runDir, worktreeDir } from "./paths.js";
@@ -62,7 +63,7 @@ import {
 } from "./planReview.js";
 import { confirmationChecklist, descriptionWaivesRed, splitHumanItems, orderTasks, outOfScopeFiles, outOfScopeMessage, taskAcceptance, validateTaskComplexity, validateTddFlag } from "./tasks.js";
 import { readJsonFile, renderPrompt, tail } from "./util.js";
-import { brokenPackageImport, foreignFailingTests, packageImports, violatingTestChanges } from "./testGuard.js";
+import { brokenPackageImport, foreignFailingTests, packageImports, violatingTestChanges, weakenedChecks, weakenedMessage } from "./testGuard.js";
 
 // ───────────────────────── 共用工具 ─────────────────────────
 
@@ -1244,9 +1245,31 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
   );
   if (decision === "proceed") {
     info(run, `   → ${summary}`);
+    // 分歧時繼續實作，但沒核准的那一方的意見不能只留在 plan.md：記成程式碼類的待處理事項，最終審查必須結案或明確接受
+    if (!unanimous) recordArbitrationDissent(run, arbitrationRound, verdicts);
     return planSettled(run, "plan-review");
   }
   return { ...run, stage: "failed", failedStage: "plan_review", failureCategory: "arbitration_stop", failureReason: `${summary}，需要人工決定（見 plan.md 的仲裁紀錄）` };
+}
+
+/** 仲裁分歧後繼續實作：把不核准的仲裁者的每則意見記成 code 目標的 action；同一輪重播不會重複記 */
+function recordArbitrationDissent(run: FlowRun, round: number, verdicts: { arbiter: string; verdict: string; markdownNotes: string[] }[]): void {
+  for (const v of verdicts.filter((item) => item.verdict !== "approve" && item.markdownNotes.length)) {
+    const callKey = `arbitration-dissent:${round}:${v.arbiter}`;
+    acceptHandoff(
+      run.id, callKey, { stage: "plan_review", step: "plan-arbiter", agent: v.arbiter, callKey },
+      {
+        newIssues: v.markdownNotes.map((note) => ({
+          kind: "action" as const,
+          summary: `計畫仲裁分歧時未被採納的意見：${note.replace(/^- /, "")}`,
+          evidence: "plan.md 的仲裁紀錄",
+          targetStage: "code" as const,
+        })),
+        dispositions: [],
+      },
+      "reviewer",
+    );
+  }
 }
 
 function planTamperedMessage(files: string[]): string {
@@ -1593,6 +1616,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const codeCommit = await commitAll(repo, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
   if (!tdd && !codeCommit) {
     info(run, `⏭️  [${progress}] 沒有檔案變更，略過這個任務`);
+    noteSkippedTask(run, task, codeAuthor);
     return finishTask(succeed(run, key, "implement"));
   }
   const touched = tdd
@@ -1606,12 +1630,19 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     await resetTo(repo, testsCommit);
     return retry(run, key, `實作階段不可修改測試檔，已還原你的變更：${touched.join(", ")}`, "implement", "tests_modified");
   }
-  if ((run.attempts[key] ?? 0) < SCOPE_GUARD_ATTEMPTS) {
-    const strays = outOfScopeFiles(tasks, run.taskIndex, await changedFiles(repo, testsCommit, await headCommit(repo)));
-    if (strays.length) {
+  // 實作可以新增程式碼，但不可以用 @ts-ignore、eslint-disable 之類的方式讓型別與 lint 檢查閉嘴
+  const suppressed = weakenedChecks(await git(repo, "diff", testsCommit, await headCommit(repo)), testRe).filter((w) => w.kind === "suppress");
+  if (suppressed.length) {
+    await resetTo(repo, testsCommit);
+    return retry(run, key, weakenedMessage(suppressed), "implement", "checks_weakened");
+  }
+  const strays = outOfScopeFiles(tasks, run.taskIndex, await changedFiles(repo, testsCommit, await headCommit(repo)));
+  if (strays.length) {
+    if ((run.attempts[key] ?? 0) < SCOPE_GUARD_ATTEMPTS) {
       await resetTo(repo, testsCommit);
       return retry(run, key, outOfScopeMessage(strays), "implement", "out_of_scope");
     }
+    info(run, `   ⚠️  動到後面任務負責的檔案（${strays.map((s) => `${s.file}→${s.owner}`).join("、")}），已達守衛次數上限，放行`);
   }
   // 沒有測試框架時沒有東西可跑，後面的驗證與審查照常把關
   const green = framework ? await runCommand(target(run, `${task.id}-green`, CMD_AGENT), testCmd) : { ok: true as const, output: "", seq: 0 };
@@ -1843,6 +1874,8 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     gate: false,
     runKey: `${task.id}:review-run`,
     backTo: "implement",
+    expectedAcs: task.acceptance,
+    attemptKey: key,
   });
   if ("run" in result) return result.run;
   const reviewed = succeed(result.state, `${task.id}:review-run`, "implement");
@@ -2041,12 +2074,13 @@ async function applyFix(
     return again(`${feedback}\n\n另外：${planTamperedMessage(tampered)}`, "plan_tampered");
   }
   await commitAll(repo, `${opts.commitScope}: ${why} [${actual}]`);
-  const stray = (run.attempts[opts.key] ?? 0) < SCOPE_GUARD_ATTEMPTS
-    ? opts.scopeGuard?.(await changedFiles(repo, before, await headCommit(repo)))
-    : undefined;
+  const stray = opts.scopeGuard?.(await changedFiles(repo, before, await headCommit(repo)));
   if (stray) {
-    await resetTo(repo, before);
-    return again(`${feedback}\n\n另外：${stray}`, "out_of_scope");
+    if ((run.attempts[opts.key] ?? 0) < SCOPE_GUARD_ATTEMPTS) {
+      await resetTo(repo, before);
+      return again(`${feedback}\n\n另外：${stray}`, "out_of_scope");
+    }
+    info(run, "   ⚠️  修正動到後面任務負責的檔案，已達守衛次數上限，放行");
   }
   const testRe = new RegExp(cfg.testPattern);
   const deleted = (await changedFiles(repo, before, await headCommit(repo), "D")).filter((f) => testRe.test(f));
@@ -2054,6 +2088,14 @@ async function applyFix(
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`, "tests_deleted");
   }
+  // skip／suppress 沒有正當理由，一律退回；斷言變少可能是合理地刪掉重複的，只在前幾次嘗試擋下
+  const weak = weakenedChecks(await git(repo, "diff", before, await headCommit(repo)), testRe);
+  const blocking = weak.filter((w) => w.kind !== "assertions" || (run.attempts[opts.key] ?? 0) < SCOPE_GUARD_ATTEMPTS);
+  if (blocking.length) {
+    await resetTo(repo, before);
+    return again(`${feedback}\n\n另外：${weakenedMessage(blocking)}`, "checks_weakened");
+  }
+  if (weak.length) info(run, `   ⚠️  修正讓斷言變少（${weak.map((w) => w.file).join("、")}），已放行，請在審查時留意`);
   const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, before);
   if (handoffError) {
     await resetTo(repo, before);
@@ -2088,6 +2130,10 @@ async function codeReview(
     prompt: (reviewer: string, authors: string) => string;
     saveAs: (reviewer: string) => string;
     gate: boolean; runKey: string; backTo: Stage; testAuthor?: string; prefer?: string;
+    /** 這次審查範圍內每條都要回報的驗收條件編號 */
+    expectedAcs: readonly string[];
+    /** 重試計數的鍵：額外發現只在這個計數還小於 EXTRA_BLOCK_ATTEMPTS 時才能擋關 */
+    attemptKey: string;
   },
 ): Promise<{ run: FlowRun } | { state: FlowRun; objector?: string; issues: string[] }> {
   const cfg = loadRepoConfig();
@@ -2098,6 +2144,10 @@ async function codeReview(
   writeFileSync(flowFile(run, "diff.patch"), await git(repo, "diff", `${opts.base}...HEAD`));
   const authors = [...new Set((await git(repo, "log", "--format=%s", `${opts.base}..HEAD`)).match(/\[[^\]]+\]$/gm) ?? [])]
     .map((s) => s.slice(1, -1));
+
+  const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  if (!acceptance.ok) throw new Error(acceptance.error);
+  const knownAcs = new Set(acceptance.data.map((item) => item.id));
 
   const specs: ReviewCall[] = panel.map((reviewer, slot) => ({
     key: `${slot}:${reviewer}`, slot, reviewer, step: opts.step,
@@ -2121,6 +2171,8 @@ async function codeReview(
     replay(run, done.stored, "review.json");
     const review = readJsonFile(flowFile(run, "review.json"), ConsistentReviewResult);
     if (!review.ok) return fail(review.error, "format_invalid");
+    const coverageError = checkReviewCoverage(review.data, opts.expectedAcs, knownAcs);
+    if (coverageError) return fail(coverageError, "format_invalid");
     const gate = opts.gate ? { target: "code" as const, verdict: review.data.verdict } : undefined;
     // 門檻以這個呼叫自己看到的帳本評估：同輪其他審查者剛新增（或崩潰前已套用）的事項它沒看過，不能拿來判它矛盾
     const handoffError = finishHandoff(run, storedOutcome(done.stored, true), "reviewer", gate, done.stored.base);
@@ -2131,11 +2183,19 @@ async function codeReview(
       info(run, `   ✓ ${reviewer} 核准`);
       continue;
     }
+    const { acceptance: unmetAcs, extra } = splitUnmet(review.data.items);
+    // 只剩額外發現、而且已經修過一輪：不再擋關，改記成參考資訊。否則審查者可以靠不斷提新發現讓範圍膨脹，直到重試用完
+    if (!unmetAcs.length && (run.attempts[opts.attemptKey] ?? 0) >= EXTRA_BLOCK_ATTEMPTS) {
+      info(run, `   ✓ ${reviewer} 核准（${extra.length} 筆額外發現已修過一輪，改記為參考資訊）`);
+      noteExtraFindings(run, opts.step, reviewer, `${opts.seed}:${spec.key}`, extra);
+      continue;
+    }
     info(run, `   ✗ ${reviewer} 要求修改`);
     objector ??= reviewer;
-    issues.push(opinion(reviewer, review.data.items
-      .filter((i) => i.status !== "met")
-      .map((i) => reviewIssue(i.criterion, i.status, i.note))));
+    issues.push(opinion(reviewer, [
+      ...unmetAcs.map((i) => reviewIssue(i.criterion, i.status, i.note)),
+      ...extra.map((i) => extraFinding(i.status, `${i.criterion}：${i.note}`, i.evidence)),
+    ]));
   }
   if (opts.step === "review") run = clearModelReviewStage(run, "review");
   const attempts = { ...run.attempts };
@@ -2143,7 +2203,32 @@ async function codeReview(
   return { state: { ...run, attempts }, objector, issues };
 }
 
+/** 不走 TDD 的任務沒有任何變更就被略過：記成參考資訊，最終審查要特別核對這個任務的驗收條件是否本來就成立 */
+function noteSkippedTask(run: FlowRun, task: TaskItem, agent: string): void {
+  const callKey = `skipped-task:${task.id}`;
+  acceptHandoff(
+    run.id, callKey, { stage: "implement", step: `${task.id}-code`, agent, callKey },
+    { newIssues: [{ kind: "info", summary: `${task.id} ${task.title} 沒有任何檔案變更而被略過，請確認 ${task.acceptance.join("、")} 在既有程式碼上本來就成立`, evidence: `${task.id} 的實作沒有 commit`, targetStage: "code" }], dispositions: [] },
+    "writer",
+  );
+}
+
+/** 額外發現最多在第一次審查時擋關一次；之後只記成參考資訊 */
+const EXTRA_BLOCK_ATTEMPTS = 1;
+
+/** 把不再擋關的額外發現記進交接帳本（info，供後續審查與人參考）；同一輪重播不會重複記 */
+function noteExtraFindings(run: FlowRun, step: string, reviewer: string, key: string, extra: { criterion: string; note: string; evidence: string }[]): void {
+  const callKey = `extra-findings:${key}`;
+  acceptHandoff(
+    run.id, callKey, { stage: run.stage, step, agent: reviewer, callKey },
+    { newIssues: extra.map((item) => ({ kind: "info" as const, summary: `${item.criterion}：${item.note}`, evidence: item.evidence, targetStage: "code" as const })), dispositions: [] },
+    "reviewer",
+  );
+}
+
 async function reviewStage(run: FlowRun): Promise<FlowRun> {
+  const acceptance = readJsonFile(flowFile(run, "acceptance.json"), AcceptanceList);
+  if (!acceptance.ok) throw new Error(acceptance.error);
   const result = await codeReview(run, {
     base: run.baseBranch,
     seed: `${run.id}:review:${run.attempts.review ?? 0}`,
@@ -2154,6 +2239,8 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     gate: true,
     runKey: "review-run",
     backTo: "review",
+    expectedAcs: acceptance.data.map((item) => item.id),
+    attemptKey: "review",
   });
   if ("run" in result) return result.run;
   if (!result.objector) return succeed(result.state, "review", "pr");

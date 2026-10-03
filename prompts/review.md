@@ -41,14 +41,17 @@
 {
   "verdict": "changes_requested",
   "items": [
-    { "criterion": "AC-1", "status": "not_met", "note": "src/form.tsx 缺少 API 失敗時的錯誤訊息，請在 catch 中顯示錯誤並補測試" }
+    { "criterion": "AC-1", "status": "met", "note": "" },
+    { "criterion": "AC-2", "status": "not_met", "note": "src/form.tsx 缺少 API 失敗時的錯誤訊息，請在 catch 中顯示錯誤並補測試" },
+    { "criterion": "額外發現：submit 沒有處理空陣列", "status": "not_met", "note": "src/form.tsx 的 submit 在空陣列時會丟例外，請加上檢查並補測試", "evidence": "src/form.tsx:42" }
   ]
 }
 ```
 
-- `verdict`：逐條核對所有驗收條件後，全部通過且沒有嚴重問題時為 `approve`，否則為 `changes_requested`。
-- `items` 只列未通過的驗收條件與額外發現的重要問題，每筆的 `status` 為 `not_met` 或 `partial`，`note` 請寫出具體位置與修正方向。
-- `approve` 時 `items` 為空陣列；`changes_requested` 時至少要有一筆。兩者不一致會被視為格式錯誤並重新審查。
+- `items` 必須逐條回報驗收條件（.flow/acceptance.json 的每一條）：每一條各一筆，`criterion` 填驗收條件編號（例如 `AC-1`），通過寫 `met`，未通過寫 `not_met` 或 `partial`。漏掉任何一條、或寫出不存在的編號，會被視為格式錯誤並重新審查。
+- 另外發現、但不屬於任何驗收條件的問題，`criterion` 寫簡短描述（不要用 AC 編號），`status` 只能是 `not_met` 或 `partial`，而且必須在 `evidence` 寫出檔案位置或檢查證據，沒寫會被視為格式錯誤。額外發現只限這次變更裡的缺陷（錯誤、邊界遺漏、安全問題、回歸）；不可以把新需求、風格偏好、「有更小的做法」寫成額外發現。
+- `verdict`：全部驗收條件都是 `met`、且沒有額外發現時為 `approve`，否則為 `changes_requested`。
+- `approve` 時 items 不可有 `not_met` 或 `partial`；`changes_requested` 時至少要有一筆 `not_met` 或 `partial`。兩者不一致會被視為格式錯誤並重新審查。
 </output_format>
 
 <constraints>

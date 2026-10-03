@@ -232,7 +232,7 @@
 | 檔案 | 用途 | 誰寫 | 交給誰 |
 | --- | --- | --- | --- |
 | `diff.patch` | 審查者要讀的變更。每位審查者開始前覆寫 | 程式 | 當輪的程式碼審查 agent |
-| `review.json` | 這一位審查者的正式裁決。全員 `approve` 才進入 PR。程式只認這份 JSON，驗證後改名 | 程式碼審查 agent | 程式 |
+| `review.json` | 這一位審查者的正式裁決。`items` 必須逐條回報驗收條件（`met`／`not_met`／`partial`），額外發現要附 `evidence`，不合格視為格式錯誤重審。全員 `approve` 才進入 PR。程式只認這份 JSON，驗證後改名 | 程式碼審查 agent | 程式 |
 | `review-<審查者>.json` | 具名裁決，留在 `.flow` 供人查看是誰要求改什麼。修正迴圈不讀這些原檔 | 程式改名 | 人 |
 | `feedback.md` | 有人要求修改時，把所有未達成項目收成一份清單，小標帶審查者名字，並把 `fixSource` 設成 `review`。執行失敗或 JSON 不合法用 `review-run`，不寫進這份意見清單。全員核准時刪除 | 程式，`retry("review")` | 修正 agent。審查 prompt 沒有把它列為必讀 |
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brokenPackageImport, foreignFailingTests, packageImports, sourceOfTest, violatingTestChanges } from "./testGuard.js";
+import { brokenPackageImport, foreignFailingTests, packageImports, sourceOfTest, violatingTestChanges, weakenedChecks, weakenedMessage } from "./testGuard.js";
 
 const re = /\.(test|spec)\.[cm]?[jt]sx?$/;
 
@@ -84,5 +84,48 @@ describe("foreignFailingTests：失敗的測試檔不是本任務寫的", () => 
   it("去掉 ANSI 色碼與行號後仍能比對，路徑尾端相同視為同一檔", () => {
     const output = "\u001b[31mFAIL\u001b[39m  format.test.ts:12:5 > x\n";
     expect(foreignFailingTests(output, mine)).toEqual([]);
+  });
+});
+
+const diffOf = (file: string, removed: string[], added: string[]) =>
+  `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n${removed.map((l) => `-${l}`).join("\n")}${removed.length ? "\n" : ""}${added.map((l) => `+${l}`).join("\n")}\n`;
+
+describe("weakenedChecks", () => {
+  it("測試檔新增 skip／only／todo", () => {
+    for (const line of ["it.skip('a', f)", "describe.only('a', f)", "xit('a', f)", "test.todo('a')"]) {
+      expect(weakenedChecks(diffOf("a.test.ts", [], [line]), re)).toEqual([{ file: "a.test.ts", kind: "skip", count: 1 }]);
+    }
+  });
+
+  it("非測試檔的 skip 字樣不算", () => {
+    expect(weakenedChecks(diffOf("a.ts", [], ["it.skip('a', f)"]), re)).toEqual([]);
+  });
+
+  it("新增 @ts-ignore／@ts-nocheck／eslint-disable，只在程式碼檔案才算", () => {
+    expect(weakenedChecks(diffOf("a.ts", [], ["// @ts-ignore"]), re)).toEqual([{ file: "a.ts", kind: "suppress", count: 1 }]);
+    expect(weakenedChecks(diffOf("a.tsx", [], ["/* eslint-disable */"]), re)).toEqual([{ file: "a.tsx", kind: "suppress", count: 1 }]);
+    expect(weakenedChecks(diffOf("README.md", [], ["不要用 @ts-ignore"]), re)).toEqual([]);
+    expect(weakenedChecks(diffOf("pnpm-lock.yaml", [], ["eslint-disable"]), re)).toEqual([]);
+  });
+
+  it("搬移（同一個檔案移除再新增同樣數量）不算", () => {
+    expect(weakenedChecks(diffOf("a.ts", ["// @ts-ignore"], ["// @ts-ignore"]), re)).toEqual([]);
+    expect(weakenedChecks(diffOf("a.test.ts", ["it.skip('a', f)"], ["it.skip('b', f)"]), re)).toEqual([]);
+  });
+
+  it("測試檔的斷言變少才算 assertions，增加或持平不算", () => {
+    expect(weakenedChecks(diffOf("a.test.ts", ["expect(a).toBe(1);", "expect(b).toBe(2);"], ["expect(a).toBe(1);"]), re))
+      .toEqual([{ file: "a.test.ts", kind: "assertions", count: 1 }]);
+    expect(weakenedChecks(diffOf("a.test.ts", ["expect(a).toBe(1);"], ["expect(a).toBe(2);"]), re)).toEqual([]);
+    expect(weakenedChecks(diffOf("a.ts", ["expect(a)"], []), re)).toEqual([]);
+  });
+
+  it(".flow 底下的交接檔與刪除的檔案不看", () => {
+    expect(weakenedChecks(diffOf(".flow/x.test.ts", [], ["it.skip('a', f)"]), re)).toEqual([]);
+    expect(weakenedChecks("diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ /dev/null\n-it('a', f)\n", re)).toEqual([]);
+  });
+
+  it("訊息列出檔案與種類", () => {
+    expect(weakenedMessage([{ file: "a.test.ts", kind: "skip", count: 2 }])).toContain("a.test.ts（新增 skip／only／todo 2 處）");
   });
 });
