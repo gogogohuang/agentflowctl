@@ -1,7 +1,7 @@
 {
   "name": "agentflowctl",
   "license": "MIT",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "讓 Claude Code、Codex、Gemini CLI 等 agent 分工整理需求、規劃、寫測試與程式並交叉審查，最後建立 PR；由程式推進流程，以測試與檢查結果把關",
   "keywords": [
     "ai",
