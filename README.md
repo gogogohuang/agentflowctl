@@ -118,7 +118,7 @@ agentflowctl config agent cycle claude,codex
 agentflowctl config selection mode adaptive    # 依階段與任務難度自動選模；需先登記各 agent 的模型
 ```
 
-`install`、`test`、`checks` 未設定時會依專案自動偵測。專案有 `test` script 時，紅綠燈與 `checks.test` 都跑它，沒有才用預設的 vitest。非 Vite 專案沒有 `build` script 時不跑 build 檢查。偵測到的 vitest 會略過 `.worktree/` 與 `.worktrees/`；eslint 的 lint 會略過 `.flow/`、`.agentflowctl/`、`.worktree/`、`.worktrees/`。完整欄位、自動選模、推理強度、平行執行與模型驗證見[設定詳解](docs/configuration.md)，範例見 [examples/flow.config.json](examples/flow.config.json)。
+`install`、`test`、`checks`、`testPattern` 未設定時會依專案自動偵測：Node（`package.json`、lockfile）、Python（`pyproject.toml`、`requirements*.txt`、`setup.py`）、Go（`go.mod`）、Rust（`Cargo.toml`）。專案沒有測試框架（Node 沒有測試依賴或 `test` script；Python 沒有 pytest／unittest 且沒有測試檔；Go、Rust 還沒有任何測試檔）時，所有任務不走紅綠燈，也不跑 `test` 檢查。專案有 `test` script 時，紅綠燈與 `checks.test` 都跑它，沒有才用預設的 vitest。非 Vite 專案沒有 `build` script 時不跑 build 檢查。認不出類型的專案不安裝、不跑檢查，需要時在 `flow.config.json` 設定。偵測到的 vitest 會略過 `.worktree/` 與 `.worktrees/`；eslint 的 lint 會略過 `.flow/`、`.agentflowctl/`、`.worktree/`、`.worktrees/`。完整欄位、自動選模、推理強度、平行執行與模型驗證見[設定詳解](docs/configuration.md)，範例見 [examples/flow.config.json](examples/flow.config.json)。
 
 ## 更多文件
 

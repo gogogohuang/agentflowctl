@@ -50,3 +50,23 @@
 需要先取用某個階段的產出時，可用 `--stop-after <階段>`。可選停點是 `spec`（規格）、`plan`（計畫審查完成）、`implement`（所有任務完成）、`verify`（測試與 checks 通過）、`review`（程式碼審查完成）或 `pr`（PR 流程完成）。除了 `pr` 會照常結束外，其他停點完成後會進入 `paused`，可檢視 worktree 與 `.flow/` 檔案，再執行 `agentflowctl resume <id>` 從下一階段接續；`--manual-plan` 與 `--stop-after` 不能同時使用。
 
 agentflowctl 會依專案的 `packageManager`、lockfile 與 `package.json` scripts 選擇安裝、測試及檢查指令。偵測到的 `lint` 與 `typecheck`（`type-check`）檢查只在最後整支分支的驗證才跑，每個任務的驗證不跑；`lint` 只檢查整支分支相對基底分支改過的程式檔（排除 `.flow/`，沒有可檢查的檔案就略過；一律沿用專案原本的 lint 設定，agentflowctl 不會修改任何 eslint 設定檔；`lint` script 含 `eslint` 時，偵測到的指令會在指令列加上 `--ignore-pattern` 略過自己產生的 `.flow/`、`.agentflowctl/`，以及本機 git worktree `.worktree/`、`.worktrees/`，避免 `eslint .` 掃到交接檔或別的工作目錄而一直驗證失敗）。只檢查改過的檔案時，這四個目錄也不會被放進檔案清單。預設的測試指令，以及 `test` script 內容含 `vitest` 時，會附加 `--exclude '**/.worktree/**' --exclude '**/.worktrees/**'`（加在專案既有的 exclude 後面，不蓋掉 `node_modules` 等預設，也不改寫 script）。不是 vitest 的測試指令維持原樣。型別檢查仍是整個專案：`tsc` 沒有目錄排除的參數，agentflowctl 也不改寫專案的 tsconfig。`vite build` 同樣無法在不改設定檔時排除目錄，所以 build 指令不加參數。`package.json` 沒有對應 script 時直接略過，不會退回 `npx eslint .` 或 `npx tsc --noEmit`；`build` 在專案有 `package.json`、沒有 `build` script 且看不出是 Vite 專案（沒有 `vite` 依賴、`vite.config.*`、根目錄 `index.html`）時同樣略過，不會去跑 `npx vite build`（沒有 `package.json` 的全新專案仍用預設）；要沿用舊行為，請在 `flow.config.json` 自行寫 `checks`。同一次驗證裡，install 先跑完，其餘檢查預設同時執行（`checksConcurrency` 可限制同時數量，`1` 為一次一個）；結果與 log 仍照設定順序列出。第一次執行時，請留意終端機印出的偵測結果；需要調整可在 `flow.config.json` 指定 `install`、`test` 或 `checks`。`package.json` 的依賴或 `test` script 看不出測試框架（且沒有手動設定 `test`）時，終端機會提示「未偵測到測試框架」，並略過紅綠燈；要改回來，在 `flow.config.json` 設定 `test`。
+
+除了 Node，agentflowctl 也會偵測 Python、Go、Rust；`package.json` 或任一 Node lockfile 優先，其次依序是 `go.mod`、`Cargo.toml`、Python 專案檔。沒有任何可辨識的專案檔（含空資料夾）時視為未辨識：install 為 no-op、不跑任何檢查、不走紅綠燈，需要時在 `flow.config.json` 設定。
+
+| 類型 | 辨識 | install／test／checks | testPattern |
+|---|---|---|---|
+| Node | `package.json`，或任一 Node lockfile | 見上述（依套件管理器與 scripts） | 沿用預設 |
+| Python | `pyproject.toml`、`requirements*.txt`、`setup.py`（或 `setup.cfg`） | 依 `uv.lock`／`poetry.lock`／pip 選套件管理器（`uv sync`、`poetry install --no-interaction`、`pip install -r requirements.txt` 或 `pip install -e .`，uv／poetry 的指令加 `uv run`／`poetry run` 前綴）；test 為 `pytest`（設定或依賴出現 pytest、有 `pytest.ini` 或 `conftest.py`），否則 `python -m unittest discover`；`pyproject.toml` 有 `[tool.ruff` 或有 `ruff.toml` 時加 `ruff check .` 作為最後驗證 | `(^\|/)(test_[^/]*\|[^/]*_test)\.py$` |
+| Go | `go.mod` | `go mod download`／`go test ./...`／`go vet ./...`（最後驗證）／`go build ./...` | `_test\.go$` |
+| Rust | `Cargo.toml` | `cargo fetch`／`cargo test`／`cargo clippy`（最後驗證）／`cargo build` | `(^\|/)tests/.*\.rs$\|_test\.rs$` |
+
+沒有測試框架時，所有任務不走紅綠燈、不跑 `test` 檢查，終端機印出「未偵測到測試框架」，其餘檢查照常；在 `flow.config.json` 手動設定 `test` 就視為有測試框架。判定方式：
+
+| 類型 | 判定為有測試框架 |
+|---|---|
+| Node | 依賴含 vitest／jest／mocha 等，或有真正的 `test` script |
+| Python | 設定或依賴出現 pytest／unittest，或已有符合 `testPattern` 的測試檔 |
+| Go | 已有任何 `*_test.go` |
+| Rust | 已有 `tests/` 目錄下的 `.rs` 檔或 `*_test.rs` |
+
+已知限制：Rust 單元測試寫在原始碼內（`#[cfg(test)]`）時不會被看到，專案可能被判定沒有測試框架；這種情況請在 `flow.config.json` 設定 `test`。Python、Go、Rust 的測試檔搜尋最多深入 6 層，並略過 `node_modules`、`venv`、`target` 等依賴與建置目錄。
