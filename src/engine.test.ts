@@ -580,10 +580,10 @@ if (prompt.includes("發散分支")) {
     // 真實流程是先記 retry、再存 state，所以 updatedAt 不會早於已有的 retry；否則 addRetry 會把同 key、同 attempt 的紀錄當成重複
     updatedAt: new Date().toISOString(),
   });
-  /** failed（預算用完）的 run 再多給一步的額度 */
-  const oneMoreStep = (run: FlowRun) => ({
+  /** failed（預算用完）的 run 再給 calls 次 agent 呼叫的額度：額度逐次呼叫把關，一個階段有幾次呼叫就要給幾次 */
+  const oneMoreStep = (run: FlowRun, calls = 1) => ({
     ...run, stage: "implement" as const, failedStage: undefined, failureCategory: undefined, failureReason: undefined,
-    maxAgentRuns: agentRuns(run.id) + 1,
+    maxAgentRuns: agentRuns(run.id) + calls,
   });
 
   it("綠燈第二次失敗退回測試後，下一次寫測試前才發散；回到 code 階段不會再發散", async () => {
@@ -598,7 +598,7 @@ if (prompt.includes("發散分支")) {
     expect(agentRuns(id)).toBe(1);
 
     // 下一個階段：2 個分支 + 1 個評審 + 1 次寫測試
-    const second = await advance(oneMoreStep(first));
+    const second = await advance(oneMoreStep(first, 4));
         const record = JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8"));
     expect(record.status).toBe("done");
     expect(record.stamp).toBe("T-1:tests:0:1");
@@ -638,7 +638,7 @@ if (prompt.includes("發散分支")) {
     writeFileSync(join(runDir(id), "diverge.json"), JSON.stringify({
       stamp: "T-1:tests:0:1", status: "running", key: "T-1:tests", frames: ["acceptance", "split"], branches: [],
     }));
-    await advance({ ...base(id, o), taskPhase: "tests", testsRedos: 1 });
+    await advance({ ...base(id, o), maxAgentRuns: 4, taskPhase: "tests", testsRedos: 1 });
     expect(JSON.parse(readFileSync(join(runDir(id), "diverge.json"), "utf8")).status).toBe("done");
     expect(agentRuns(id)).toBe(4);
   });
@@ -955,7 +955,7 @@ writeFileSync(".flow/handoff-response.json", "{ 壞掉的 json");
 describe("交接補寫", () => {
   const calls = (id: string) => readFileSync(join(flowDir(id), "calls.txt"), "utf8");
 
-  async function fixRun(id: string, mode: string) {
+  async function fixRun(id: string, mode: string, maxAgentRuns = 2) {
     writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
       agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", repairScript] }])),
       cycle: ["a", "b"], install: "true", test: "true", checks: [],
@@ -968,10 +968,19 @@ describe("交接補寫", () => {
     // fix 與補寫共用 2 次 agent 預算，下一次迴圈開頭就以 agent_budget 失敗，failedStage 是 fix 之後要進的階段
     return advance({
       id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "fix", fixSource: "verify",
-      autopilot: true, maxAgentRuns: 2, cycle: ["a", "b"], lastWriter: "a", attempts: {},
+      autopilot: true, maxAgentRuns, cycle: ["a", "b"], lastWriter: "a", attempts: {},
       taskIndex: 1, taskPhase: "tests", createdAt: now, updatedAt: now,
     });
   }
+
+  it("補寫時額度（maxAgentRuns）不足：不啟動補寫，階段以 agent_budget 失敗，修正的 commit 保留", async () => {
+    const run = await fixRun("f-repair-budget", "repair-ok", 1);
+    expect(run).toMatchObject({ stage: "failed", failedStage: "fix", failureCategory: "agent_budget" });
+    expect(run.failureReason).toContain("--max-agent-runs");
+    expect(calls(run.id)).toBe("fix\n"); // 只有修正者被呼叫，補寫沒有啟動
+    expect(agentRuns(run.id)).toBe(1);
+    expect(existsSync(join(worktreeDir(run.id), "fixed.ts"))).toBe(true);
+  });
 
   it("fix 的交接不合格時只補寫交接，保留修正的 commit", async () => {
     const run = await fixRun("f-repair-ok", "repair-ok");
@@ -1297,6 +1306,39 @@ describe("平行任務", () => {
     expect(run.stage).toBe("failed");
     expect(run.failureCategory).toBe("agent_budget");
   });
+
+  it("剩餘一格額度時兩條同時開始的車道只會啟動一個 agent，用量不超過上限", async () => {
+    const id = "f-lanes-one-slot";
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { maxAgentRuns: 1, config: {} });
+    expect(run.stage).toBe("failed");
+    expect(run.failureCategory).toBe("agent_budget");
+    expect(run.failureReason).toContain("--max-agent-runs");
+    expect(laneSteps()).toHaveLength(1); // 只有一個 agent 命令被啟動
+    expect(agentRuns(id)).toBe(1);
+  });
+
+  it("車道額度不足不是一般錯誤：車道不標成失敗，調高上限 resume 後接續", async () => {
+    const id = "f-lanes-budget-resume";
+    const failed = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { maxAgentRuns: 3, config: {} });
+    expect(failed.failureCategory).toBe("agent_budget");
+    expect(failed.failureCategory).not.toBe("error");
+    rmSync(laneLog, { force: true });
+    const resumed = await advance({ ...failed, maxAgentRuns: 60, stage: failed.failedStage!, attempts: {}, failedStage: undefined, failureReason: undefined, failureCategory: undefined });
+    expect(resumed.failureReason).toBeUndefined();
+    expect([...(resumed.doneTasks ?? [])].sort()).toEqual(["T-1", "T-2"]);
+  });
+
+  it("車道建立失敗（prepareLane）：其他車道仍跑完並合併，run 以帶任務 id 的失敗收尾", async () => {
+    const id = "f-lanes-prepare";
+    // 預先建一個與車道分支同路徑前綴的分支（git 的目錄／檔案 ref 衝突），讓 T-2 建立車道的 git worktree add 失敗
+    await git(root, "branch", `flow/${id}+T-2/擋住`, "main");
+    const run = await laneFlowRun(id, { "T-1": [], "T-2": [] }, { config: {}, maxAttempts: 3 });
+    expect(run.stage).toBe("failed");
+    expect(run.failureReason).toMatch(/^T-2：/);
+    expect(run.failureCategory).toBe("error");
+    expect(run.doneTasks).toEqual(["T-1"]);
+    expect(existsSync(join(worktreeDir(id), "T-1.mjs"))).toBe(true);
+  });
 });
 
 describe("計畫停點", () => {
@@ -1442,6 +1484,146 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
       const next = replanRun(run, { noReview: true });
       expect(next.stage).toBe("awaiting_approval");
       expect(agentRuns(run.id)).toBe(before);
+    });
+  });
+
+  describe("replan：人工確認資料", () => {
+    const confirmPath = (id: string) => join(runDir(id), "confirmations.json");
+    const detailsPath = (id: string) => join(runDir(id), "confirmation-details.json");
+    const readJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+
+    /** 計畫已通過審查、等人核准：T-1 要實作，T-3 是人工確認項目（AC-3 與計畫段落專屬於它）；尚未定案，.flow/ 還有完整內容 */
+    async function awaitingWithConfirm(id: string, mode: "keep" | "delete" = "keep") {
+      const script = join(root, `${id}.mjs`);
+      writeFileSync(script, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("plan-review.json")) {
+  writeFileSync(".flow/plan-review.json", JSON.stringify({ verdict: "approve", items: [] }));
+} else if (${JSON.stringify(mode)} === "delete") {
+  const tasks = JSON.parse(readFileSync(".flow/tasks.json", "utf8")).filter((t) => t.id !== "T-3");
+  const acceptance = JSON.parse(readFileSync(".flow/acceptance.json", "utf8")).filter((a) => a.id !== "AC-3");
+  writeFileSync(".flow/tasks.json", JSON.stringify(tasks));
+  writeFileSync(".flow/acceptance.json", JSON.stringify(acceptance));
+  writeFileSync(".flow/plan.md", readFileSync(".flow/plan.md", "utf8").split("## T-3")[0]);
+}
+writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+`);
+      writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+        agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", script] }])),
+        cycle: ["a", "b"],
+      }));
+      await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+      mkdirSync(flowDir(id), { recursive: true });
+      const tasks = [
+        { id: "T-1", title: "實作", description: "完成", dependsOn: [], acceptance: ["AC-1"] },
+        { id: "T-3", title: "目視確認畫面", description: "請看一下畫面", dependsOn: [], acceptance: ["AC-3"], kind: "confirm" },
+      ];
+      writeFileSync(join(flowDir(id), "spec.md"), "# 規格\n");
+      writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "完成" }, { id: "AC-3", description: "畫面正確" }]));
+      writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n\n## T-1 做法\n實作它\n\n## T-3 人工確認\n請目視確認畫面\n");
+      writeFileSync(join(flowDir(id), "tasks.json"), JSON.stringify(tasks));
+      const now = new Date().toISOString();
+      const run: FlowRun = {
+        id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "awaiting_approval",
+        autopilot: false, maxAgentRuns: 50, cycle: ["a", "b"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+      };
+      // 第一次定案：確認項目搬到 run 目錄，.flow/ 只剩要實作的
+      const settled = replanRun(run, { noReview: true });
+      expect(settled.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readFileSync(join(flowDir(id), "tasks.json"), "utf8")).not.toContain("T-3");
+      return settled;
+    }
+
+    it("定案後只加備註的 replan 保留既有確認項目、驗收條件與計畫段落", async () => {
+      const id = "f-replan-keep-note";
+      const run = await awaitingWithConfirm(id);
+      const detailsBefore = readFileSync(detailsPath(id), "utf8");
+      const done = await advance(saveRun(replanRun(run, { note: "T-1 的措辭改一下", noReview: true })));
+      expect(done.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readFileSync(detailsPath(id), "utf8")).toBe(detailsBefore);
+      expect(readJson(detailsPath(id)).acceptance.map((a: { id: string }) => a.id)).toEqual(["AC-3"]);
+      expect(readJson(detailsPath(id)).plan["T-3"]).toContain("請目視確認畫面");
+      // 搬空的 .flow/ 又是乾淨的：確認項目不會流進實作佇列
+      expect(readFileSync(join(flowDir(id), "tasks.ordered.json"), "utf8")).not.toContain("T-3");
+    });
+
+    it("定案後沒有備註、noReview 的 replan 同樣保留", async () => {
+      const id = "f-replan-keep-noreview";
+      const run = await awaitingWithConfirm(id);
+      const next = replanRun(run, { noReview: true });
+      expect(next.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readJson(detailsPath(id)).acceptance).toHaveLength(1);
+    });
+
+    it("replan 後 planner 刪掉被併回的確認任務：兩份資料檔移除它，留下空資料", async () => {
+      const id = "f-replan-delete";
+      const run = await awaitingWithConfirm(id, "delete");
+      const done = await advance(saveRun(replanRun(run, { note: "不需要人工確認那項了", noReview: true })));
+      expect(done.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id))).toEqual([]);
+      expect(readJson(detailsPath(id))).toEqual({ acceptance: [], plan: {} });
+    });
+
+    it("同 id 的確認任務被改寫時，採用新內容、沒有舊的 title、驗收條件與計畫段落", async () => {
+      const id = "f-replan-rewrite";
+      const run = await awaitingWithConfirm(id);
+      const rewritten = [
+        { id: "T-1", title: "實作", description: "完成", dependsOn: [], acceptance: ["AC-1"] },
+        { id: "T-3", title: "改成確認文案", description: "請確認文案", dependsOn: [], acceptance: ["AC-3"], kind: "confirm" },
+      ];
+      writeFileSync(join(flowDir(id), "tasks.json"), JSON.stringify(rewritten));
+      writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-1", description: "完成" }, { id: "AC-3", description: "文案正確" }]));
+      writeFileSync(join(flowDir(id), "plan.md"), "# 計畫\n\n## T-1 做法\n實作它\n\n## T-3 文案確認\n請確認文案\n");
+      replanRun(run, { noReview: true });
+      const saved = readJson(confirmPath(id));
+      expect(saved.map((t: { title: string }) => t.title)).toEqual(["改成確認文案"]);
+      const text = readFileSync(detailsPath(id), "utf8");
+      expect(text).toContain("文案正確");
+      expect(text).toContain("請確認文案");
+      expect(text).not.toContain("畫面正確");
+      expect(text).not.toContain("請目視確認畫面");
+    });
+
+    it("replan 驗證失敗：還原 .flow/ 與標記，之後 approve 不會帶著人工專屬的驗收條件進實作", async () => {
+      const id = "f-replan-invalid-rollback";
+      const run = await awaitingWithConfirm(id);
+      // 手改成引用不存在的驗收條件：檔案能解析（所以會先併回確認項目），之後 validatePlan 才失敗
+      const edited = JSON.stringify([{ id: "T-1", title: "實作", description: "完成", dependsOn: [], acceptance: ["AC-9"] }]);
+      writeFileSync(join(flowDir(id), "tasks.json"), edited);
+      const beforeAc = readFileSync(join(flowDir(id), "acceptance.json"), "utf8");
+      const beforePlan = readFileSync(join(flowDir(id), "plan.md"), "utf8");
+      expect(() => replanRun(run, { note: "補充" })).toThrow("計畫檔案沒有通過檢查");
+      expect(readFileSync(join(flowDir(id), "tasks.json"), "utf8")).toBe(edited);
+      expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).toBe(beforeAc);
+      expect(readFileSync(join(flowDir(id), "plan.md"), "utf8")).toBe(beforePlan);
+      // approve 直接進實作、讀的就是這兩份：人工專屬的任務與驗收條件不能在裡面
+      expect(readJson(join(flowDir(id), "tasks.ordered.json")).map((t: { id: string }) => t.id)).not.toContain("T-3");
+      expect(getRun(id)?.stage ?? run.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]); // 確認清單仍是唯一一份
+      expect(existsSync(join(runDir(id), "confirmations-restored"))).toBe(false);
+      expect(readFileSync(join(flowDir(id), "acceptance.json"), "utf8")).not.toContain("AC-3");
+    });
+
+    it("沒有任何確認任務時，兩份資料檔仍存在且為空資料", async () => {
+      const id = "f-replan-empty";
+      const run = await planSettledRun(id, { maxAgentRuns: 50, autopilot: false, stopAfter: undefined });
+      replanRun(run, { noReview: true });
+      expect(readJson(confirmPath(id))).toEqual([]);
+      expect(readJson(detailsPath(id))).toEqual({ acceptance: [], plan: {} });
+    });
+
+    it("定案到一半中斷後 resume（.flow/ 已搬空、沒有標記）沿用既有確認資料，不會清空", async () => {
+      const id = "f-replan-resume-settle";
+      const run = await awaitingWithConfirm(id);
+      expect(existsSync(join(runDir(id), "confirmations-restored"))).toBe(false);
+      // 同一份已搬空的 .flow/ 再走一次計畫審查與定案：模擬 planSettled 存檔前中斷、resume 重做（不經過 replan 的併回）
+      const done = await advance({ ...run, stage: "plan_review", planWriter: "a" });
+      expect(done.stage).toBe("awaiting_approval");
+      expect(readJson(confirmPath(id)).map((t: { id: string }) => t.id)).toEqual(["T-3"]);
+      expect(readJson(detailsPath(id)).acceptance.map((a: { id: string }) => a.id)).toEqual(["AC-3"]);
     });
   });
 });

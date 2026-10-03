@@ -28,7 +28,7 @@ npx agentflowctl run --req "登入表單加入驗證與錯誤訊息"
 
 ```bash
 agentflowctl replan <id> --note "T-2 要改用既有的 helper"   # 補充意見，只改相關任務
-agentflowctl replan <id>                                    # 手改 .flow/ 的計畫檔後重新檢查
+agentflowctl replan <id>                                    # 手改 .flow/ 的計畫檔後重新檢查（人工確認項目會先併回 .flow/，改完依計畫檔重建清單）
 ```
 
 run 完成後還想再改：`agentflowctl iterate <id> --req "改用既有的 helper"` 會在同一個 worktree 與分支上開第二輪（補充需求從 spec 重來，程式碼與 PR 沿用，推送後更新同一個 PR；PR 已合併則改用 `run`）。
@@ -69,7 +69,7 @@ agentflowctl clean f-xxxx          # 清除 worktree 與紀錄（clean --all 清
 | `paused`：已完成指定停點 | 檢視產出後 `agentflowctl resume <id>` |
 | `failed`：測試、檢查、審查或 agent 執行失敗 | 用 `agentflowctl logs <id> <編號>` 查原因，處理後 `agentflowctl resume <id>` |
 | `failed`：仲裁連續沒有有效裁決 | 查看 log 後 `agentflowctl resume <id>` |
-| `failed`：已達 agent 執行次數上限 | `agentflowctl resume <id> --max-agent-runs 100`（數字須大於已執行次數） |
+| `failed`：已達 agent 執行次數上限 | `agentflowctl resume <id> --max-agent-runs 100`（數字須大於已執行次數；額度用完而失敗的呼叫也計入，平行的車道與審查者合計不會超出上限） |
 
 ## 常用選項
 

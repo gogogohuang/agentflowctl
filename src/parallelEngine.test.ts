@@ -264,6 +264,26 @@ describe("整份計畫審查平行", () => {
     expect(run.failureCategory).toBe("agent_budget");
     expect(events().filter((line) => line.startsWith("start"))).toHaveLength(1);
   });
+
+  it("預算不足失敗後調高上限 resume：已存檔的審查沿用，只補跑沒啟動的", async () => {
+    const id = "pe-plan-budget-resume";
+    configure(writeReviewer("reviewer.mjs"), { planReviewQuorum: 2 });
+    await planReviewSetup(id);
+    resetEvents();
+    const failed = await advance(baseRun(id, "plan_review", { planWriter: "a", maxAgentRuns: 1 }));
+    expect(failed.failureCategory).toBe("agent_budget");
+    expect(failed.failureReason).toContain("--max-agent-runs");
+    const first = events().filter((line) => line.startsWith("start"));
+    expect(first).toHaveLength(1);
+
+    resetQuotaState();
+    resetEvents();
+    const resumed = await advance({ ...failed, maxAgentRuns: 10, stage: "plan_review", failedStage: undefined, failureReason: undefined, failureCategory: undefined });
+    expect(resumed.pausedStage).toBe("implement");
+    const second = events().filter((line) => line.startsWith("start"));
+    expect(second).toHaveLength(1); // 另一位審查者；第一位沿用存檔
+    expect(second[0]).not.toBe(first[0]);
+  });
 });
 
 /** 分裂裁決：slot-0 要求修改並新增計畫事項；slot-1 在看得到該事項時要求修改，看不到時核准並結掉原有事項（一輪內的審查者都從同一份帳本開始，所以 slot-1 一律看不到） */

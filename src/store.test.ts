@@ -8,7 +8,7 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
 const { runDir } = await import("./paths.js");
-const { addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage, usageKeyModelStageKind } = await import("./store.js");
+const { releaseAgentRun, reserveAgentRun, resetAgentRunReservations, addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage, usageKeyModelStageKind } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -112,5 +112,36 @@ describe("檔案儲存", () => {
     appendFileSync(join(runDir("f-torn-u"), "costs.jsonl"), "{");
     expect(listUsage("f-torn-u")).toHaveLength(1);
     expect(agentRuns("f-torn-u")).toBe(1);
+  });
+
+  it("reservation：已寫入的用量加上保留數不超過上限，釋放後可再保留", () => {
+    resetAgentRunReservations();
+    const now = new Date().toISOString();
+    saveRun({
+      id: "f-r", baseBranch: "main", branch: "flow/f-r", requirement: "r", stage: "spec", autopilot: false,
+      maxAgentRuns: 3, cycle: ["claude"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+    });
+    addUsage("f-r", { stage: "spec", agent: "claude" });
+    expect(reserveAgentRun("f-r", 3)).toBe(true);
+    expect(reserveAgentRun("f-r", 3)).toBe(true);
+    expect(reserveAgentRun("f-r", 3)).toBe(false);
+    releaseAgentRun("f-r");
+    expect(reserveAgentRun("f-r", 3)).toBe(true);
+    releaseAgentRun("f-r");
+    releaseAgentRun("f-r");
+    releaseAgentRun("f-r"); // 多釋放不會變成負數
+    expect(reserveAgentRun("f-r", 3)).toBe(true);
+    expect(reserveAgentRun("f-r", 3)).toBe(true);
+    expect(reserveAgentRun("f-r", 3)).toBe(false);
+    resetAgentRunReservations();
+    expect(reserveAgentRun("f-r", 3)).toBe(true);
+    resetAgentRunReservations();
+  });
+
+  it("reservation：車道與所屬 run 共用同一份", () => {
+    resetAgentRunReservations();
+    expect(reserveAgentRun("f-r", 2)).toBe(true); // 已有 1 筆用量
+    expect(reserveAgentRun("f-r+T-1", 2)).toBe(false);
+    resetAgentRunReservations();
   });
 });

@@ -21,6 +21,8 @@
 - **補充意見**：`agentflowctl replan <id> --note "T-2 要改用既有的 helper"`（長的意見用 `--note-file <路徑>`）。意見會以「人工補充意見」交給計畫修訂者，只改相關的任務與段落，其餘原樣保留，比重跑計畫省 token。
 - **手改計畫檔**：直接編輯 `.agentflowctl/worktrees/<id>/.flow/` 的 `spec.md`、`acceptance.json`、`plan.md`、`tasks.json`，再執行 `agentflowctl replan <id>`。程式會重新檢查格式、驗收條件對應與任務相依；沒通過就印出原因、不改 run，修好再執行一次即可。
 
+`kind: confirm` 的人工確認項目在計畫定案時已搬出 `.flow/`；`replan` 會先把它們（任務、專屬驗收條件、計畫段落）併回 `.flow/`，讓你和計畫修訂者看得到、改得動，也能刪掉。再次定案時，確認清單會依當時的計畫檔重建：刪掉的項目從 PR 清單消失，改寫的採用新內容，沒動的保持不變。
+
 改完預設回到計畫審查（分層審查只重審有變動的群；內容沒變的審查結果直接沿用）。加 `--no-review` 則不再送審：補充意見改完直接定案，手改的只做格式檢查，不呼叫任何 agent。完成後回到 `awaiting_approval`，確認後照常 `approve`。`replan` 適用於等待核准，以及停在計畫階段（暫停或失敗）的 run。
 
 ## 完成後開第二輪
