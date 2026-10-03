@@ -5,6 +5,47 @@ export function tail(s: string, max = 4000): string {
   return s.length <= max ? s : `…（前略）\n${s.slice(-max)}`;
 }
 
+const FAILURE_BLOCK_MAX = 800;
+
+/** node:test（TAP）輸出裡每個 `not ok` 區塊：從 `not ok` 那行到結尾的 `...` 為止 */
+function failureBlocks(s: string): { start: number; end: number }[] {
+  const blocks: { start: number; end: number }[] = [];
+  const re = /^not ok .*$/gm;
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    const close = s.indexOf("\n  ...", m.index);
+    const next = s.indexOf("\nok ", m.index);
+    const end = close >= 0 && (next < 0 || close < next) ? close + "\n  ...".length : m.index + m[0].length;
+    blocks.push({ start: m.index, end });
+    re.lastIndex = end;
+  }
+  return blocks;
+}
+
+/**
+ * 同 `tail`，但輸出太長、失敗的測試被擠出尾端時，先列出被截掉的 `not ok` 區塊（TAP 把每個失敗連同錯誤訊息放在原處，
+ * 後面還有一大串通過的測試）。否則給作者看的 feedback 只剩一堆 ok，看不到為什麼失敗。
+ */
+export function failureTail(s: string, max = 4000): string {
+  if (s.length <= max) return s;
+  const lost = failureBlocks(s).filter((b) => b.start < s.length - max);
+  if (!lost.length) return tail(s, max);
+  const tailLen = Math.floor(max / 2);
+  const shown: string[] = [];
+  let used = 0;
+  let tailStart = s.length - tailLen;
+  for (const b of lost) {
+    if (b.start >= tailStart) break;
+    const text = s.slice(b.start, b.end);
+    const clipped = text.length > FAILURE_BLOCK_MAX ? `${text.slice(0, FAILURE_BLOCK_MAX)}…` : text;
+    if (used + clipped.length > max - tailLen) break;
+    shown.push(clipped);
+    used += clipped.length;
+    tailStart = Math.max(tailStart, b.end);
+  }
+  if (!shown.length) return tail(s, max);
+  return `…（前略；先列出被截掉的失敗測試）\n${shown.join("\n")}\n…（中略）\n${s.slice(tailStart)}`;
+}
+
 const PROMPTS_DIR = new URL("../prompts/", import.meta.url);
 
 /** 讀取 prompts/<name>.md 並代入 {{變數}} */

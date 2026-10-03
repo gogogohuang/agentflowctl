@@ -434,13 +434,14 @@ describe("實作階段", () => {
 });
 
 const greenScript = join(root, "green-implementer.mjs");
-writeFileSync(greenScript, `import { existsSync, writeFileSync } from "node:fs";
+writeFileSync(greenScript, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 if (existsSync(".flow/writes-code.txt")) writeFileSync("stub.mjs", \`export const n = \${Date.now()};\\n\`);
 writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dispositions: [] }));
+if (existsSync(".flow/concerns.txt")) console.log("<result><status>blocked</status><summary>測試有問題</summary><concerns>" + readFileSync(".flow/concerns.txt", "utf8") + "</concerns></result>");
 `);
 
 /** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
-async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, regressions, testSource = "process.exit(1);\n" }: { writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; regressions?: number; testSource?: string } = {}) {
+async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, regressions, testSource = "process.exit(1);\n", concerns }: { concerns?: string; writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; regressions?: number; testSource?: string } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
@@ -452,6 +453,7 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   const testsCommit = (await commitAll(wt, "test(T-1): 測試 [a]"))!;
   mkdirSync(flowDir(id), { recursive: true });
   if (writesCode) writeFileSync(join(flowDir(id), "writes-code.txt"), "");
+  if (concerns) writeFileSync(join(flowDir(id), "concerns.txt"), concerns);
   writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-2", description: "匯出 answer" }]));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
     { id: "T-1", title: "元件", description: "新增元件", dependsOn: [], acceptance: ["AC-2"], tdd: true },
@@ -549,6 +551,21 @@ describe("綠燈階段無法讓測試通過時退回測試階段", () => {
     expect(feedback).toContain(testsCommit);
     expect(feedback).toContain("測試本身");
     expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_invalid"]);
+  });
+
+  it("退回時 feedback 保留失敗的測試區塊，即使輸出很長把它擠出尾端", async () => {
+    const source = `console.log("not ok 1 - the broken one\\n  ---\\n  error: 'null length boom'\\n  ...");\nfor (let i = 0; i < 400; i++) console.log("ok " + (i + 2) + " - filler case number " + i);\nprocess.exit(1);\n`;
+    const { run } = await greenRun("f-green-keeps-failure", { testSource: source });
+    const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+    expect(feedback).toContain("not ok 1 - the broken one");
+    expect(feedback).toContain("null length boom");
+  });
+
+  it("退回時把實作者回報的疑慮一併交給測試作者", async () => {
+    const { run } = await greenRun("f-green-forwards-concerns", { concerns: "測試第 37 行的 RegExp 沒跳脫 +" });
+    const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+    expect(feedback).toContain("實作者回報的疑慮");
+    expect(feedback).toContain("測試第 37 行的 RegExp 沒跳脫 +");
   });
 
   it("實作者有改程式但連續兩次都不通過：同樣退回測試階段", async () => {
