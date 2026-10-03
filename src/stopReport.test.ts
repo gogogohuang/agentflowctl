@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { footerLine, headerLine, type LogEntry } from "./logs.js";
 import type { FlowRun, HandoffIssue } from "./schemas.js";
-import { stopReport } from "./stopReport.js";
+import { sandboxHint, stopReport } from "./stopReport.js";
 
 const j = (o: unknown) => JSON.stringify(o);
 const startedAt = "2026-09-26T03:00:00.000Z";
@@ -85,5 +85,27 @@ describe("run 停下時的結果與下一步", () => {
     expect(out).toContain("已完成指定階段 verify");
     expect(out).toContain("下一階段：review");
     expect(out).toContain("agentflowctl resume f-1");
+  });
+});
+
+describe("沙箱限制提示", () => {
+  const blocked = (id: string, summary: string): HandoffIssue => ({ ...issue, id, kind: "info", summary });
+
+  it("兩筆以上事項都是沙箱擋住：停下時建議把指令加進 checks", () => {
+    const out = stopReport({
+      run: run({ stage: "paused" }), worktree: "/wt", open: [issue], read, logs: [],
+      unresolved: [issue, blocked("a1", "mktemp -d 在沙箱內被擋"), blocked("a2", "Sandbox blocks the test")],
+    }).join("\n");
+    expect(out).toContain("a1、a2");
+    expect(out).toContain("flow.config.json 的 checks");
+  });
+
+  it("只有一筆，或沒有未結行動事項時不提示", () => {
+    expect(sandboxHint([blocked("a1", "沙箱擋住")])).toBeUndefined();
+    const out = stopReport({
+      run: run({ stage: "paused" }), worktree: "/wt", open: [], read, logs: [],
+      unresolved: [blocked("a1", "沙箱擋住"), blocked("a2", "mktemp 失敗")],
+    }).join("\n");
+    expect(out).not.toContain("💡");
   });
 });

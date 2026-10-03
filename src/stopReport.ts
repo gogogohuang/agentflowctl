@@ -9,9 +9,22 @@ export interface StopReportInput {
   read: (file: string) => string;
   /** 還沒結案的交接事項 */
   open: HandoffIssue[];
+  /** 帳本裡所有還沒結案的事項（含參考資訊 info），只用來判斷是否為沙箱限制 */
+  unresolved?: HandoffIssue[];
   worktree: string;
   /** 由 Ctrl-C 觸發 */
   interrupted?: boolean;
+}
+
+/** 沙箱限制造成 agent 無法執行或驗證的交接事項 */
+const SANDBOX_BLOCK = /sandbox|沙箱|mktemp|operation not permitted/i;
+const SANDBOX_HINT_MIN = 2;
+
+/** 多筆未結事項都是「沙箱擋住了」：環境問題，不是各自的缺陷，建議把指令改由 verify（程式在沙箱外）執行 */
+export function sandboxHint(open: readonly HandoffIssue[]): string | undefined {
+  const blocked = open.filter((item) => SANDBOX_BLOCK.test(`${item.summary} ${item.evidence}`));
+  if (blocked.length < SANDBOX_HINT_MIN) return undefined;
+  return `有 ${blocked.length} 筆未結事項是 agent 沙箱擋住了指令（${blocked.map((b) => b.id).join("、")}）：這是環境限制，agent 補不出證據。請把該指令加進 flow.config.json 的 checks，由 verify 在沙箱外執行，再 resume。`;
 }
 
 const pad = (s: string) => s.split("\n").join("\n     ");
@@ -62,6 +75,8 @@ export function stopReport(i: StopReportInput): string[] {
     out.push("", "── 未結交接事項 ──");
     for (const item of i.open) out.push(`  [${item.targetStage}] ${item.id} ${item.summary}（${item.status}）`);
   }
+  const hint = sandboxHint(i.unresolved ?? i.open);
+  if (hint && i.open.length) out.push("", `  💡 ${hint}`);
 
   const stoppedAfterStage = run.stage === "paused" && run.stopAfter && run.pauseReason?.startsWith("已完成指定階段");
   if (stoppedAfterStage) {

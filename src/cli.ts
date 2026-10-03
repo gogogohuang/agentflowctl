@@ -97,6 +97,7 @@ function printSummary(run: FlowRun, interrupted = false): void {
     logs: listLogs(logDir(run.id)),
     read: (file) => readFileSync(file, "utf8"),
     open: openActions(readHandoff(run.id)),
+    unresolved: readHandoff(run.id).issues.filter((item) => item.status === "open" || item.status === "proposed_resolved"),
     worktree: worktreeDir(run.id),
   });
   for (const line of report) console.log(line);
