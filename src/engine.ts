@@ -444,6 +444,16 @@ const TESTS_REDO_AFTER_FAILURES = 2;
 const TESTS_REDO_LIMIT = 2;
 /** 綠燈階段讓別的測試檔失敗，連續幾次（含這一次）就暫停 */
 const REGRESSION_PAUSE_AFTER = 2;
+
+/** 失敗的測試檔中，自 iterate 開這一輪以來沒有被任何 commit 動過的（前一輪留下的） */
+async function staleRoundTests(repo: string, roundBase: string, files: string[]): Promise<string[]> {
+  try {
+    const touched = new Set(await changedFiles(repo, roundBase, await headCommit(repo)));
+    return files.filter((f) => !touched.has(f.replace(/^\.\//, "")));
+  } catch {
+    return [];
+  }
+}
 const TESTS_NOT_RED_MARK = "請撰寫會因功能尚未實作而失敗的測試";
 
 /** 已定案的任務寫明不要求紅燈：仍寫測試，但通過也算完成紅燈階段。 */
@@ -1351,11 +1361,12 @@ export async function iterateRun(run: FlowRun, opts: { requirement: string; maxA
   for (const f of ["confirmations.json", "confirmation-details.json", "confirmations-restored", "plan-review-state.json", "plan-arbitration.json", "diverge.json", "parallel-review", "tmp-review"]) {
     rmSync(join(runDir(run.id), f), { recursive: true, force: true });
   }
+  const roundBase = await headCommit(worktreeDir(run.id));
   const explicit = opts.maxAgentRuns !== undefined || run.maxAgentRunsExplicit === true;
   const quota = opts.maxAgentRuns ?? (run.maxAgentRunsExplicit ? run.maxAgentRuns : loadRepoConfig().maxAgentRuns);
   const requirement = `${run.requirement}\n\n## 第 ${round} 輪補充需求\n\n${extra}\n\n（前一輪的規格與計畫存放在 .flow/round-${previous}/，其程式碼已在這個分支上；這一輪只處理補充需求要求的變更，以及必要的修正。）`;
   return {
-    ...run, requirement, round, stage: "spec", stopAfter: undefined,
+    ...run, requirement, round, roundBase, stage: "spec", stopAfter: undefined,
     maxAgentRuns: agentRuns(run.id) + quota, maxAgentRunsExplicit: explicit ? true : undefined,
     attempts: {}, modelRetryAttempts: {}, taskIndex: 0, ...TASK_RESET, doneTasks: undefined, amendments: undefined,
     fixSource: undefined, skipPlanReview: undefined,
@@ -1853,14 +1864,19 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     if (regressed.length) {
       // 「連續」只算回歸本身：先前因其他原因失敗的嘗試不計入
       const streak = (run.regressions ?? 0) + 1;
-      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${failureTail(green.output, undefined, profile.failureFormat)}\n\`\`\``;
+      // 前一輪留下、這一輪沒有任何任務動過的測試：沒有任務可以修補，amend 這條路走不通，不能再建議
+      const stale = run.roundBase ? await staleRoundTests(repo, run.roundBase, regressed) : [];
+      const advice = stale.length
+        ? `${stale.join("、")} 是前一輪留下的測試，這一輪沒有任何任務負責它，所以無法用 amend 修補。若是你的實作破壞了它們，修正實作；若新行為本來就必須改變它們，不要硬改，在 <result><concerns> 說明是哪條斷言與新行為衝突。`
+        : "若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。";
+      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。${advice}\n\n\`\`\`\n${failureTail(green.output, undefined, profile.failureFormat)}\n\`\`\``;
       if (streak >= REGRESSION_PAUSE_AFTER) {
         const attempts = { ...run.attempts };
         delete attempts[key];
         mkdirSync(flowDir(run.id), { recursive: true });
         writeFileSync(flowFile(run, "feedback.md"), `# 前次嘗試未通過\n\n${reason}\n`);
         saveRun({ ...run, attempts, regressions: undefined });
-        throw new RegressionPause(`${key} 讓前面任務的測試失敗（${regressed.join("、")}），實作者已連續 ${streak} 次造成回歸；請判斷該改實作、改前面任務的測試，還是用 replan／amend 調整任務切分，檢查 .flow/feedback.md 後 resume`);
+        throw new RegressionPause(`${key} 讓前面任務的測試失敗（${regressed.join("、")}），實作者已連續 ${streak} 次造成回歸；${stale.length ? `${stale.join("、")} 是前一輪留下的測試，沒有任務能修補它；若新行為本來就要改變它，請在該 worktree 直接更新測試並 commit，或 replan 加入更新它的任務，再 resume` : "請判斷該改實作、改前面任務的測試，還是用 replan／amend 調整任務切分，檢查 .flow/feedback.md 後 resume"}`);
       }
       return { ...retry(run, key, reason, "implement", "tests_not_green"), regressions: streak };
     }
@@ -1930,7 +1946,7 @@ async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, task
   return saveRun({
     id, baseBranch: parent.branch, branch, requirement: parent.requirement, stage: "implement", autopilot: true,
     maxAgentRuns: parent.maxAgentRuns, maxAttempts: parent.maxAttempts, cycle: parent.cycle, attempts: {},
-    modelMode: parent.modelMode, fast: parent.fast, taskIndex: 0, taskPhase: "tests", taskOffset: offset, createdAt: now, updatedAt: now,
+    modelMode: parent.modelMode, fast: parent.fast, roundBase: parent.roundBase, taskIndex: 0, taskPhase: "tests", taskOffset: offset, createdAt: now, updatedAt: now,
   });
 }
 

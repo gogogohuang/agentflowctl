@@ -425,6 +425,8 @@ export const FlowRun = z.object({
   prUrl: z.string().optional(),
   /** 第幾輪：iterate 在同一個 worktree 開下一輪時加一；沒有此欄位視為第 1 輪（舊 state.json） */
   round: z.number().int().min(2).optional(),
+  /** iterate 開下一輪時分支的 HEAD：比對「這一輪沒有任何任務動過」的前一輪測試；舊 run 與第 1 輪沒有 */
+  roundBase: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
