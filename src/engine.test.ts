@@ -473,7 +473,7 @@ if (existsSync(".flow/concerns.txt")) console.log("<result><status>blocked</stat
 `);
 
 /** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
-async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, regressions, testSource = "process.exit(1);\n", concerns, roundBase }: { roundBase?: boolean; concerns?: string; writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; regressions?: number; testSource?: string } = {}) {
+async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, regressions, testSource = "process.exit(1);\n", concerns, roundBase, legacyRound }: { legacyRound?: boolean; roundBase?: boolean; concerns?: string; writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; regressions?: number; testSource?: string } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
@@ -486,6 +486,7 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   mkdirSync(flowDir(id), { recursive: true });
   if (writesCode) writeFileSync(join(flowDir(id), "writes-code.txt"), "");
   if (concerns) writeFileSync(join(flowDir(id), "concerns.txt"), concerns);
+  if (legacyRound) mkdirSync(join(flowDir(id), "round-1"), { recursive: true });
   writeFileSync(join(flowDir(id), "acceptance.json"), JSON.stringify([{ id: "AC-2", description: "匯出 answer" }]));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([
     { id: "T-1", title: "元件", description: "新增元件", dependsOn: [], acceptance: ["AC-2"], tdd: true },
@@ -494,7 +495,7 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   const run = await advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
     autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts, taskIndex: 0, taskPhase: "code",
-    taskBase, testsCommit, lastTestsAuthor: "a", ...(roundBase ? { roundBase: taskBase } : {}), ...(testsRedos === undefined ? {} : { testsRedos }), ...(regressions === undefined ? {} : { regressions }), createdAt: now, updatedAt: now,
+    taskBase, testsCommit, lastTestsAuthor: "a", ...(roundBase ? { roundBase: taskBase } : {}), ...(legacyRound ? { round: 2 } : {}), ...(testsRedos === undefined ? {} : { testsRedos }), ...(regressions === undefined ? {} : { regressions }), createdAt: now, updatedAt: now,
   });
   return { run, wt, taskBase, testsCommit };
 }
@@ -657,6 +658,14 @@ describe("綠燈階段：失敗的是前面任務的測試", () => {
     expect(feedback).toContain("前一輪留下的測試");
     expect(feedback).not.toContain("amend-request.json");
     expect(feedback).toContain("concerns");
+  });
+
+  it("升級前 iterate 的舊 run 沒有 roundBase：用 round-N 目錄的時間推出這一輪的起點", async () => {
+    const { run } = await greenRun("f-green-regress-legacy", { writesCode: true, testSource: OLD_FAIL, legacyRound: true });
+    const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+    // 測試檔在 round-1 目錄建立之前就 commit 了，這一輪沒人動過它
+    expect(feedback).toContain("前一輪留下的測試");
+    expect(feedback).not.toContain("amend-request.json");
   });
 
   it("前一輪留下的測試連續第二次回歸：暫停訊息指出要手動更新或 replan", async () => {
