@@ -23,14 +23,13 @@ describe("detectProjectDefaults", () => {
     expect(detectProjectDefaults(project({ "README.md": "x" })).profile.sourceExts).toEqual([]);
   });
 
-  it("沒有 lockfile 也沒有 scripts 時，結果與 schema 的預設值相同", () => {
+  it("沒有 lockfile 也沒有 scripts 與測試依賴時：用 npm 安裝，沒有測試指令也沒有檢查", () => {
     const d = detectProjectDefaults(project({ "package.json": {} }));
-    const defaults = RepoConfig.parse({});
     expect(d.manager).toBe("npm");
-    expect(d.install).toBe(defaults.install);
-    expect(d.test).toBe(defaults.test);
-    // 沒有 lint／typecheck script 就略過，不退回預設指令；非 Vite 專案也沒有 build script 時 build 同樣略過
-    expect(d.checks).toEqual(defaults.checks.filter((c) => c.name === "test"));
+    expect(d.install).toBe("npm install --no-audit --no-fund");
+    expect(d.test).toBe(RepoConfig.parse({}).test);
+    // 沒有 lint／typecheck／test／build 的 script 與依賴就略過，不自己補指令
+    expect(d.checks).toEqual([]);
   });
 
   it("有 package.json、沒有 build script 且不是 Vite 專案時略過 build，不退回 npx vite build", () => {
@@ -64,7 +63,7 @@ describe("detectProjectDefaults", () => {
   it("只有 lockfile 沒有 package.json 時仍回傳 npm 的預設值", () => {
     const d = detectProjectDefaults(project({ "package-lock.json": "{}" }));
     expect(d.manager).toBe("npm");
-    expect(d.install).toBe(RepoConfig.parse({}).install);
+    expect(d.install).toBe("npm install --no-audit --no-fund");
   });
 
   it("依 lockfile 判斷套件管理器", () => {
@@ -83,7 +82,7 @@ describe("detectProjectDefaults", () => {
   });
 
   it("pnpm 專案：install 不鎖 lockfile，沒有對應 script 的檢查改用 pnpm exec", () => {
-    const d = detectProjectDefaults(project({ "pnpm-lock.yaml": "" }));
+    const d = detectProjectDefaults(project({ "pnpm-lock.yaml": "", "package.json": { devDependencies: { vitest: "^3", vite: "^6" } } }));
     expect(d.install).toBe("pnpm install");
     expect(d.test).toBe(`pnpm exec vitest run ${VITEST_WORKTREE_EXCLUDES}`);
     expect(d.checks).toEqual([
@@ -93,10 +92,10 @@ describe("detectProjectDefaults", () => {
   });
 
   it("yarn 與 bun 的指令寫法", () => {
-    const yarn = detectProjectDefaults(project({ "yarn.lock": "" }));
+    const yarn = detectProjectDefaults(project({ "yarn.lock": "", "package.json": { devDependencies: { vitest: "^3" } } }));
     expect(yarn.install).toBe("yarn install");
     expect(yarn.test).toBe(`yarn vitest run ${VITEST_WORKTREE_EXCLUDES}`);
-    const bun = detectProjectDefaults(project({ "bun.lock": "" }));
+    const bun = detectProjectDefaults(project({ "bun.lock": "", "package.json": { devDependencies: { vitest: "^3" } } }));
     expect(bun.install).toBe("bun install");
     expect(bun.test).toBe(`bunx vitest run ${VITEST_WORKTREE_EXCLUDES}`);
   });
@@ -135,10 +134,10 @@ describe("detectProjectDefaults", () => {
     expect(d.test).toBe("npm run test");
   });
 
-  it("test script 是 vitest 時，紅綠燈的 test 指令附加排除；佔位 script 與沒有 script 時維持預設 vitest", () => {
+  it("test script 是 vitest 時，紅綠燈的 test 指令附加排除；佔位 script 與沒有 script 也沒有測試依賴時沒有測試指令", () => {
     expect(detectProjectDefaults(project({ "package.json": { scripts: { test: "vitest run" } } })).test).toBe(`npm run test -- ${VITEST_WORKTREE_EXCLUDES}`);
-    expect(detectProjectDefaults(project({ "package.json": { scripts: { test: 'echo "Error: no test specified" && exit 1' } } })).test).toBe(`npx vitest run ${VITEST_WORKTREE_EXCLUDES}`);
-    expect(detectProjectDefaults(project({ "package.json": {} })).test).toBe(`npx vitest run ${VITEST_WORKTREE_EXCLUDES}`);
+    expect(detectProjectDefaults(project({ "package.json": { scripts: { test: 'echo "Error: no test specified" && exit 1' } } })).test).toBe("true");
+    expect(detectProjectDefaults(project({ "package.json": {} })).test).toBe("true");
   });
 
   it("typecheck 也認得不含連字號的 script 名稱", () => {
@@ -220,14 +219,14 @@ describe("detectProjectDefaults：Python", () => {
     const d = detectProjectDefaults(project({ "requirements.txt": "pytest>=8\n" }));
     expect(d.ecosystem).toBe("python");
     expect(d.manager).toBe("pip");
-    expect(d.install).toBe("python3 -m pip install -r requirements.txt");
-    expect(d.test).toBe("pytest");
-    expect(d.checks).toEqual([{ name: "test", cmd: "pytest" }]);
+    expect(d.install).toBe("python3 -m venv .venv && .venv/bin/pip install -r requirements.txt");
+    expect(d.test).toBe(".venv/bin/pytest");
+    expect(d.checks).toEqual([{ name: "test", cmd: ".venv/bin/pytest" }]);
     expect(d.testFramework).toBe(true);
   });
 
-  it("只有 pyproject.toml 時用 pip install -e .", () => {
-    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).install).toBe("python3 -m pip install -e .");
+  it("只有 pyproject.toml 時在 .venv 內 pip install -e .", () => {
+    expect(detectProjectDefaults(project(pyproject("[project]\nname='x'\n"))).install).toBe("python3 -m venv .venv && .venv/bin/pip install -e .");
   });
 
   it("uv 與 poetry：依 lockfile 選安裝與執行前綴", () => {
@@ -248,8 +247,8 @@ describe("detectProjectDefaults：Python", () => {
   it("pyproject 有 ruff 設定時加上只在最後驗證的 lint", () => {
     const d = detectProjectDefaults(project(pyproject("[tool.ruff]\nline-length = 100\n[tool.pytest.ini_options]\n")));
     expect(d.checks).toEqual([
-      { name: "test", cmd: "pytest" },
-      { name: "lint", cmd: "ruff check .", finalOnly: true },
+      { name: "test", cmd: ".venv/bin/pytest" },
+      { name: "lint", cmd: ".venv/bin/ruff check .", finalOnly: true },
     ]);
   });
 
@@ -311,8 +310,9 @@ describe("withProjectDefaults", () => {
     const go = detectProjectDefaults(project({ "go.mod": "module x\n" }));
     expect((withProjectDefaults({}, go) as { testPattern?: string }).testPattern).toBe(go.testPattern);
     expect((withProjectDefaults({ testPattern: "x" }, go) as { testPattern?: string }).testPattern).toBe("x");
+    // 預設的 testPattern 改為通用寫法，Node 專案由偵測結果補上 .test／.spec 的命名
     const node = detectProjectDefaults(project({ "package.json": {} }));
-    expect("testPattern" in (withProjectDefaults({}, node) as object)).toBe(false);
+    expect((withProjectDefaults({}, node) as { testPattern?: string }).testPattern).toBe(node.testPattern);
   });
 });
 
@@ -361,5 +361,33 @@ describe("describeDetected", () => {
     const go = detectProjectDefaults(project({ "go.mod": "module x\n" }));
     expect(describeDetected({}, go).some((l) => l.includes("testPattern") && l.includes("_test"))).toBe(true);
     expect(describeDetected({ testPattern: "x" }, go).some((l) => l.includes("testPattern"))).toBe(false);
+  });
+});
+
+describe("Node 依實際依賴偵測與 pip venv", () => {
+  it("node：沒有 test script 時依依賴挑測試指令，不再退回 vitest", () => {
+    const jest = detectProjectDefaults(project({ "package.json": JSON.stringify({ devDependencies: { jest: "^29" } }) }));
+    expect(jest.testFramework).toBe(true);
+    expect(jest.test).toBe("npx jest");
+    const vitest = detectProjectDefaults(project({ "package.json": JSON.stringify({ devDependencies: { vitest: "^2" } }) }));
+    expect(vitest.test).toBe(`npx vitest run ${VITEST_WORKTREE_EXCLUDES}`);
+    const none = detectProjectDefaults(project({ "package.json": "{}" }));
+    expect(none.testFramework).toBe(false);
+    expect(none.test).toBe("true");
+    expect(none.checks).toEqual([]);
+  });
+
+  it("node：build 只在有 build script 或 Vite 專案時加入", () => {
+    expect(detectProjectDefaults(project({ "package.json": "{}" })).checks.some((c) => c.name === "build")).toBe(false);
+    const vite = detectProjectDefaults(project({ "package.json": JSON.stringify({ devDependencies: { vite: "^5" } }) }));
+    expect(vite.checks.find((c) => c.name === "build")?.cmd).toBe("npx vite build");
+  });
+
+  it("python：只有 requirements.txt 時用獨立 venv", () => {
+    const d = detectProjectDefaults(project({ "requirements.txt": "pytest>=8\n" }));
+    expect(d.install).toBe("python3 -m venv .venv && .venv/bin/pip install -r requirements.txt");
+    expect(d.test).toBe(".venv/bin/pytest");
+    const unittest = detectProjectDefaults(project({ "requirements.txt": "requests\n", "test_a.py": "import unittest\n" }));
+    expect(unittest.test).toBe(".venv/bin/python3 -m unittest discover");
   });
 });

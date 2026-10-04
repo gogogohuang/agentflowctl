@@ -229,7 +229,7 @@ export const ESLINT_IGNORE_ARGS = ESLINT_IGNORE_PATTERNS.map((pattern) => `--ign
  */
 export const VITEST_WORKTREE_EXCLUDES = "--exclude '**/.worktree/**' --exclude '**/.worktrees/**'";
 
-/** 目標專案可選的 flow.config.json，預設值對應 Vite + TypeScript + Vitest 專案 */
+/** 目標專案可選的 flow.config.json，預設值是中性的：沒有偵測結果時不安裝、不跑檢查 */
 export const RepoConfig = z.object({
   /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 config agent add） */
   agents: z.record(z.string(), AgentDef).default({}),
@@ -302,9 +302,11 @@ export const RepoConfig = z.object({
   maxAttempts: z.number().int().min(3).default(5),
   /** 終端機是否印出 agent 的文字、工具呼叫與專案指令；命令列 -v 也能開啟 */
   verbose: z.boolean().default(false),
-  install: z.string().default("npm install --no-audit --no-fund"),
-  test: z.string().default(`npx vitest run ${VITEST_WORKTREE_EXCLUDES}`),
-  testPattern: z.string().default("\\.(test|spec)\\.[cm]?[jt]sx?$"),
+  /** 沒有偵測結果時不安裝；偵測與手動設定的值一律優先（detect.ts） */
+  install: z.string().default("true"),
+  test: z.string().default("true"),
+  /** 通用的測試檔命名：tests/、__tests__/、test_*、*_test.*、*.test.*、*.spec.*；偵測到生態系統時由偵測結果取代 */
+  testPattern: z.string().default(String.raw`(^|/)(tests?|__tests__)/|(^|/)test_[^/]+$|[._-](test|spec)s?\.[^/]+$`),
   checks: z
     .array(z.object({
       name: z.string(),
@@ -314,12 +316,7 @@ export const RepoConfig = z.object({
       /** 最後 verify 時只檢查整支分支改過的檔案：把檔案清單接在指令後面 */
       changedOnly: z.boolean().optional(),
     }))
-    .default([
-      { name: "typecheck", cmd: "npx tsc --noEmit" },
-      { name: "lint", cmd: `npx eslint ${ESLINT_IGNORE_ARGS} .` },
-      { name: "test", cmd: `npx vitest run ${VITEST_WORKTREE_EXCLUDES}` },
-      { name: "build", cmd: "npx vite build" },
-    ]),
+    .default([]),
 });
 export type RepoConfig = z.infer<typeof RepoConfig>;
 
