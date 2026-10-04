@@ -84,9 +84,6 @@ done
 
 # 8. 確認
 echo
-echo "自 $latest_tag 以來的 commit："
-git log --oneline "$latest_tag..HEAD"
-echo
 
 if [[ "$dry_run" == 1 ]]; then
   echo "✅ dry-run 完成：檢查與驗證都通過，將把 package.json 更新為 $next 並建立 ${next_tag}（未實際變更）"
