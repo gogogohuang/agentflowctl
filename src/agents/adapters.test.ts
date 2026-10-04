@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { userTempDir } from "./claude.js";
 import { ADAPTERS } from "./index.js";
 
 const j = (o: unknown) => JSON.stringify(o);
@@ -150,6 +151,10 @@ describe("claude 權限設定檔", () => {
     const settings = JSON.parse(readFileSync(path, "utf8"));
     expect(settings.permissions.deny).toContain("Bash(git commit:*)");
     expect(settings.sandbox.enabled).toBe(true);
+    // macOS 的 mktemp -d 寫使用者暫存目錄，沙箱要放行，否則測試腳本一律 Operation not permitted
+    const temp = userTempDir();
+    expect(settings.sandbox.filesystem?.allowWrite).toEqual(temp ? [temp] : undefined);
+    if (process.platform === "darwin") expect(temp).toMatch(/^\/var\/folders\/.+\/T\/$/);
     utimesSync(path, 1000, 1000);
     ADAPTERS.claude.invoke(base);
     expect(statSync(path).mtimeMs).toBe(1000 * 1000);
