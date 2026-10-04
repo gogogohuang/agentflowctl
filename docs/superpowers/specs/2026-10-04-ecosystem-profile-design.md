@@ -118,7 +118,7 @@ generated 觸發：
 - `DetectionProposal` 的失敗區塊欄位是列舉 `failureFormat`（`tap`／`pytest`／`go`／`cargo`），沒有 `failureBlock`；agent 只能挑格式，不能提供任意區塊規則。`failureTail(s, max, format?)` 的 `format` 沒有預設值，沒有格式就只取尾端。
 - `acceptanceChecks.ts` 的工具清單已含 pytest、ruff、clippy 等，不需要改。
 - agent 提案的 `depDirs`／`skipDirs` 由 `isSafeDirName`（單一層路徑、不是 `.`／`..`、不以 `-` 開頭）與 `proposalDirOk` 驗證：`depDirs` 只收已存在的真目錄（`git check-ignore` 對被忽略的一般檔案與不存在的名稱也會成功，不能當證據），還不能是版控追蹤的路徑或保留名稱（`isSafeDepDirName`）；`skipDirs` 可以是真實目錄或被忽略的名稱。`detected.json` 合併前重做名稱檢查，建 symlink 時來源不是目錄或目標已存在就略過。
-- `describeDetected` 在守門規則為空時印出提示：未辨識專案一定印，已辨識專案只有欄位為空才印。
+- `describeDetected` 在生效 profile（內建加上 `detected.json` 的補充）的守門欄位為空時印出提示：未辨識專案在動態偵測補齊前會印，內建的四種生態系統欄位都齊全所以不印。已辨識專案的補缺（第 29 行的條件）目前不會觸發，保留給之後新增、規則不完整的生態系統。
 - `NEUTRAL_PROFILE.skipDirs` 是舊 `SKIP_DIRS` 的超集合基線，確保沒有偵測結果時略過的目錄不比以前少。
 - `withProjectDefaults`：使用者手寫 `test`、偵測結果沒有 `test` 檢查時，補上一筆 `test` 檢查，verify 才會跑它。
 
