@@ -473,7 +473,7 @@ if (existsSync(".flow/concerns.txt")) console.log("<result><status>blocked</stat
 `);
 
 /** 綠燈階段：測試 commit 已經存在而且永遠失敗（測試本身寫錯），實作者無論怎麼做都不會綠 */
-async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, regressions, testSource = "process.exit(1);\n", concerns }: { concerns?: string; writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; regressions?: number; testSource?: string } = {}) {
+async function greenRun(id: string, { writesCode = false, attempts = {}, testsRedos, regressions, testSource = "process.exit(1);\n", concerns, roundBase }: { roundBase?: boolean; concerns?: string; writesCode?: boolean; attempts?: Record<string, number>; testsRedos?: number; regressions?: number; testSource?: string } = {}) {
   writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
     agents: Object.fromEntries(["a", "b"].map((name) => [name, { adapter: "command", command: ["node", greenScript] }])),
     cycle: ["a", "b"], install: "true", test: "node feature.test.mjs", checks: [],
@@ -494,7 +494,7 @@ async function greenRun(id: string, { writesCode = false, attempts = {}, testsRe
   const run = await advance({
     id, baseBranch: "main", branch: `flow/${id}`, requirement: "測試功能", stage: "implement",
     autopilot: true, maxAgentRuns: 1, cycle: ["a", "b"], attempts, taskIndex: 0, taskPhase: "code",
-    taskBase, testsCommit, lastTestsAuthor: "a", ...(testsRedos === undefined ? {} : { testsRedos }), ...(regressions === undefined ? {} : { regressions }), createdAt: now, updatedAt: now,
+    taskBase, testsCommit, lastTestsAuthor: "a", ...(roundBase ? { roundBase: taskBase } : {}), ...(testsRedos === undefined ? {} : { testsRedos }), ...(regressions === undefined ? {} : { regressions }), createdAt: now, updatedAt: now,
   });
   return { run, wt, taskBase, testsCommit };
 }
@@ -649,6 +649,21 @@ describe("綠燈階段：失敗的是前面任務的測試", () => {
     expect(feedback).toContain("old.test.ts");
     expect(feedback).toContain("amend-request.json");
     expect(listRetries(run.id).map((item) => item.category)).toEqual(["tests_not_green"]);
+  });
+
+  it("失敗的是前一輪留下的測試：不建議 amend（沒有任務能修補），改請實作者說明衝突", async () => {
+    const { run } = await greenRun("f-green-regress-stale", { writesCode: true, testSource: OLD_FAIL, roundBase: true });
+    const feedback = readFileSync(join(flowDir(run.id), "feedback.md"), "utf8");
+    expect(feedback).toContain("前一輪留下的測試");
+    expect(feedback).not.toContain("amend-request.json");
+    expect(feedback).toContain("concerns");
+  });
+
+  it("前一輪留下的測試連續第二次回歸：暫停訊息指出要手動更新或 replan", async () => {
+    const { run } = await greenRun("f-green-regress-stale2", { writesCode: true, testSource: OLD_FAIL, roundBase: true, attempts: { "T-1:code": 1 }, regressions: 1 });
+    expect(run.stage).toBe("paused");
+    expect(run.pauseReason).toContain("前一輪留下的測試");
+    expect(run.pauseReason).toContain("replan");
   });
 
   it("連續第二次：暫停等人處理，不重寫測試，resume 再有機會", async () => {
@@ -1905,6 +1920,7 @@ describe("iterate：在同一個 worktree 開第二輪", () => {
     const next = await iterateRun(run, { requirement: "改用既有的 helper" });
     expect(next.stage).toBe("spec");
     expect(next.round).toBe(2);
+    expect(next.roundBase).toMatch(/^[0-9a-f]{40}$/);
     expect(next.requirement.split("\n")[0]).toBe("測試功能");
     expect(next.requirement).toContain("第 2 輪補充需求");
     expect(next.requirement).toContain("改用既有的 helper");
