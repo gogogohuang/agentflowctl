@@ -2500,7 +2500,16 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
 
 async function prStage(run: FlowRun): Promise<FlowRun> {
   const pending = openActions(readHandoff(run.id));
-  if (pending.length) return { ...run, stage: "failed", failedStage: "pr", failureCategory: "open_handoff", failureReason: `仍有未結交接事項：${pending.map((item) => item.id).join("、")}` };
+  if (pending.length) {
+    // 不能直接失敗：resume 只會回到這裡再失敗一次，卡死。審查把額外發現降為參考（不擋關）時，審查者同一輪登記的 action 仍會留在帳本。
+    // 有還沒處理的（open）退回修正；全都是修正者已回報處理（proposed_resolved）、等審查者確認的，退回審查
+    const unhandled = pending.some((item) => item.status === "open");
+    const list = pending.map((item) => `- ${item.id}（${item.status}）${item.summary}`).join("\n");
+    const reason = `開 PR 前仍有未結交接事項：\n${list}`;
+    return unhandled
+      ? { ...retry(run, "pr-handoff", reason, "fix", "open_handoff"), fixSource: "review" }
+      : retry(run, "pr-handoff", reason, "review", "open_handoff");
+  }
   const repo = worktreeDir(run.id);
   const remotes = (await git(repo, "remote")).split("\n").filter(Boolean);
   if (!remotes.includes("origin")) {

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FlowRun } from "./schemas.js";
 
@@ -37,7 +37,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enable
 const { addWorktree, commitAll, git } = await import("./git.js");
 const { advance, canReplan, commitAgentWork, iterateRun, NO_WRITER_CONTEXT, replanRun, resetQuotaState, runChecks, TASK_RESET, withFiles } = await import("./engine.js");
 const { mergeHandoff, prepareHandoff, readHandoff } = await import("./handoff.js");
-const { confirmationsPath, flowDir, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
+const { confirmationsPath, flowDir, handoffPath, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
 const { addRetry, agentRuns, getRun, listFlaky, listRetries, listSideEffects, listSubstitutions, listUsage, saveRun } = await import("./store.js");
 
 // 會連續啟動多個 node 子程序的測試，本機約 2 到 3 秒；CI 的 macOS 較慢，預設 5 秒不夠
@@ -176,6 +176,35 @@ describe("審查交接關卡", () => {
     expect(retries.map((r) => [r.key, r.category])).toContainEqual(["plan-review-run", "handoff_invalid"]);
     expect(retries.every((r) => r.key === "plan-review-run")).toBe(true);
     expect(retries.at(-1)).toMatchObject({ final: true });
+  });
+
+  describe("開 PR 前仍有未結交接事項", () => {
+    async function prRun(id: string, status: "open" | "proposed_resolved") {
+      writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enabled: false },
+        agents: { a: { adapter: "command", command: ["node", join(root, "noop.mjs")] } }, cycle: ["a"] }));
+      writeFileSync(join(root, "noop.mjs"), "");
+      await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
+      mkdirSync(flowDir(id), { recursive: true });
+      mkdirSync(dirname(handoffPath(id)), { recursive: true });
+      const issue = { id: "i1", source: { stage: "review", step: "review", agent: "a", callKey: "k" }, kind: "action", summary: "還原被覆寫的檔案",
+        evidence: "x", targetStage: "code", status, updatedAt: new Date().toISOString() };
+      writeFileSync(handoffPath(id), JSON.stringify({ version: 1, issues: [issue] }));
+      const now = new Date().toISOString();
+      return advance({
+        id, baseBranch: "main", branch: `flow/${id}`, requirement: "x", stage: "pr",
+        autopilot: true, maxAgentRuns: 1, maxAgentRunsExplicit: true, cycle: ["a"], attempts: {}, taskIndex: 0, taskPhase: "tests", createdAt: now, updatedAt: now,
+      });
+    }
+
+    it("還有 open 的事項：退回修正，不是直接失敗（resume 才不會卡死在 pr）", async () => {
+      await prRun("f-pr-open", "open");
+      expect(listRetries("f-pr-open").map((r) => [r.key, r.backTo, r.category])[0]).toEqual(["pr-handoff", "fix", "open_handoff"]);
+          });
+
+    it("只剩等審查確認的 proposed_resolved：退回審查", async () => {
+      await prRun("f-pr-proposed", "proposed_resolved");
+      expect(listRetries("f-pr-proposed").map((r) => [r.key, r.backTo])[0]).toEqual(["pr-handoff", "review"]);
+    });
   });
 
   it("後一位仲裁者要求修改並留下計畫事項時，定案重試為 open_handoff", async () => {
