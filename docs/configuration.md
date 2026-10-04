@@ -162,9 +162,9 @@ Codex 另有幾點差異：
 | `maxTaskRounds` | `3` | 同一個任務「任務審查或任務驗證未通過 → 修正」最多來回幾圈，超過就暫停等人（`resume` 會再給同樣的圈數）。各關的 `maxAttempts` 通過就歸零，合起來可以繞很多圈，這個上限另外算整個任務 |
 | `maxAttempts` | `5` | 同一關連續失敗幾次後停止，至少 3；可用 `run`／`resume` 的 `--max-attempts` 覆蓋 |
 | `verbose` | `false` | 顯示 agent 文字、工具呼叫與專案指令，效果同 `-v` |
-| `install`、`test` | 依專案偵測 | 寫成指令字串，例如 `"install": "pnpm install"` |
-| `checks` | 依專案偵測 | 檢查清單，例如 `[{ "name": "test", "cmd": "pnpm test" }]`；提供時會取代整份預設清單。每項可加 `finalOnly: true`（每個任務的驗證跳過，只在最後整支分支的驗證才跑）與 `changedOnly: true`（最後驗證時把整支分支改過的程式檔接在指令後面，只檢查它們） |
-| `testPattern` | 常見的 `.test.`、`.spec.` 檔名 | 辨識測試檔的正規表示式字串；非標準檔名時調整 |
+| `install`、`test` | 依專案偵測；偵測不到為 `"true"`（不安裝、不跑測試） | 寫成指令字串，例如 `"install": "pnpm install"` |
+| `checks` | 依專案偵測；偵測不到為 `[]` | 檢查清單，例如 `[{ "name": "test", "cmd": "pnpm test" }]`；提供時會取代整份預設清單。每項可加 `finalOnly: true`（每個任務的驗證跳過，只在最後整支分支的驗證才跑）與 `changedOnly: true`（最後驗證時把整支分支改過的程式檔接在指令後面，只檢查它們） |
+| `testPattern` | 通用命名（`tests/`、`__tests__/`、`test_*`、`*_test.*`、`*.test.*`、`*.spec.*`）；偵測到生態系統時由偵測結果取代 | 辨識測試檔的正規表示式字串；非標準檔名時調整 |
 
 計畫審查會依任務規模選做法。同時符合下列條件時，每輪先做一次索引審查，再只審查有變動的任務群：任務達到 `planReviewLayers.minTasks` 個；依 description 寫的檔案路徑能分成至少兩群，而且最大一群不超過三分之二；`plan.md` 每個任務都有 `## T-<數字>` 標題。索引審查讀規格、全部任務描述、驗收條件與整體做法，人數是 `planReviewQuorum`。群數最多 `maxGroups`，也不超過任務數除以 `tasksPerGroup`；每群一位審查者，含 `high` 任務的群改由 `planReviewQuorum` 位審查。改了 `plan.md` 的整體做法時所有群都重審；某一次審查失敗時只重跑還沒完成的部分。已達門檻卻不符其他條件時，終端機會印出原因並改由審查者讀完整份規格與計畫。`"planReviewLayers": { "enabled": false }` 可以關閉，`config doctor` 會顯示目前的設定。
 
@@ -178,7 +178,7 @@ Codex 另有幾點差異：
 - **共用的紀錄寫進所屬 run。** log、用量、重試、代打與交接帳本都記在 run 底下，所以 `logs`、`stats`、`insights` 與 `maxAgentRuns` 不需要另外合併。因此車道裡的 agent 也看得到其他車道開的交接事項。
 - **合併一次一個。** 車道完成後依完成順序合併回 run 的分支（保留合併 commit，訊息 `merge(T-n): …`），合併後才解鎖依賴它的任務；車道的 worktree 與分支隨即清掉。合併後若 `package.json` 或 lockfile 變了，會在 run 的 worktree 重新安裝。
 - **衝突時重做。** 和已合併的任務在同一處衝突時，這條車道會回到最新的分支、從寫測試重做（重試分類 `merge_conflict`，次數計入 `maxAttempts`）。計畫與計畫審查的 prompt 都要求：會修改同一個檔案、或用到另一個任務新增內容的任務必須用 `dependsOn` 排出先後；渲染或斷言同一個元件畫面、測試選取的標籤與文案取決於另一個任務實作的任務也一樣，不排先後就要把確切的標籤與文案寫進兩個任務的驗收條件。沒有文字衝突、但合在一起壞掉的語意衝突，每合併一條車道就會在 run 的分支上跑一次全套測試（不含 install）：沒通過就還原這次合併，讓該車道從最新的分支重做（重試分類 `merge_tests_failed`，次數計入 `maxAttempts`），重試用的回饋附上測試輸出；其餘的語意問題仍由最後的整體驗證與程式碼審查把關。
-- **車道裡不安裝相依套件。** 車道的 `node_modules` 是指向 run 的 symlink，各自安裝會互相覆寫，所以車道裡只跑測試與 build 等檢查；新增相依套件的任務，合併後才會在 run 裡安裝。
+- **車道裡不安裝相依套件。** 車道的依賴目錄（Node 的 `node_modules`、Python 的 `.venv`、Rust 的 `target`）是指向 run 的 symlink，各自安裝會互相覆寫，所以車道裡只跑測試與 build 等檢查；新增相依套件的任務，合併後才會在 run 裡安裝。
 - **失敗、暫停與 resume。** 任一車道失敗（重試達上限、agent 次數用完）就不再開新車道，已在跑的跑完並合併，run 以失敗結束，原因會寫明是哪個任務。額度用完同理：額度是 agent 層級的，用同一家 agent 的車道也會一起暫停，其餘車道跑完後 run 暫停。`resume` 時已合併的任務不重做，失敗或暫停的車道接續。
 - `maxAgentRuns` 是整個 run 所有車道（含平行審查者）合計的次數，每次呼叫 agent 前先保留一格，所以不會超出；剩一格時只有一個呼叫能啟動，其餘車道以 `agent_budget` 失敗（車道停在原處，調高上限 `resume` 後接續）。額度用完而失敗的呼叫也算一次。
 - `status` 在任務清單裡標出正在平行執行的任務。
@@ -190,8 +190,8 @@ Codex 另有幾點差異：
 **審查者的環境**
 
 - 每位審查者在自己的臨時 git worktree 裡工作，固定放在 `.agentflowctl/runs/<id>/tmp-review/slot-<N>/`；只有該路徑被占用（例如上次中斷的殘骸）時才改用唯一的子目錄。
-- 看到的是 run 目前的 HEAD、`.flow/` 的複本，以及指向 run worktree 頂層 `node_modules` 的 symlink（有才建）；不含其他未 commit 或被 gitignore 的檔案（例如 `dist/`）。所以審查者改了什麼都不會影響 run 的 worktree 或其他審查者。
-- 唯一的例外是 `node_modules`：它是共用的 symlink，審查者若在臨時 worktree 裡跑安裝，會寫到 run 真正的 `node_modules`。
+- 看到的是 run 目前的 HEAD、`.flow/` 的複本，以及指向 run worktree 頂層依賴目錄（Node 的 `node_modules`、Python 的 `.venv`、Rust 的 `target`）的 symlink（有才建）；不含其他未 commit 或被 gitignore 的檔案（例如 `dist/`）。所以審查者改了什麼都不會影響 run 的 worktree 或其他審查者。
+- 唯一的例外是依賴目錄：它是共用的 symlink，審查者若在臨時 worktree 裡跑安裝，會寫到 run 真正的依賴目錄。
 - 程式碼審查開始前，會先把 run 的 worktree 還原成 HEAD（清掉驗證階段留下的未 commit 修改與未追蹤產物）。
 
 **結果如何套用**
@@ -213,6 +213,6 @@ Codex 另有幾點差異：
 
 審查意見的處理寫在 `.flow/plan-replies.md`，每輪覆寫，不寫進 `plan.md` 文末。下一輪索引會看到整份回應；任務群只看到自己的 `## T-<數字>` 節。
 
-`install`、`test`、`checks` 未設定時，會依專案類型偵測（Node 看 `packageManager`、lockfile 和 `package.json` scripts；Python、Go、Rust 看各自的專案檔，細節見[執行流程細節](workflow.md)）；`testPattern` 未設定時，Python、Go、Rust 也由偵測補上。完整範例見 [examples/flow.config.json](examples/flow.config.json)。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
+`install`、`test`、`checks` 未設定時，會依專案類型偵測（Node 看 `packageManager`、lockfile 和 `package.json` scripts；Python、Go、Rust 看各自的專案檔，細節見[執行流程細節](workflow.md)）；`testPattern` 未設定時，Node、Python、Go、Rust 也由偵測補上。完整範例見 [examples/flow.config.json](examples/flow.config.json)（其中的 `npx vitest run`、`tsc`、`eslint`、`vite build` 只是 Node 專案的示例寫法，不是預設值）。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
 
 agentflowctl 不讀取任何 `AGENTFLOWCTL_*` 環境變數，設定都寫在 `flow.config.json`。`maxAttempts`（預設 5、至少 3；設得更小會直接報設定錯誤）是單一關卡的重試上限（至少 3），單一 run 可用 `run`／`resume` 的 `--max-attempts` 覆蓋；計畫審查何時交付仲裁與它無關：意見沒有變化，或第 2 輪（修訂過一次）仍被要求修改時就交付，兩家 agent 時自動進入雙盲交叉仲裁，有第三方時由第三方單獨仲裁；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。

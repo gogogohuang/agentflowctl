@@ -229,7 +229,7 @@ export const ESLINT_IGNORE_ARGS = ESLINT_IGNORE_PATTERNS.map((pattern) => `--ign
  */
 export const VITEST_WORKTREE_EXCLUDES = "--exclude '**/.worktree/**' --exclude '**/.worktrees/**'";
 
-/** 目標專案可選的 flow.config.json，預設值對應 Vite + TypeScript + Vitest 專案 */
+/** 目標專案可選的 flow.config.json，預設值是中性的：沒有偵測結果時不安裝、不跑檢查 */
 export const RepoConfig = z.object({
   /** 可用的 agent；沒有內建，全部都要在這裡定義（通常用 config agent add） */
   agents: z.record(z.string(), AgentDef).default({}),
@@ -302,9 +302,11 @@ export const RepoConfig = z.object({
   maxAttempts: z.number().int().min(3).default(5),
   /** 終端機是否印出 agent 的文字、工具呼叫與專案指令；命令列 -v 也能開啟 */
   verbose: z.boolean().default(false),
-  install: z.string().default("npm install --no-audit --no-fund"),
-  test: z.string().default(`npx vitest run ${VITEST_WORKTREE_EXCLUDES}`),
-  testPattern: z.string().default("\\.(test|spec)\\.[cm]?[jt]sx?$"),
+  /** 沒有偵測結果時不安裝；偵測與手動設定的值一律優先（detect.ts） */
+  install: z.string().default("true"),
+  test: z.string().default("true"),
+  /** 通用的測試檔命名：tests/、__tests__/、test_*、*_test.*、*.test.*、*.spec.*；偵測到生態系統時由偵測結果取代 */
+  testPattern: z.string().default(String.raw`(^|/)(tests?|__tests__)/|(^|/)test_[^/]+$|[._-](test|spec)s?\.[^/]+$`),
   checks: z
     .array(z.object({
       name: z.string(),
@@ -314,26 +316,38 @@ export const RepoConfig = z.object({
       /** 最後 verify 時只檢查整支分支改過的檔案：把檔案清單接在指令後面 */
       changedOnly: z.boolean().optional(),
     }))
-    .default([
-      { name: "typecheck", cmd: "npx tsc --noEmit" },
-      { name: "lint", cmd: `npx eslint ${ESLINT_IGNORE_ARGS} .` },
-      { name: "test", cmd: `npx vitest run ${VITEST_WORKTREE_EXCLUDES}` },
-      { name: "build", cmd: "npx vite build" },
-    ]),
+    .default([]),
 });
 export type RepoConfig = z.infer<typeof RepoConfig>;
 
-/** agent 對未知類型專案提出的指令；尚未經程式驗證 */
+/** agent 提出的規則：附一行範例，程式用它驗證規則真的比對得到 */
+export const PatternProposal = z.object({ pattern: z.string(), example: z.string() });
+export const FailureFormat = z.enum(["tap", "pytest", "go", "cargo"]);
+
+/** agent 對未知類型專案提出的指令、以及對任何專案的語言規則補充；尚未經程式驗證 */
 export const DetectionProposal = z.object({
   install: z.string().optional(),
   test: z.string().optional(),
   checks: z.array(z.object({ name: z.string(), cmd: z.string(), finalOnly: z.boolean().optional() })).default([]),
   testPattern: z.string().optional(),
+  depDirs: z.array(z.string()).optional(),
+  skipDirs: z.array(z.string()).optional(),
+  sourceExts: z.array(z.string()).optional(),
+  skipPatterns: z.array(PatternProposal).optional(),
+  suppressPatterns: z.array(PatternProposal).optional(),
+  assertPattern: PatternProposal.optional(),
+  failureLine: PatternProposal.optional(),
+  failureFormat: FailureFormat.optional(),
 });
 export type DetectionProposal = z.infer<typeof DetectionProposal>;
 
 /** `.agentflowctl/detected.json`：通過驗證的欄位，以及被丟掉的欄位與原因；沒有的欄位代表沒有可用的結果 */
-export const DetectedFile = DetectionProposal.extend({
+export const DetectedFile = DetectionProposal.omit({ skipPatterns: true, suppressPatterns: true, assertPattern: true, failureLine: true }).extend({
+  /** 已驗證的規則字串（不含 example） */
+  skipPatterns: z.array(z.string()).optional(),
+  suppressPatterns: z.array(z.string()).optional(),
+  assertPattern: z.string().optional(),
+  failureLine: z.string().optional(),
   fingerprint: z.string(),
   generatedAt: z.string(),
   dropped: z.array(z.object({ field: z.string(), reason: z.string() })).default([]),

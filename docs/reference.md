@@ -340,11 +340,11 @@ verify 失敗（型別、lint、建置）一律交回最後作者。審查意見
 
 - 套件管理器：先看 `package.json` 的 `packageManager`，再看 lockfile（`pnpm-lock.yaml`、`yarn.lock`、`bun.lock`／`bun.lockb`、`package-lock.json`），都沒有就用 npm。
 - `install`：`pnpm install`、`yarn install`、`bun install` 或 `npm install --no-audit --no-fund`。不鎖 lockfile，因為實作時 agent 可能新增依賴。
-- `checks`：typecheck、lint、test、build 四項。`package.json` 有對應的 script（`typecheck`／`type-check`、`lint`、`test`、`build`）就用 `<pm> run <script>`，否則用 `tsc --noEmit`、`eslint .`、`vitest run`、`vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`。沒有 lint 或 typecheck script 就略過該項，不退回預設指令。
+- `checks`：typecheck、lint、test、build 四項，各自只在偵測得到時才加入，不自己補預設指令。`typecheck`（`typecheck`／`type-check`）與 `lint` 只在 `package.json` 有對應 script 時加入，用 `<pm> run <script>`；沒有就略過該項。`test` 見下方；`build` 在有 `build` script 時用 `<pm> run build`，沒有 script 但是 Vite 專案（依賴有 `vite`、根目錄有 `vite.config.*` 或 `index.html`）時用 `vite build`，前面加上 `npx`、`pnpm exec`、`yarn` 或 `bunx`，兩者都不是就沒有 `build` 檢查。
 - `lint` script 含 `eslint` 時，指令列加上 `--ignore-pattern`，略過 `.flow/**`、`.agentflowctl/**`、`.worktree/**`、`.worktrees/**`。不是 eslint（例如 biome）則不改指令。`changedOnly` 交給 lint 的檔案清單也會拿掉這四個目錄。
-- `test`：預設是 `vitest run`，並附加 `--exclude '**/.worktree/**' --exclude '**/.worktrees/**'`。這個 `--exclude` 加在專案 vitest 設定與內建 exclude 之後，不會拿掉 `node_modules`。`test` script 的內容含 `vitest` 時同樣附加；其他測試指令不改。
+- `test`：有真正的 `test` script（不是 `no test specified` 佔位）就跑 `<pm> run test`；沒有時看依賴，有 `vitest`、`jest`、`mocha`、`ava`、`jasmine` 之一就跑對應指令（`vitest run`、`jest`、`mocha`、`ava`、`jasmine`，前面同樣加 `npx` 等前綴）；都沒有就沒有 `test`，也沒有 `test` 檢查。偵測到 vitest（依賴推出的 `vitest run`，或 `test` script 的內容含 `vitest`）時，附加 `--exclude '**/.worktree/**' --exclude '**/.worktrees/**'`。這個 `--exclude` 加在專案 vitest 設定與內建 exclude 之後，不會拿掉 `node_modules`；其他測試指令不改。
 - 型別檢查（`tsc`）與 `vite build` 不加目錄排除：`tsc` 沒有這種參數，也不改寫專案 tsconfig；vite 無法在不改設定檔時排除目錄。
-- 測試框架：`package.json` 的 `dependencies`／`devDependencies` 有 `vitest`、`jest`、`mocha`、`ava`、`jasmine`、`tap`、`uvu`、`@playwright/test`、`cypress` 之一，或 `test` script 存在且不是 `npm init` 的佔位（`no test specified`），就算有測試框架；在 `flow.config.json` 手動設定 `test` 也算。沒有測試框架時：所有任務略過紅綠燈（見「任務的 `tdd` 標記」），預設 `checks` 不含 `test`，`run` 會印出「未偵測到測試框架」。手動設定的 `checks` 一律照設定。
+- 測試框架：`test` script 存在且不是 `npm init` 的佔位（`no test specified`），或 `package.json` 的 `dependencies`／`devDependencies` 有 `vitest`、`jest`、`mocha`、`ava`、`jasmine` 之一，就算有測試框架；在 `flow.config.json` 手動設定 `test` 也算。`tap`、`uvu`、`@playwright/test`、`cypress` 等其他框架沒有 `test` script 時無法決定指令，視為沒有測試框架。沒有測試框架時：所有任務略過紅綠燈（見「任務的 `tdd` 標記」），預設 `checks` 不含 `test`，`run` 會印出「未偵測到測試框架」。手動設定的 `checks` 一律照設定。
 
 `run` 建立 worktree 後會印出這次偵測到的指令：
 

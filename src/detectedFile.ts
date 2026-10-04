@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import { detectProjectDefaults, NO_INSTALL, type ProjectDefaults } from "./detect.js";
 import { detectedPathIn } from "./paths.js";
+import { isSafeDepDirName, isSafeDirName, isSafePattern, mergeProfile, type ProfileExtras } from "./profile.js";
 import { DetectedFile } from "./schemas.js";
 
 /** 判斷未知類型專案「有沒有變」的特徵檔：內容都納入指紋 */
@@ -26,6 +27,7 @@ export function detectFingerprint(root: string): string {
     // 讀不到目錄就只看固定的檔名
   }
   const parts = [...names].sort().map((name) => `${name}\n${readText(join(root, name))}`);
+  parts.push(`eco:${detectProjectDefaults(root).ecosystem}`);
   const workflows = join(root, ".github", "workflows");
   try {
     for (const f of readdirSync(workflows).filter((f) => /\.ya?ml$/.test(f)).sort()) parts.push(`.github/workflows/${f}\n${readText(join(workflows, f))}`);
@@ -67,10 +69,32 @@ export function overlayGenerated(base: ProjectDefaults, g: DetectedFile): Projec
   };
 }
 
-/** 內建偵測；只有未知類型且 detected.json 的指紋相符時，才疊上動態產生的結果 */
+/**
+ * detected.json 是一般檔案，可能被手改或是舊版寫的：合併前重做一次目錄名稱與規則的安全檢查（isSafePattern，含能否編譯），不合格的項目直接略過，
+ * 不能靠它繞過 validateProposal 的限制。
+ */
+export function trustedExtras(g: DetectedFile): ProfileExtras {
+  const safe = (p: string | undefined) => (p !== undefined && isSafePattern(p) ? p : undefined);
+  return {
+    depDirs: g.depDirs?.filter(isSafeDepDirName),
+    skipDirs: g.skipDirs?.filter(isSafeDirName),
+    sourceExts: g.sourceExts?.filter((e) => /^\.\w+$/.test(e)),
+    skipPatterns: g.skipPatterns?.filter(isSafePattern),
+    suppressPatterns: g.suppressPatterns?.filter(isSafePattern),
+    assertPattern: safe(g.assertPattern),
+    failureLine: safe(g.failureLine),
+    failureFormat: g.failureFormat,
+  };
+}
+
+export function mergeGeneratedProfile(base: ProjectDefaults, g: DetectedFile): ProjectDefaults {
+  return { ...base, profile: mergeProfile(base.profile, trustedExtras(g)) };
+}
+
+/** 內建偵測；detected.json 的指紋相符時才疊上動態結果：未知類型整個疊上，已辨識的只補 profile 的缺欄位 */
 export function effectiveDefaults(root: string): ProjectDefaults {
   const base = detectProjectDefaults(root);
-  if (base.ecosystem !== "unknown") return base;
   const generated = readDetected(root);
-  return generated && generated.fingerprint === detectFingerprint(root) ? overlayGenerated(base, generated) : base;
+  if (!generated || generated.fingerprint !== detectFingerprint(root)) return base;
+  return base.ecosystem === "unknown" ? mergeGeneratedProfile(overlayGenerated(base, generated), generated) : mergeGeneratedProfile(base, generated);
 }

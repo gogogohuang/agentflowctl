@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, headCommit, removeWorktree, resetTo, restorePaths } from "./git.js";
+import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, excludeDepDirs, headCommit, removeWorktree, resetTo, restorePaths } from "./git.js";
 
 let root: string;
 let wt: string;
@@ -19,6 +19,21 @@ beforeEach(async () => {
 });
 
 describe("git 工具", () => {
+  it("excludeDepDirs 之後，run worktree 內安裝出來的 .venv 不會被 commit，也不會被 reset 清掉", async () => {
+    await excludeDepDirs(root, [".venv"]);
+    await excludeDepDirs(root, [".venv"]); // 重複呼叫不會重複寫入
+    execFileSync("mkdir", ["-p", join(wt, ".venv", "bin")]);
+    writeFileSync(join(wt, ".venv", "bin", "pytest"), "#!/bin/sh\n");
+    writeFileSync(join(wt, "b.ts"), "export const b = 2;\n");
+    const commit = await commitAll(wt, "x");
+    expect(commit).toBeDefined();
+    expect(await changedFiles(wt, "main", commit!)).toEqual(["b.ts"]);
+    await resetTo(wt, "main");
+    expect(existsSync(join(wt, ".venv", "bin", "pytest"))).toBe(true);
+    const exclude = readFileSync(join(root, ".git", "info", "exclude"), "utf8");
+    expect(exclude.split("\n").filter((l) => l === "/.venv")).toHaveLength(1);
+  });
+
   it("在專案資料夾內建立 worktree，且 .agentflowctl 不會出現在主專案的變更中", async () => {
     expect(existsSync(join(wt, "a.ts"))).toBe(true);
     expect(execFileSync("git", ["-C", root, "status", "--porcelain"], { encoding: "utf8" })).toBe("");

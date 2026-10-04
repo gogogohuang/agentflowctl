@@ -1,16 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
 import { decideAmend } from "./amend.js";
 import { arbitrationDecision } from "./arbitration.js";
-import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
+import { detectProjectDefaults, findFiles, usesTestFramework, withProjectDefaults } from "./detect.js";
 import { detectFingerprint, effectiveDefaults, readDetected, writeDetected } from "./detectedFile.js";
-import { validateProposal } from "./generateDetected.js";
+import { proposalDirOk, validateProposal } from "./generateDetected.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
 import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
-import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo, restorePaths } from "./git.js";
+import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, excludeDepDirs, git, headCommit, mergeBranch, removeWorktree, resetTo, restorePaths } from "./git.js";
 import { uncoveredAcceptanceCommands, uncoveredMessage } from "./acceptanceChecks.js";
 import { nextReviewStall, REVIEW_STALL_PAUSE_AFTER, unmetCriteriaKey } from "./reviewStall.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
@@ -21,7 +21,8 @@ import { missingPackageExports } from "./packageExports.js";
 import { divergeExclude, divergeStamp, formatDivergeFeedback, selectFrames, shouldDiverge } from "./diverge.js";
 import { arbiterPanel, availableAgent, divergeCritic, fixAgent, pick, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid, type StoredCall } from "./parallelReview.js";
-import { cleanupTempWorktrees, withTempWorktree, type Workspace } from "./tempWorktree.js";
+import { cleanupTempWorktrees, symlinkDepDirs, withTempWorktree, type Workspace } from "./tempWorktree.js";
+import { profileGaps, type EcosystemProfile } from "./profile.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
 import {
   AcceptanceList,
@@ -295,7 +296,7 @@ async function settleHandoff(
     // pinned 不找代打，額度用完直接暫停，所以不需要 reset；善後一律交給 finally
     repair = await agentStep(
       run, outcome.agent, outcome.step,
-      renderPrompt("handoff-repair", { step: outcome.step, error: first, range: `${base ?? settled}..${settled}` }),
+      renderStage("handoff-repair", { step: outcome.step, error: first, range: `${base ?? settled}..${settled}` }),
       { kind: "write", pinned: true, reset: () => {} },
     );
   } catch (error) {
@@ -391,6 +392,16 @@ export function loadRepoConfig(): RepoConfig {
   const r = readJsonFile(p, z.preprocess((raw) => withProjectDefaults(raw, detected), RepoConfig));
   if (!r.ok) throw new Error(r.error);
   return r.data;
+}
+
+/** 目前專案的生態系統資料（守門、依賴目錄、失敗輸出格式、prompt 範例） */
+function projectProfile(): EcosystemProfile {
+  return effectiveDefaults(projectRoot()).profile;
+}
+
+/** renderPrompt 加上目前專案生態系統的範例字串（hints）；呼叫端自己給的同名變數優先 */
+function renderStage(name: string, vars: Record<string, string> = {}): string {
+  return renderPrompt(name, { ...projectProfile().hints, ...vars });
 }
 
 /** 專案有測試框架（偵測到或手動設定 test） */
@@ -579,7 +590,7 @@ async function fastPlanStage(run: FlowRun): Promise<FlowRun> {
   const agent = specAgent(run.cycle, run.id);
   info(run, `⚡ fast：一次產生規格與計畫（${agent}）`);
   const cfg = loadRepoConfig();
-  const outcome = await agentStep(run, agent, "spec", renderPrompt("fast-plan", { requirement: run.requirement, testPattern: cfg.testPattern, maxTasks: String(FAST_MAX_TASKS) }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "spec", renderStage("fast-plan", { requirement: run.requirement, testPattern: cfg.testPattern, maxTasks: String(FAST_MAX_TASKS) }), { kind: "write" });
   const { r, agent: actual } = outcome;
   await discardChanges(worktreeDir(run.id));
   if (!r.ok) return retry(run, "spec", `Agent 執行失敗：${r.summary}`, "spec", "agent_error");
@@ -606,24 +617,42 @@ async function fastPlanStage(run: FlowRun): Promise<FlowRun> {
 /** 每個驗證用的指令最多跑 5 分鐘 */
 const DETECT_COMMAND_TIMEOUT_MS = 5 * 60_000;
 
+/** 把 run worktree 的依賴目錄 symlink 給車道；symlink 不是目錄，.gitignore 的 `dir/` 擋不住，commitAll 會把它加進去，所以另外 exclude */
+export async function linkDepDirs(root: string, from: string, to: string, depDirs: readonly string[]): Promise<void> {
+  await excludeDepDirs(root, depDirs);
+  symlinkDepDirs(from, to, depDirs);
+}
+
+/** 只留提案裡的新增規則欄位 */
+function pickProfileFields(p: DetectionProposal): DetectionProposal {
+  const { depDirs, skipDirs, sourceExts, skipPatterns, suppressPatterns, assertPattern, failureLine, failureFormat } = p;
+  return { checks: [], depDirs, skipDirs, sourceExts, skipPatterns, suppressPatterns, assertPattern, failureLine, failureFormat };
+}
+
 /**
  * 認不出專案類型時（沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等），請一位 agent 讀專案提出
  * install／test／checks／testPattern，再由程式在基底 commit 的臨時 worktree 逐欄位驗證，通過的存進 detected.json。
  * 這只是選配的偵測：額度不足、agent 失敗、格式不合都只印警告，不讓 run 失敗；
  * 指紋沒變就不重做，全部無效也會記錄（避免每個 run 重複花用量）。
+ * 已辨識的專案在守門規則（skip／抑制／斷言／失敗行）有缺口、且有測試檔時也會請 agent 補：
+ * 只收新增的規則欄位（經範例與目錄驗證），指令一律忽略，且只能新增、不能放寬內建規則。
  */
 export async function detectWithAgent(run: FlowRun): Promise<void> {
   const root = projectRoot();
   try {
-    if (detectProjectDefaults(root).ecosystem !== "unknown") return;
-    // 手寫設定已經四個欄位都有：偵測結果用不到，不花 agent 次數
+    const base = detectProjectDefaults(root);
+    const unknown = base.ecosystem === "unknown";
+    // 已辨識的專案只在守門欄位有缺口、而且有測試檔時才請 agent 補
+    const gaps = profileGaps(base.profile);
+    if (!unknown && (!gaps.length || !findFiles(root, new RegExp(base.testPattern ?? RepoConfig.parse({}).testPattern), base.profile.skipDirs, 2000).length)) return;
+    // 手寫設定已經四個欄位都有：偵測結果用不到，不花 agent 次數（只適用未知類型；已辨識的專案補的是 profile 規則）
     const rawConfig = existsSync(join(root, "flow.config.json")) ? readJsonFile(join(root, "flow.config.json"), z.record(z.string(), z.unknown())) : undefined;
-    if (rawConfig?.ok && ["install", "test", "checks", "testPattern"].every((k) => k in rawConfig.data)) return;
+    if (unknown && rawConfig?.ok && ["install", "test", "checks", "testPattern"].every((k) => k in rawConfig.data)) return;
     const fingerprint = detectFingerprint(root);
     if (readDetected(root)?.fingerprint === fingerprint) return;
     const agent = specAgent(run.cycle, run.id);
-    info(run, `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查`);
-    const outcome = await agentStep(run, agent, "detect", renderPrompt("detect", {}), { kind: "write", pinned: true });
+    info(run, unknown ? `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查` : `🔎 ${base.manager} 專案的守門規則不完整，請 ${agent} 補充（${gaps.join("、")}）`);
+    const outcome = await agentStep(run, agent, "detect", renderStage("detect", {}), { kind: "write", pinned: true });
     await discardChanges(worktreeDir(run.id)); // 只允許寫 .flow/
     let proposal: DetectionProposal = { checks: [] };
     const dropped: { field: string; reason: string }[] = [];
@@ -631,17 +660,19 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       dropped.push({ field: "proposal", reason: `Agent 執行失敗：${outcome.r.summary}` });
     } else {
       const read = readJsonFile(flowFile(run, "detect-proposal.json"), DetectionProposal);
-      if (read.ok) proposal = read.data;
+      // 已辨識的專案只收新增的規則欄位，指令與測試檔命名一律忽略，避免蓋掉內建指令
+      if (read.ok) proposal = unknown ? read.data : pickProfileFields(read.data);
       else dropped.push({ field: "proposal", reason: read.error });
     }
     // 提案的指令會在主機上直接執行（不在 agent 沙箱內），先印出來讓使用者看得到
     const proposed = [proposal.install && `install：${proposal.install}`, proposal.test && `test：${proposal.test}`,
       ...(proposal.checks ?? []).map((c) => `checks.${c.name}：${c.cmd}`)].filter(Boolean);
     if (proposed.length) info(run, `🔎 agent 提出的指令（將在主機上驗證執行）：${proposed.join("；")}`);
-    const validated = await withTempWorktree(run.id, "detect", async (ws) => {
+    const validated = await withTempWorktree(run.id, "detect", projectProfile().depDirs, async (ws) => {
       const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
       return validateProposal(proposal, {
         files,
+        dirOk: (d, field) => proposalDirOk(ws.dir, d, field),
         hasExecutable: (bin) => {
           try {
             execFileSync("sh", ["-c", 'command -v "$1"', "sh", bin], { cwd: ws.dir, stdio: "ignore" });
@@ -661,10 +692,14 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       });
     });
     const allDropped = [...dropped, ...validated.dropped];
-    writeDetected(root, { ...validated, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
-    const kept = [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
-      ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`].filter(Boolean);
-    info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}（可複製進 flow.config.json 固定下來）` : "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈");
+    const { profileExtras, ...validatedFields } = validated;
+    writeDetected(root, { ...validatedFields, ...profileExtras, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
+    await excludeProjectDepDirs(run); // 動態偵測可能新增依賴目錄，install 之前就要排除
+    const extraKept = Object.keys(profileExtras).map((k) => `profile.${k}`);
+    const kept = [...(unknown ? [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
+      ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`] : []), ...extraKept].filter(Boolean);
+    const none = unknown ? "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈" : "ℹ️  動態偵測沒有可用的規則補充";
+    info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}${unknown ? "（可複製進 flow.config.json 固定下來）" : ""}` : none);
     for (const d of allDropped) info(run, `   ✗ ${d.field}：${d.reason}（可在 flow.config.json 手動設定）`);
   } catch (error) {
     // 選配功能：任何失敗都只警告，不寫指紋（下次 run 會再試）；額度或次數不足則安靜略過
@@ -677,7 +712,7 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
   if (run.fast) return fastPlanStage(run);
   const agent = specAgent(run.cycle, run.id);
   info(run, `📝 產生規格（${agent}）`);
-  const outcome = await agentStep(run, agent, "spec", renderPrompt("spec", { requirement: run.requirement }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "spec", renderStage("spec", { requirement: run.requirement }), { kind: "write" });
   const { r } = outcome;
   await discardChanges(worktreeDir(run.id)); // 這個階段只允許寫 .flow/
   if (!r.ok) return retry(run, "spec", `Agent 執行失敗：${r.summary}`, "spec", "agent_error");
@@ -795,7 +830,7 @@ async function planStage(run: FlowRun): Promise<FlowRun> {
   const agent = planAgent(run.cycle, run.id);
   info(run, `🗺️  拆解任務（${agent}）`);
   const cfg = loadRepoConfig();
-  const outcome = await agentStep(run, agent, "plan", renderPrompt("plan", { testPattern: cfg.testPattern }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "plan", renderStage("plan", { testPattern: cfg.testPattern }), { kind: "write" });
   const { r, agent: actual } = outcome;
   await discardChanges(worktreeDir(run.id));
   if (!r.ok) return retry(run, "plan", `Agent 執行失敗：${r.summary}`, "plan", "agent_error");
@@ -904,7 +939,7 @@ async function executeOne(
     return { stored: reused, ok: true };
   }
   try {
-    return await withTempWorktree(run.id, `slot-${call.slot}`, async (ws) => {
+    return await withTempWorktree(run.id, `slot-${call.slot}`, projectProfile().depDirs, async (ws) => {
       rmSync(join(ws.flow, call.output), { force: true });
       // 平行階段不動帳本，同一批呼叫看到的都是這一份；序列收尾以它評估這個呼叫的核准門檻
       const base = readHandoff(run.id);
@@ -1027,7 +1062,7 @@ async function planReviewFull(run: FlowRun, cfg: RepoConfig): Promise<FlowRun> {
 
   const specs: PlanReviewCallSpec[] = panel.map((reviewer, slot) => ({
     key: `full:${reviewer}`, reviewer, step: "plan-review", slot, gated: true, subject: "計畫",
-    prompt: renderPrompt("plan-review", { reviewer, author, requirement: run.requirement }),
+    prompt: renderStage("plan-review", { reviewer, author, requirement: run.requirement }),
     output: "plan-review.json", archive: `plan-review-${round}-${reviewer}.json`,
   }));
   for (const spec of specs) info(run, `🧐 計畫審查第 ${round} 輪（${spec.reviewer}，作者 ${author}）`);
@@ -1123,7 +1158,7 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
   for (const reviewer of panel) {
     add(`index:${reviewer}`, undefined, "計畫索引審查", {
       reviewer, step: "plan-review", gated: true, subject: "計畫索引",
-      prompt: renderPrompt("plan-review-index", {
+      prompt: renderStage("plan-review-index", {
         reviewer, author, requirement: run.requirement,
         index: planReviewIndex(layered.tasks),
         acceptance: JSON.stringify(layered.acceptance, null, 2),
@@ -1141,7 +1176,7 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
     for (const reviewer of groupPanel) {
       add(`group:${group.id}:${group.taskIds.join(",")}:${reviewer}`, group.taskIds, `計畫群 ${group.id} 審查`, {
         reviewer, step: "plan-review-group", gated: false, subject: `任務群 ${group.id}`, scope: group.id,
-        prompt: renderPrompt("plan-review-group", {
+        prompt: renderStage("plan-review-group", {
           reviewer, author, groupId: group.id,
           files: group.files.join("、") || "（這群的描述沒有點名檔案）",
           tasks: JSON.stringify(groupTasks, null, 2),
@@ -1202,7 +1237,7 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
   try {
     outcome = await agentStep(
       run, agent, "plan-fix",
-      renderPrompt("plan-fix", { requirement: run.requirement, testPattern: cfg.testPattern }),
+      renderStage("plan-fix", { requirement: run.requirement, testPattern: cfg.testPattern }),
       { kind: "write", reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); clearReplies(); } },
     );
   } catch (err) {
@@ -1343,7 +1378,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     info(run, `⚖️  ${mode}（${arbiter}）`);
     const snap = snapshotPlan(run, PLAN_REPLY_FILES);
     rmSync(flowFile(run, "plan-arbiter.json"), { force: true });
-    const outcome = await agentStep(run, arbiter, "plan-arbiter", renderPrompt("plan-arbiter", { requirement: run.requirement }), {
+    const outcome = await agentStep(run, arbiter, "plan-arbiter", renderStage("plan-arbiter", { requirement: run.requirement }), {
       kind: "review", slot, blind: true,
       reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); },
     });
@@ -1502,7 +1537,7 @@ async function maybeDiverge(run: FlowRun, task: TaskItem, cfg: RepoConfig): Prom
   for (const frame of frames) {
     const outcome = await agentStep(
       run, pick(run.cycle, `${run.id}:${stamp}:${frame}`), `${task.id}-diverge-${frame}`,
-      renderPrompt("diverge-branch", {
+      renderStage("diverge-branch", {
         frame, framePrompt: DIVERGE_FRAME_PROMPT[frame], task: taskJson, acceptance: acceptanceJson,
         feedback, category,
       }),
@@ -1522,7 +1557,7 @@ async function maybeDiverge(run: FlowRun, task: TaskItem, cfg: RepoConfig): Prom
   const critic = divergeCritic(run.cycle, excluded, `${run.id}:${stamp}`);
   const outcome = await agentStep(
     run, critic, `${task.id}-diverge-critic`,
-    renderPrompt("diverge-critic", {
+    renderStage("diverge-critic", {
       task: taskJson, acceptance: acceptanceJson, feedback, category,
       branches: JSON.stringify(branches, null, 2),
     }),
@@ -1632,7 +1667,8 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   }
   const repo = worktreeDir(run.id);
   const testRe = new RegExp(cfg.testPattern);
-  // 車道共用所屬 run 的 node_modules（symlink），各自安裝會互相覆寫，所以車道裡只跑測試
+  const profile = projectProfile();
+  // 車道共用所屬 run 的依賴目錄（symlink），各自安裝會互相覆寫，所以車道裡只跑測試
   const testCmd = inLane(run) ? cfg.test : `${cfg.install} && ${cfg.test}`;
   const progress = inLane(run) ? `平行 ${task.id} ${task.title}` : `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
   if (task.kind === "confirm") {
@@ -1679,7 +1715,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const snap = snapshotPlan(run, LOCKED_FILES);
     const outcome = await agentStep(
       run, agents.tests, `${task.id}-tests`,
-      renderPrompt("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd, ...testsRedGuidance(testCmd, waiveRed) }),
+      renderStage("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd, ...testsRedGuidance(testCmd, waiveRed) }),
       { kind: "write", reset: async () => { await resetTo(repo, before); restorePlan(run, snap); } },
     );
     const { r, agent: testsAuthor } = outcome;
@@ -1717,13 +1753,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     }
     // 紅燈跑在實作之前：失敗的若是別的測試檔，就是分支上早就壞了（例如平行車道合併後語意衝突）。
     // 這不是這個任務的測試或實作能修的，繼續只會在綠燈原地打轉，先還原並停下等人處理
-    const foreign = red.ok ? [] : foreignFailingTests(red.output, changed.filter((f) => testRe.test(f)));
+    const foreign = red.ok ? [] : foreignFailingTests(red.output, changed.filter((f) => testRe.test(f)), profile);
     if (foreign.length) {
       await resetTo(repo, before);
       throw new BaselineRedPause(`${key} 的紅燈階段，失敗的是別的測試檔：${foreign.join("、")}（分支上原本就壞了，不是這個任務造成的）；請先修好那些測試，或用 replan／手動修正後 resume${logHint(run, red.seq)}`);
     }
     // 紅燈只看得出「失敗」，看不出失敗的原因：測試呼叫了套件沒有的匯出時，實作者再怎麼改都不會綠，現在就退回給測試作者
-    const missing = await missingPackageExports(repo, changed.filter((f) => testRe.test(f)));
+    const missing = profile.packageProbe ? await missingPackageExports(repo, changed.filter((f) => testRe.test(f))) : [];
     if (missing.length) {
       await resetTo(repo, before);
       return retry(
@@ -1758,8 +1794,8 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const outcome = await agentStep(
     run, agents.code, `${task.id}-code`,
     tdd
-      ? renderPrompt("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) })
-      : renderPrompt("implement-direct", { task: taskJson, acceptance: acceptanceJson, testCmd: framework ? testCmd : "" }),
+      ? renderStage("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) })
+      : renderStage("implement-direct", { task: taskJson, acceptance: acceptanceJson, testCmd: framework ? testCmd : "" }),
     { kind: "write", reset: async () => { await resetTo(repo, testsCommit); restorePlan(run, snap); } },
   );
   const { r, agent: codeAuthor } = outcome;
@@ -1782,6 +1818,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
         await changedFiles(repo, testsCommit, await headCommit(repo)),
         await changedFiles(repo, testsCommit, await headCommit(repo), "D"),
         testRe,
+        profile,
       )
     : [];
   if (touched.length) {
@@ -1789,7 +1826,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     return retry(run, key, `實作階段不可修改測試檔，已還原你的變更：${touched.join(", ")}`, "implement", "tests_modified");
   }
   // 實作可以新增程式碼，但不可以用 @ts-ignore、eslint-disable 之類的方式讓型別與 lint 檢查閉嘴
-  const suppressed = weakenedChecks(await git(repo, "diff", testsCommit, await headCommit(repo)), testRe).filter((w) => w.kind === "suppress");
+  const suppressed = weakenedChecks(await git(repo, "diff", testsCommit, await headCommit(repo)), testRe, profile).filter((w) => w.kind === "suppress");
   if (suppressed.length) {
     await resetTo(repo, testsCommit);
     return retry(run, key, weakenedMessage(suppressed), "implement", "checks_weakened");
@@ -1811,12 +1848,12 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     // 實作者不能改既有測試，要嘛改實作別破壞它們，要嘛提 amend；第二次還是這樣就停下，不再重試
     // 非 TDD 任務沒有「自己的測試」可比對，實作者本來就可以改測試，不做這項判斷
     const own = tdd && run.taskBase ? (await changedFiles(repo, run.taskBase, testsCommit)).filter((f) => testRe.test(f)) : [];
-    const regressed = tdd && run.taskBase ? foreignFailingTests(green.output, own) : [];
+    const regressed = tdd && run.taskBase ? foreignFailingTests(green.output, own, profile) : [];
     if (!regressed.length) run = { ...run, regressions: undefined };
     if (regressed.length) {
       // 「連續」只算回歸本身：先前因其他原因失敗的嘗試不計入
       const streak = (run.regressions ?? 0) + 1;
-      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${failureTail(green.output)}\n\`\`\``;
+      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${failureTail(green.output, undefined, profile.failureFormat)}\n\`\`\``;
       if (streak >= REGRESSION_PAUSE_AFTER) {
         const attempts = { ...run.attempts };
         delete attempts[key];
@@ -1830,7 +1867,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     // 實作者沒有任何變更、或同樣的測試一再失敗，表示問題多半出在測試本身（用了專案沒有的 API、斷言互相矛盾……），
     // 再叫實作者重試只會原地打轉：丟掉這一輪，回到測試階段重寫
     // 失敗是「測試呼叫了套件沒有的匯出」時與實作無關，不必等第二次就退回
-    const brokenImport = tdd && run.taskBase ? brokenPackageImport(green.output, await testPackageImports(repo, run.taskBase, testsCommit, testRe)) : undefined;
+    const brokenImport = tdd && profile.packageProbe && run.taskBase ? brokenPackageImport(green.output, await testPackageImports(repo, run.taskBase, testsCommit, testRe)) : undefined;
     const suspectTests = Boolean(brokenImport) || !codeCommit || failures >= TESTS_REDO_AFTER_FAILURES;
     if (tdd && run.taskBase && (run.testsRedos ?? 0) >= TESTS_REDO_LIMIT && suspectTests) {
       // 已退回測試階段達上限仍然過不了：再自動重試只會燒用量，停下來等人處理（改依賴、補充意見或 replan 之後 resume）
@@ -1844,7 +1881,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
         false, authorConcerns(outcome),
       );
     }
-    return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${failureTail(green.output)}\n\`\`\``, "implement", "tests_not_green");
+    return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${failureTail(green.output, undefined, profile.failureFormat)}\n\`\`\``, "implement", "tests_not_green");
   }
   const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, testsCommit);
   if (handoffError) {
@@ -1880,7 +1917,6 @@ async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, task
   rmSync(runDir(id), { recursive: true, force: true });
   await git(root, "worktree", "prune");
   await git(root, "branch", "-D", branch).catch(() => {});
-  await excludePaths(root, ["/node_modules"]); // symlink 不是目錄，.gitignore 的 node_modules/ 擋不住，commitAll 會把它加進去
   await addWorktree(root, wt, await headCommit(worktreeDir(parent.id)), branch);
   mkdirSync(flowDir(id), { recursive: true });
   for (const name of ["spec.md", "acceptance.json", "plan.md", "tasks.json"]) {
@@ -1889,8 +1925,7 @@ async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, task
   // 這個任務放第一個；其餘還沒完成的任務留著，讓「不可動後面任務的檔案」的檢查仍能比對
   const rest = tasks.filter((t) => t.id !== task.id && !done.has(t.id));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([task, ...rest], null, 2));
-  const deps = join(worktreeDir(parent.id), "node_modules");
-  if (existsSync(deps)) symlinkSync(deps, join(wt, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  await linkDepDirs(root, worktreeDir(parent.id), wt, projectProfile().depDirs);
   const now = new Date().toISOString();
   return saveRun({
     id, baseBranch: parent.branch, branch, requirement: parent.requirement, stage: "implement", autopilot: true,
@@ -2044,7 +2079,7 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     seed: `${run.id}:review:${task.id}:${run.attempts[key] ?? 0}`,
     label: `[${progress}] 任務審查`,
     step: `${task.id}-review`,
-    prompt: (reviewer, authors) => renderPrompt("task-review", { reviewer, authors, task: taskJson, acceptance: acceptanceJson }),
+    prompt: (reviewer, authors) => renderStage("task-review", { reviewer, authors, task: taskJson, acceptance: acceptanceJson }),
     saveAs: (reviewer) => `review-${task.id}-${reviewer}.json`,
     testAuthor: run.lastTestsAuthor,
     // 輪流交換角色：優先由排定的審查者審查，讓各家用量平均
@@ -2110,7 +2145,7 @@ async function redoTests(
     "測試輸出：",
     "",
     "```",
-    failureTail(output),
+    failureTail(output, undefined, projectProfile().failureFormat),
     "```",
     "",
   ].join("\n"));
@@ -2257,7 +2292,9 @@ export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "
     });
   }
   // 指令跑完工作樹多出變動：那是它們的副作用。記下來，之後 commit 時不帶進去，並在 verify.json 註明（審查者只認這份）
-  const sideEffects = (await dirtyPaths(repo).catch(() => [])).filter((p) => !dirtyBefore.has(p) && !/(^|\/)node_modules\//.test(p));
+  const depDirs = projectProfile().depDirs;
+  const depRe = new RegExp(`(^|/)(${depDirs.map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})/`);
+  const sideEffects = (await dirtyPaths(repo).catch(() => [])).filter((p) => !dirtyBefore.has(p) && !(depDirs.length && depRe.test(p)));
   if (sideEffects.length) {
     addSideEffects(ownerId(run.id), sideEffects);
     info(run, `   ⚠️  檢查指令執行後改動了工作樹：${sideEffects.join("、")}`);
@@ -2300,7 +2337,7 @@ async function applyFix(
   const feedback = readFeedback(run);
   const before = await headCommit(repo);
   const snap = snapshotPlan(run, LOCKED_FILES);
-  const outcome = await agentStep(run, agent, opts.step, renderPrompt("fix", { testPattern: cfg.testPattern }), {
+  const outcome = await agentStep(run, agent, opts.step, renderStage("fix", { testPattern: cfg.testPattern }), {
     kind: "write",
     reset: async () => { await resetTo(repo, before); restorePlan(run, snap); },
   });
@@ -2322,13 +2359,14 @@ async function applyFix(
     info(run, "   ⚠️  修正動到後面任務負責的檔案，已達守衛次數上限，放行");
   }
   const testRe = new RegExp(cfg.testPattern);
+  const profile = projectProfile();
   const deleted = (await changedFiles(repo, before, await headCommit(repo), "D")).filter((f) => testRe.test(f));
   if (deleted.length) {
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`, "tests_deleted");
   }
   // skip／suppress 沒有正當理由，一律退回；斷言變少可能是合理地刪掉重複的，只在前幾次嘗試擋下
-  const weak = weakenedChecks(await git(repo, "diff", before, await headCommit(repo)), testRe);
+  const weak = weakenedChecks(await git(repo, "diff", before, await headCommit(repo)), testRe, profile);
   const blocking = weak.filter((w) => w.kind !== "assertions" || (run.attempts[opts.key] ?? 0) < SCOPE_GUARD_ATTEMPTS);
   if (blocking.length) {
     await resetTo(repo, before);
@@ -2473,7 +2511,7 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     seed: `${run.id}:review:${run.attempts.review ?? 0}`,
     label: "程式碼審查",
     step: "review",
-    prompt: (reviewer, authors) => renderPrompt("review", { reviewer, authors }),
+    prompt: (reviewer, authors) => renderStage("review", { reviewer, authors }),
     saveAs: (reviewer) => `review-${reviewer}.json`,
     gate: true,
     runKey: "review-run",
@@ -2559,11 +2597,22 @@ const STAGES: Record<ActiveStage, (run: FlowRun) => Promise<FlowRun>> = {
   pr: prStage,
 };
 
+/** 把目前 profile 的依賴目錄寫進 info/exclude；只是保護措施，失敗只警告 */
+async function excludeProjectDepDirs(run: FlowRun): Promise<void> {
+  try {
+    await excludeDepDirs(projectRoot(), projectProfile().depDirs);
+  } catch (err) {
+    info(run, `⚠️  無法把依賴目錄寫進 .git/info/exclude：${errorMessage(err)}`);
+  }
+}
+
 /** 一路推進到需要人介入（awaiting_approval、paused）或結束（done / failed）為止；每一步都寫回檔案，中斷後可接續 */
 export async function advance(initial: FlowRun): Promise<FlowRun> {
   let run = initial;
   recoverHandoff(run.id);
   await cleanupTempWorktrees(run.id); // 上次被中斷（Ctrl-C、SIGTERM、當機）時留下的平行審查臨時 worktree
+  // 依賴目錄（例如 .venv）在 run worktree 內安裝：排除後才不會被 commit 或被 reset 清掉；既有的 run 在 resume 時也補上
+  await excludeProjectDepDirs(run);
   for (;;) {
     if (["done", "failed", "awaiting_approval", "paused"].includes(run.stage)) return run;
     const stage = run.stage as ActiveStage;

@@ -1,9 +1,9 @@
 // 綠燈階段的測試檔守門：實作不可動測試檔，唯一例外是「連同被測檔一起刪除」（例如移除舊 helper）。
+import { anyOf, compileOrUndefined, isSourceFile, MAX_MATCH_LINE, testSourceOf, type EcosystemProfile } from "./profile.js";
 
-/** foo.test.ts → foo.ts；不符合 .test／.spec 命名時回傳 undefined */
-export function sourceOfTest(file: string): string | undefined {
-  const m = file.match(/^(.*)\.(?:test|spec)(\.[cm]?[jt]sx?)$/);
-  return m ? `${m[1]}${m[2]}` : undefined;
+/** foo.test.ts → foo.ts（依生態系統的命名規則）；不符合命名時回傳 undefined */
+export function sourceOfTest(profile: EcosystemProfile, file: string): string | undefined {
+  return testSourceOf(profile, file);
 }
 
 /**
@@ -11,12 +11,12 @@ export function sourceOfTest(file: string): string | undefined {
  * changed 是與測試 commit 相比有變動的全部檔案，deleted 是其中被刪除的。
  * 測試檔被刪除、而且對應的被測檔也一起被刪除時放行，其餘都算違規。
  */
-export function violatingTestChanges(changed: string[], deleted: string[], testRe: RegExp): string[] {
+export function violatingTestChanges(changed: string[], deleted: string[], testRe: RegExp, profile: EcosystemProfile): string[] {
   const gone = new Set(deleted);
   return changed.filter((f) => {
     if (!testRe.test(f)) return false;
     if (!gone.has(f)) return true;
-    const src = sourceOfTest(f);
+    const src = sourceOfTest(profile, f);
     return !(src && gone.has(src));
   });
 }
@@ -63,16 +63,23 @@ export function brokenPackageImport(output: string, imports: Set<string>): strin
  * 實作者修不了也不該修，繼續下去只會在綠燈原地打轉。
  * 只看含 FAIL／❯／×／✗／✕ 的行，避免把通過（✓）的檔案算進來；認不出任何失敗的測試檔時回傳空陣列（無法判斷，照常進行）。
  */
-export function foreignFailingTests(output: string, taskTests: string[]): string[] {
+export function foreignFailingTests(output: string, taskTests: string[], profile: EcosystemProfile): string[] {
+  // 規則無法編譯時停用這個判斷；每行只比對前 MAX_MATCH_LINE 個字元，避免長行讓同步比對卡住整個引擎
+  const failureLine = compileOrUndefined(profile.failureLine);
+  const filePattern = compileOrUndefined(profile.testFilePattern, "g");
+  if (!failureLine || !filePattern) return [];
   // eslint-disable-next-line no-control-regex
   const plain = output.replace(/\u001b\[[0-9;]*m/g, "");
   // 輸出的路徑可能相對於不同目錄，以路徑結尾比對；只比檔名會把同名的別處測試誤認成本任務的
   const norm = (f: string) => f.replace(/^\.\//, "");
   const isMine = (f: string) => taskTests.some((t) => norm(t) === norm(f) || norm(t).endsWith(`/${norm(f)}`) || norm(f).endsWith(`/${norm(t)}`));
   const foreign = new Set<string>();
-  for (const line of plain.split("\n")) {
-    if (!/\bFAIL\b|[❯×✗✕]/.test(line)) continue;
-    for (const m of line.matchAll(/[\w@.\/-]+\.(?:test|spec)\.[cm]?[jt]sx?/g)) {
+  for (const full of plain.split("\n")) {
+    const line = full.slice(0, MAX_MATCH_LINE);
+    if (!failureLine.test(line)) continue;
+    for (const m of line.matchAll(filePattern)) {
+      // testFilePattern 可能撈到非測試檔（例如 pytest 的 .py）：有命名規則時只收有對應被測檔的路徑
+      if (profile.testSourcePairs.length && !testSourceOf(profile, m[0])) continue;
       if (!isMine(m[0])) foreign.add(m[0]);
     }
   }
@@ -81,23 +88,20 @@ export function foreignFailingTests(output: string, taskTests: string[]): string
 
 export interface Weakening {
   file: string;
-  /** skip＝新增 skip／only／todo；suppress＝新增 @ts-ignore／@ts-nocheck／eslint-disable；assertions＝測試檔的斷言變少 */
+  /** skip＝新增跳過測試的標記；suppress＝新增抑制型別或 lint 的註解；assertions＝測試檔的斷言變少 */
   kind: "skip" | "suppress" | "assertions";
   count: number;
 }
 
-const SKIP_RE = /\b(?:it|test|describe|context)\.(?:skip|todo|only)\b|\b(?:xit|xtest|xdescribe)\s*\(|\.only\s*\(/;
-const SUPPRESS_RE = /@ts-ignore|@ts-nocheck|eslint-disable/;
-/** 抑制註解只在程式碼檔案才有意義；文件、設定與鎖定檔提到它們不算 */
-const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/;
-const ASSERT_RE = /\b(?:expect|assert\w*)\s*[(.]/;
-
 /**
  * 從 unified diff 找出「讓檢查變容易過」的變更。以每個檔案新增與移除的行數相抵，所以搬移程式碼不會誤判。
  * skip／suppress 沒有正當理由；assertions 可能是合理地刪掉重複的斷言，由呼叫端決定是否擋下。
- * .flow/ 是交接檔，不看。
+ * .flow/ 是交接檔，不看。規則無法編譯時該守門停用，不丟例外。
  */
-export function weakenedChecks(diff: string, testRe: RegExp): Weakening[] {
+export function weakenedChecks(diff: string, testRe: RegExp, profile: EcosystemProfile): Weakening[] {
+  const skipRe = anyOf(profile.skipPatterns);
+  const suppressRe = anyOf(profile.suppressPatterns);
+  const assertRe = compileOrUndefined(profile.assertPattern);
   const files = new Map<string, { added: string[]; removed: string[] }>();
   let current: { added: string[]; removed: string[] } | undefined;
   let name = "";
@@ -113,22 +117,23 @@ export function weakenedChecks(diff: string, testRe: RegExp): Weakening[] {
       current.removed.push(line.slice(1));
     }
   }
-  const net = (lines: { added: string[]; removed: string[] }, re: RegExp) =>
-    lines.added.filter((l) => re.test(l)).length - lines.removed.filter((l) => re.test(l)).length;
+  // 每行只比對前 MAX_MATCH_LINE 個字元：規則可能來自 agent 提案，長行配上回溯會讓同步比對卡住整個引擎
+  const hits = (ls: string[], re: RegExp) => ls.filter((l) => re.test(l.slice(0, MAX_MATCH_LINE))).length;
+  const net = (lines: { added: string[]; removed: string[] }, re: RegExp) => hits(lines.added, re) - hits(lines.removed, re);
   const found: Weakening[] = [];
   for (const [file, lines] of files) {
     const isTest = testRe.test(file);
-    const skipped = isTest ? net(lines, SKIP_RE) : 0;
+    const skipped = isTest && skipRe ? net(lines, skipRe) : 0;
     if (skipped > 0) found.push({ file, kind: "skip", count: skipped });
-    const suppressed = SOURCE_FILE.test(file) ? net(lines, SUPPRESS_RE) : 0;
+    const suppressed = suppressRe && isSourceFile(profile, file) ? net(lines, suppressRe) : 0;
     if (suppressed > 0) found.push({ file, kind: "suppress", count: suppressed });
-    const lost = isTest ? -net(lines, ASSERT_RE) : 0;
+    const lost = isTest && assertRe ? -net(lines, assertRe) : 0;
     if (lost > 0) found.push({ file, kind: "assertions", count: lost });
   }
   return found;
 }
 
 export function weakenedMessage(found: Weakening[]): string {
-  const label = { skip: "新增 skip／only／todo", suppress: "新增 @ts-ignore／@ts-nocheck／eslint-disable", assertions: "斷言變少" } as const;
+  const label = { skip: "新增 skip／only／todo", suppress: "新增抑制型別或 lint 的註解", assertions: "斷言變少" } as const;
   return `這次變更讓檢查變得比較容易通過，已還原你的變更：${found.map((w) => `${w.file}（${label[w.kind]} ${w.count} 處）`).join("、")}。請從根本原因修正，不要用跳過測試、抑制型別或 lint、減少斷言的方式讓檢查通過；測試本身確實有誤時，只修正有誤的斷言並在 <concerns> 說明理由。`;
 }

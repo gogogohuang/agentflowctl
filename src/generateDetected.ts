@@ -1,4 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { tail } from "./util.js";
+import { compileOrUndefined, isSafeDepDirName, isSafeDirName, MAX_MATCH_LINE, unsafePatternReason, type ProfileExtras } from "./profile.js";
 import type { DetectedFile, DetectionProposal } from "./schemas.js";
 
 export interface ValidateDeps {
@@ -8,9 +12,35 @@ export interface ValidateDeps {
   files: string[];
   /** 指令的第一個可執行檔是否存在 */
   hasExecutable(bin: string): boolean;
+  /** depDirs：必須是已存在的目錄；skipDirs：目錄存在，或已被 .gitignore 忽略 */
+  dirOk(dir: string, field: "depDirs" | "skipDirs"): boolean;
 }
 
-export type Validated = Pick<DetectedFile, "install" | "test" | "checks" | "testPattern" | "dropped">;
+export { isSafeDirName };
+
+/**
+ * 真實的 dirOk。依賴目錄會被 symlink 進每位審查者與每條車道，所以只收「已存在的真目錄」：
+ * git check-ignore 對被忽略的一般檔案（例如 .env）與根本不存在的名稱也回傳成功，不能拿來證明它是目錄。
+ * skipDirs 只影響 findFiles 略過哪些名稱，才退而接受「不存在但被 .gitignore 忽略」。
+ */
+export function proposalDirOk(cwd: string, d: string, field: "depDirs" | "skipDirs"): boolean {
+  if (!(field === "depDirs" ? isSafeDepDirName(d) : isSafeDirName(d))) return false;
+  try {
+    if (statSync(join(cwd, d)).isDirectory()) return true;
+    return false; // 存在但不是目錄（一般檔案）：兩種欄位都不收
+  } catch {
+    // 不存在：依賴目錄一律不收；skipDirs 再看是否被忽略
+  }
+  if (field === "depDirs") return false;
+  try {
+    execFileSync("git", ["check-ignore", "-q", "--", d], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type Validated = Pick<DetectedFile, "install" | "test" | "checks" | "testPattern" | "dropped"> & { profileExtras: ProfileExtras };
 
 /** 空指令與永遠會成功的指令：拿來當檢查等於沒有檢查 */
 export function isTrivialCommand(cmd: string): boolean {
@@ -40,7 +70,7 @@ async function tryCommand(cmd: string, deps: ValidateDeps): Promise<Verdict> {
  */
 export async function validateProposal(p: DetectionProposal, deps: ValidateDeps): Promise<Validated> {
   const dropped: Validated["dropped"] = [];
-  const out: Validated = { checks: [], dropped };
+  const out: Validated = { checks: [], dropped, profileExtras: {} };
   if (p.install !== undefined) {
     const v = await tryCommand(p.install, deps);
     if (v.ok) out.install = p.install;
@@ -70,6 +100,49 @@ export async function validateProposal(p: DetectionProposal, deps: ValidateDeps)
       dropped.push({ field: "testPattern", reason: `不是合法的正規表示式：${p.testPattern}` });
     }
   }
+  const extras: ProfileExtras = {};
+  const checkPattern = (field: string, x: { pattern: string; example: string }): string | undefined => {
+    const re = compileOrUndefined(x.pattern);
+    if (!re) {
+      dropped.push({ field, reason: `不是合法的正規表示式：${x.pattern.slice(0, 120)}` });
+      return undefined;
+    }
+    // 規則會在每行 diff 與測試輸出上同步執行，先擋下會災難性回溯的寫法（不能拿範例計時：JS 正規表示式無法中斷）
+    const unsafe = unsafePatternReason(x.pattern);
+    if (unsafe) {
+      dropped.push({ field, reason: `規則不安全（${unsafe}）：${x.pattern.slice(0, 120)}` });
+      return undefined;
+    }
+    if (re.test(x.example.slice(0, MAX_MATCH_LINE))) return x.pattern;
+    dropped.push({ field, reason: `範例沒有被這個規則比對到：${x.pattern}` });
+    return undefined;
+  };
+  const listOf = (field: "skipPatterns" | "suppressPatterns") => (p[field] ?? []).map((x) => checkPattern(field, x)).filter((x): x is string => x !== undefined);
+  const skip = listOf("skipPatterns");
+  if (skip.length) extras.skipPatterns = skip;
+  const suppress = listOf("suppressPatterns");
+  if (suppress.length) extras.suppressPatterns = suppress;
+  const assertPattern = p.assertPattern && checkPattern("assertPattern", p.assertPattern);
+  if (assertPattern) extras.assertPattern = assertPattern;
+  const failureLine = p.failureLine && checkPattern("failureLine", p.failureLine);
+  if (failureLine) extras.failureLine = failureLine;
+  if (p.failureFormat) extras.failureFormat = p.failureFormat;
+  for (const field of ["depDirs", "skipDirs"] as const) {
+    const ok: string[] = [];
+    for (const d of p[field] ?? []) {
+      if (!isSafeDirName(d)) dropped.push({ field, reason: `不是單一層的目錄名稱：${JSON.stringify(d)}` });
+      else if (field === "depDirs" && !isSafeDepDirName(d)) dropped.push({ field, reason: `是 agentflowctl 或 git 保留的目錄，不能當依賴目錄：${d}` });
+      else if (field === "depDirs" && deps.files.some((f) => f === d || f.startsWith(`${d}/`))) dropped.push({ field, reason: `已被版控追蹤，不能當依賴目錄：${d}` });
+      else if (!deps.dirOk(d, field)) dropped.push({ field, reason: field === "depDirs" ? `不是已存在的目錄：${d}` : `不是目錄，也沒有被 .gitignore 忽略：${d}` });
+      else ok.push(d);
+    }
+    if (ok.length) extras[field] = ok;
+  }
+  if (p.sourceExts?.length) {
+    const exts = p.sourceExts.filter((e) => /^\.\w+$/.test(e));
+    if (exts.length) extras.sourceExts = exts;
+  }
+  out.profileExtras = extras;
   if (passedTest !== undefined) {
     if (out.testPattern !== undefined) {
       out.test = passedTest;

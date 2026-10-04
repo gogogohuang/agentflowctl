@@ -29,6 +29,15 @@ export async function excludePaths(root: string, patterns: string[]): Promise<vo
   if (missing.length) appendFileSync(file, `\n${missing.join("\n")}\n`);
 }
 
+/**
+ * 依賴目錄（例如 pip 在 worktree 內建的 .venv）寫進共用的 info/exclude，以 / 開頭只比對每個 worktree 的頂層：
+ * 沒排除時 commitAll 的 add -A 會把整個依賴目錄 commit 進分支，resetTo 的 clean -fd 則會刪掉它
+ * （clean 沒加 -x 會尊重 exclude）。不寫結尾的 /，車道裡同名的 symlink 也排除得到。
+ */
+export async function excludeDepDirs(root: string, depDirs: readonly string[]): Promise<void> {
+  if (depDirs.length) await excludePaths(root, depDirs.map((d) => `/${d}`));
+}
+
 /** 從基底分支建立新的 worktree 與分支，共用同一份 git 物件，不需要重新 clone */
 export async function addWorktree(root: string, dest: string, base: string, branch: string): Promise<void> {
   await excludePaths(root, [".agentflowctl/", ".flow/"]);

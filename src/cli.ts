@@ -8,7 +8,7 @@ import { MIN_ATTEMPTS, config } from "./config.js";
 import { advance, detectWithAgent, iterateRun, loadRepoConfig, replanRun } from "./engine.js";
 import { exec } from "./proc.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
-import { addWorktree, git } from "./git.js";
+import { addWorktree, excludeDepDirs, git } from "./git.js";
 import { cleanableRuns, cleanRun } from "./cleanup.js";
 import { describeDetected } from "./detect.js";
 import { effectiveDefaults } from "./detectedFile.js";
@@ -189,6 +189,7 @@ program
     const branch = `flow/${id}`;
     console.log(`[${id}] 🌿 從 ${base} 建立 worktree（分支 ${branch}）`);
     await addWorktree(root, worktreeDir(id), base, branch);
+    await excludeDepDirs(root, effectiveDefaults(root).profile.depDirs);
     console.log(`[${id}] 🤝 參與的 agent：${cycle.join("、")}（角色隨機分配）`);
     const now = new Date().toISOString();
     // worktree 一建好就寫入紀錄：之後在任何地方中斷，都能用 resume 接續或用 clean 清掉
@@ -403,7 +404,7 @@ program
   .description("把 dump 的資料還原成可以 resume 的 run（沿用原 id，用既有分支重建 worktree）")
   .action(async (dumpDir: string) => {
     const run = await restoreRun(dumpDir);
-    console.log(`✅ 已還原 ${run.id}（階段 ${run.stage}，分支 ${run.branch}）；worktree 不含 node_modules，接續前請先在裡面安裝相依套件，再用 agentflowctl resume ${run.id}`);
+    console.log(`✅ 已還原 ${run.id}（階段 ${run.stage}，分支 ${run.branch}）；worktree 不含相依套件（依賴目錄），接續前請先在裡面安裝，再用 agentflowctl resume ${run.id}`);
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────

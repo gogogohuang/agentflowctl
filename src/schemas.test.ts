@@ -151,3 +151,15 @@ describe("修補請求", () => {
     expect(RepoConfig.safeParse({ maxAmendments: 0 }).success).toBe(false);
   });
 });
+
+describe("RepoConfig 中性預設", () => {
+  it("RepoConfig 預設是中性的：不假設任何框架", () => {
+    const d = RepoConfig.parse({});
+    expect(d.install).toBe("true");
+    expect(d.test).toBe("true");
+    expect(d.checks).toEqual([]);
+    const re = new RegExp(d.testPattern);
+    for (const f of ["src/a.test.ts", "src/a.spec.js", "tests/x.py", "pkg/test_a.py", "pkg/a_test.go", "tests/form.rs"]) expect(re.test(f), f).toBe(true);
+    expect(re.test("src/a.ts")).toBe(false);
+  });
+});
