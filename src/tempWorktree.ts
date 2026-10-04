@@ -20,11 +20,11 @@ const warn = (what: string, err: unknown) =>
 
 /**
  * 建立臨時 worktree：detached、內容是 run worktree 的 HEAD，並複製目前的 .flow/（.flow/ 不受 git 管理，要另外帶），
- * run worktree 頂層有 node_modules 時再建一個指向它的 symlink，讓審查者讀得到依賴。
+ * run worktree 頂層有依賴目錄（profile.depDirs）時再各建一個指向它的 symlink，讓審查者讀得到依賴。
  * 路徑固定為 tmp-review/<name>：agent CLI（Claude Code、Gemini CLI）會依工作目錄記錄專案，路徑每次不同會一直累積紀錄。
  * 固定路徑被占用（目錄已存在，或殘留的 locked 登記讓 git worktree add 失敗）時才改用唯一的父目錄，basename 仍是 name。
  */
-export async function createTempWorktree(runId: string, name: string): Promise<Workspace> {
+export async function createTempWorktree(runId: string, name: string, depDirs: readonly string[]): Promise<Workspace> {
   const stable = join(tempWorktreesDir(runId), name);
   mkdirSync(tempWorktreesDir(runId), { recursive: true });
   let ws: Workspace | undefined;
@@ -51,8 +51,10 @@ export async function createTempWorktree(runId: string, name: string): Promise<W
   try {
     if (existsSync(flowDir(runId))) cpSync(flowDir(runId), ws.flow, { recursive: true });
     else mkdirSync(ws.flow, { recursive: true });
-    const deps = join(worktreeDir(runId), "node_modules");
-    if (existsSync(deps)) symlinkSync(deps, join(ws.dir, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+    for (const dir of depDirs) {
+      const deps = join(worktreeDir(runId), dir);
+      if (existsSync(deps)) symlinkSync(deps, join(ws.dir, dir), process.platform === "win32" ? "junction" : "dir");
+    }
   } catch (err) {
     await removeTempWorktree(runId, ws); // 不會丟例外，不會蓋掉原本的錯誤
     throw err;
@@ -62,7 +64,7 @@ export async function createTempWorktree(runId: string, name: string): Promise<W
 
 /**
  * 移除這次建立的臨時 worktree：固定路徑只刪 dir（絕不刪 tmp-review/ 本身，裡面可能還有別的呼叫在用），唯一路徑連父目錄一起刪。
- * git worktree remove 與 rmSync 都不會跟進 node_modules symlink 刪到原本的依賴。
+ * git worktree remove 與 rmSync 都不會跟進依賴目錄 symlink 刪到原本的依賴。
  * 永遠不丟例外：這在 withTempWorktree 的 finally 裡執行，丟出去會蓋掉審查本身的結果（已存檔，甚至可能是額度用完）；
  * 清不掉的只印警告，交給下次 advance 或 clean 的清理。
  */
@@ -83,8 +85,8 @@ export async function removeTempWorktree(runId: string, ws: Workspace): Promise<
   if (!removed) await git(worktreeDir(runId), "worktree", "remove", "-f", "-f", ws.dir).catch(() => {});
 }
 
-export async function withTempWorktree<T>(runId: string, name: string, fn: (ws: Workspace) => Promise<T>): Promise<T> {
-  const ws = await createTempWorktree(runId, name);
+export async function withTempWorktree<T>(runId: string, name: string, depDirs: readonly string[], fn: (ws: Workspace) => Promise<T>): Promise<T> {
+  const ws = await createTempWorktree(runId, name, depDirs);
   try {
     return await fn(ws);
   } finally {

@@ -178,7 +178,7 @@ Codex 另有幾點差異：
 - **共用的紀錄寫進所屬 run。** log、用量、重試、代打與交接帳本都記在 run 底下，所以 `logs`、`stats`、`insights` 與 `maxAgentRuns` 不需要另外合併。因此車道裡的 agent 也看得到其他車道開的交接事項。
 - **合併一次一個。** 車道完成後依完成順序合併回 run 的分支（保留合併 commit，訊息 `merge(T-n): …`），合併後才解鎖依賴它的任務；車道的 worktree 與分支隨即清掉。合併後若 `package.json` 或 lockfile 變了，會在 run 的 worktree 重新安裝。
 - **衝突時重做。** 和已合併的任務在同一處衝突時，這條車道會回到最新的分支、從寫測試重做（重試分類 `merge_conflict`，次數計入 `maxAttempts`）。計畫與計畫審查的 prompt 都要求：會修改同一個檔案、或用到另一個任務新增內容的任務必須用 `dependsOn` 排出先後；渲染或斷言同一個元件畫面、測試選取的標籤與文案取決於另一個任務實作的任務也一樣，不排先後就要把確切的標籤與文案寫進兩個任務的驗收條件。沒有文字衝突、但合在一起壞掉的語意衝突，每合併一條車道就會在 run 的分支上跑一次全套測試（不含 install）：沒通過就還原這次合併，讓該車道從最新的分支重做（重試分類 `merge_tests_failed`，次數計入 `maxAttempts`），重試用的回饋附上測試輸出；其餘的語意問題仍由最後的整體驗證與程式碼審查把關。
-- **車道裡不安裝相依套件。** 車道的 `node_modules` 是指向 run 的 symlink，各自安裝會互相覆寫，所以車道裡只跑測試與 build 等檢查；新增相依套件的任務，合併後才會在 run 裡安裝。
+- **車道裡不安裝相依套件。** 車道的依賴目錄（Node 的 `node_modules`、Python 的 `.venv`、Rust 的 `target`）是指向 run 的 symlink，各自安裝會互相覆寫，所以車道裡只跑測試與 build 等檢查；新增相依套件的任務，合併後才會在 run 裡安裝。
 - **失敗、暫停與 resume。** 任一車道失敗（重試達上限、agent 次數用完）就不再開新車道，已在跑的跑完並合併，run 以失敗結束，原因會寫明是哪個任務。額度用完同理：額度是 agent 層級的，用同一家 agent 的車道也會一起暫停，其餘車道跑完後 run 暫停。`resume` 時已合併的任務不重做，失敗或暫停的車道接續。
 - `maxAgentRuns` 是整個 run 所有車道（含平行審查者）合計的次數，每次呼叫 agent 前先保留一格，所以不會超出；剩一格時只有一個呼叫能啟動，其餘車道以 `agent_budget` 失敗（車道停在原處，調高上限 `resume` 後接續）。額度用完而失敗的呼叫也算一次。
 - `status` 在任務清單裡標出正在平行執行的任務。
@@ -190,8 +190,8 @@ Codex 另有幾點差異：
 **審查者的環境**
 
 - 每位審查者在自己的臨時 git worktree 裡工作，固定放在 `.agentflowctl/runs/<id>/tmp-review/slot-<N>/`；只有該路徑被占用（例如上次中斷的殘骸）時才改用唯一的子目錄。
-- 看到的是 run 目前的 HEAD、`.flow/` 的複本，以及指向 run worktree 頂層 `node_modules` 的 symlink（有才建）；不含其他未 commit 或被 gitignore 的檔案（例如 `dist/`）。所以審查者改了什麼都不會影響 run 的 worktree 或其他審查者。
-- 唯一的例外是 `node_modules`：它是共用的 symlink，審查者若在臨時 worktree 裡跑安裝，會寫到 run 真正的 `node_modules`。
+- 看到的是 run 目前的 HEAD、`.flow/` 的複本，以及指向 run worktree 頂層依賴目錄（Node 的 `node_modules`、Python 的 `.venv`、Rust 的 `target`）的 symlink（有才建）；不含其他未 commit 或被 gitignore 的檔案（例如 `dist/`）。所以審查者改了什麼都不會影響 run 的 worktree 或其他審查者。
+- 唯一的例外是依賴目錄：它是共用的 symlink，審查者若在臨時 worktree 裡跑安裝，會寫到 run 真正的依賴目錄。
 - 程式碼審查開始前，會先把 run 的 worktree 還原成 HEAD（清掉驗證階段留下的未 commit 修改與未追蹤產物）。
 
 **結果如何套用**

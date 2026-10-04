@@ -104,7 +104,7 @@ describe("孤兒臨時 worktree", () => {
     const id = "pe-orphan";
     await addWorktree(root, worktreeDir(id), "main", `flow/${id}`);
     mkdirSync(flowDir(id), { recursive: true });
-    const ws = await createTempWorktree(id, "slot-0"); // 模擬 Ctrl-C 時沒有機會移除
+    const ws = await createTempWorktree(id, "slot-0", []); // 模擬 Ctrl-C 時沒有機會移除
     expect(listed()).toContain(ws.dir);
     const now = new Date().toISOString();
     await advance({

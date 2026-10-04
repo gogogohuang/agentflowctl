@@ -612,6 +612,15 @@ async function fastPlanStage(run: FlowRun): Promise<FlowRun> {
 /** 每個驗證用的指令最多跑 5 分鐘 */
 const DETECT_COMMAND_TIMEOUT_MS = 5 * 60_000;
 
+/** 把 run worktree 的依賴目錄 symlink 給車道；symlink 不是目錄，.gitignore 的 `dir/` 擋不住，commitAll 會把它加進去，所以另外 exclude */
+export async function linkDepDirs(root: string, from: string, to: string, depDirs: readonly string[]): Promise<void> {
+  await excludePaths(root, depDirs.map((d) => `/${d}`));
+  for (const dir of depDirs) {
+    const deps = join(from, dir);
+    if (existsSync(deps)) symlinkSync(deps, join(to, dir), process.platform === "win32" ? "junction" : "dir");
+  }
+}
+
 /**
  * 認不出專案類型時（沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等），請一位 agent 讀專案提出
  * install／test／checks／testPattern，再由程式在基底 commit 的臨時 worktree 逐欄位驗證，通過的存進 detected.json。
@@ -644,7 +653,7 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
     const proposed = [proposal.install && `install：${proposal.install}`, proposal.test && `test：${proposal.test}`,
       ...(proposal.checks ?? []).map((c) => `checks.${c.name}：${c.cmd}`)].filter(Boolean);
     if (proposed.length) info(run, `🔎 agent 提出的指令（將在主機上驗證執行）：${proposed.join("；")}`);
-    const validated = await withTempWorktree(run.id, "detect", async (ws) => {
+    const validated = await withTempWorktree(run.id, "detect", projectProfile().depDirs, async (ws) => {
       const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
       return validateProposal(proposal, {
         files,
@@ -910,7 +919,7 @@ async function executeOne(
     return { stored: reused, ok: true };
   }
   try {
-    return await withTempWorktree(run.id, `slot-${call.slot}`, async (ws) => {
+    return await withTempWorktree(run.id, `slot-${call.slot}`, projectProfile().depDirs, async (ws) => {
       rmSync(join(ws.flow, call.output), { force: true });
       // 平行階段不動帳本，同一批呼叫看到的都是這一份；序列收尾以它評估這個呼叫的核准門檻
       const base = readHandoff(run.id);
@@ -1638,7 +1647,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   }
   const repo = worktreeDir(run.id);
   const testRe = new RegExp(cfg.testPattern);
-  // 車道共用所屬 run 的 node_modules（symlink），各自安裝會互相覆寫，所以車道裡只跑測試
+  // 車道共用所屬 run 的依賴目錄（symlink），各自安裝會互相覆寫，所以車道裡只跑測試
   const testCmd = inLane(run) ? cfg.test : `${cfg.install} && ${cfg.test}`;
   const progress = inLane(run) ? `平行 ${task.id} ${task.title}` : `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
   if (task.kind === "confirm") {
@@ -1886,7 +1895,6 @@ async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, task
   rmSync(runDir(id), { recursive: true, force: true });
   await git(root, "worktree", "prune");
   await git(root, "branch", "-D", branch).catch(() => {});
-  await excludePaths(root, ["/node_modules"]); // symlink 不是目錄，.gitignore 的 node_modules/ 擋不住，commitAll 會把它加進去
   await addWorktree(root, wt, await headCommit(worktreeDir(parent.id)), branch);
   mkdirSync(flowDir(id), { recursive: true });
   for (const name of ["spec.md", "acceptance.json", "plan.md", "tasks.json"]) {
@@ -1895,8 +1903,7 @@ async function prepareLane(parent: FlowRun, task: TaskItem, offset: number, task
   // 這個任務放第一個；其餘還沒完成的任務留著，讓「不可動後面任務的檔案」的檢查仍能比對
   const rest = tasks.filter((t) => t.id !== task.id && !done.has(t.id));
   writeFileSync(join(flowDir(id), "tasks.ordered.json"), JSON.stringify([task, ...rest], null, 2));
-  const deps = join(worktreeDir(parent.id), "node_modules");
-  if (existsSync(deps)) symlinkSync(deps, join(wt, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  await linkDepDirs(root, worktreeDir(parent.id), wt, projectProfile().depDirs);
   const now = new Date().toISOString();
   return saveRun({
     id, baseBranch: parent.branch, branch, requirement: parent.requirement, stage: "implement", autopilot: true,
@@ -2263,7 +2270,9 @@ export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "
     });
   }
   // 指令跑完工作樹多出變動：那是它們的副作用。記下來，之後 commit 時不帶進去，並在 verify.json 註明（審查者只認這份）
-  const sideEffects = (await dirtyPaths(repo).catch(() => [])).filter((p) => !dirtyBefore.has(p) && !/(^|\/)node_modules\//.test(p));
+  const depDirs = projectProfile().depDirs;
+  const depRe = new RegExp(`(^|/)(${depDirs.map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})/`);
+  const sideEffects = (await dirtyPaths(repo).catch(() => [])).filter((p) => !dirtyBefore.has(p) && !(depDirs.length && depRe.test(p)));
   if (sideEffects.length) {
     addSideEffects(ownerId(run.id), sideEffects);
     info(run, `   ⚠️  檢查指令執行後改動了工作樹：${sideEffects.join("、")}`);

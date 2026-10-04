@@ -403,7 +403,7 @@ program
   .description("把 dump 的資料還原成可以 resume 的 run（沿用原 id，用既有分支重建 worktree）")
   .action(async (dumpDir: string) => {
     const run = await restoreRun(dumpDir);
-    console.log(`✅ 已還原 ${run.id}（階段 ${run.stage}，分支 ${run.branch}）；worktree 不含 node_modules，接續前請先在裡面安裝相依套件，再用 agentflowctl resume ${run.id}`);
+    console.log(`✅ 已還原 ${run.id}（階段 ${run.stage}，分支 ${run.branch}）；worktree 不含相依套件（依賴目錄），接續前請先在裡面安裝，再用 agentflowctl resume ${run.id}`);
   });
 
 // ───────────── agent 管理：讀寫 flow.config.json 的 agents 與 cycle ─────────────
