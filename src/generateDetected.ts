@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { tail } from "./util.js";
-import { isSafeDepDirName, isSafeDirName, type ProfileExtras } from "./profile.js";
+import { compileOrUndefined, isSafeDepDirName, isSafeDirName, MAX_MATCH_LINE, unsafePatternReason, type ProfileExtras } from "./profile.js";
 import type { DetectedFile, DetectionProposal } from "./schemas.js";
 
 export interface ValidateDeps {
@@ -102,12 +102,19 @@ export async function validateProposal(p: DetectionProposal, deps: ValidateDeps)
   }
   const extras: ProfileExtras = {};
   const checkPattern = (field: string, x: { pattern: string; example: string }): string | undefined => {
-    try {
-      if (new RegExp(x.pattern).test(x.example)) return x.pattern;
-      dropped.push({ field, reason: `範例沒有被這個規則比對到：${x.pattern}` });
-    } catch {
-      dropped.push({ field, reason: `不是合法的正規表示式：${x.pattern}` });
+    const re = compileOrUndefined(x.pattern);
+    if (!re) {
+      dropped.push({ field, reason: `不是合法的正規表示式：${x.pattern.slice(0, 120)}` });
+      return undefined;
     }
+    // 規則會在每行 diff 與測試輸出上同步執行，先擋下會災難性回溯的寫法（不能拿範例計時：JS 正規表示式無法中斷）
+    const unsafe = unsafePatternReason(x.pattern);
+    if (unsafe) {
+      dropped.push({ field, reason: `規則不安全（${unsafe}）：${x.pattern.slice(0, 120)}` });
+      return undefined;
+    }
+    if (re.test(x.example.slice(0, MAX_MATCH_LINE))) return x.pattern;
+    dropped.push({ field, reason: `範例沒有被這個規則比對到：${x.pattern}` });
     return undefined;
   };
   const listOf = (field: "skipPatterns" | "suppressPatterns") => (p[field] ?? []).map((x) => checkPattern(field, x)).filter((x): x is string => x !== undefined);

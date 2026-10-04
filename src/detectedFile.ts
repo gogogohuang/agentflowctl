@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import { detectProjectDefaults, NO_INSTALL, type ProjectDefaults } from "./detect.js";
 import { detectedPathIn } from "./paths.js";
-import { isSafeDepDirName, isSafeDirName, mergeProfile, type ProfileExtras } from "./profile.js";
+import { isSafeDepDirName, isSafeDirName, isSafePattern, mergeProfile, type ProfileExtras } from "./profile.js";
 import { DetectedFile } from "./schemas.js";
 
 /** 判斷未知類型專案「有沒有變」的特徵檔：內容都納入指紋 */
@@ -70,14 +70,20 @@ export function overlayGenerated(base: ProjectDefaults, g: DetectedFile): Projec
 }
 
 /**
- * detected.json 是一般檔案，可能被手改或是舊版寫的：合併前重做一次名稱檢查，不合格的項目直接略過，
+ * detected.json 是一般檔案，可能被手改或是舊版寫的：合併前重做一次目錄名稱與規則的安全檢查（isSafePattern，含能否編譯），不合格的項目直接略過，
  * 不能靠它繞過 validateProposal 的限制。
  */
 export function trustedExtras(g: DetectedFile): ProfileExtras {
+  const safe = (p: string | undefined) => (p !== undefined && isSafePattern(p) ? p : undefined);
   return {
-    ...g,
     depDirs: g.depDirs?.filter(isSafeDepDirName),
     skipDirs: g.skipDirs?.filter(isSafeDirName),
+    sourceExts: g.sourceExts?.filter((e) => /^\.\w+$/.test(e)),
+    skipPatterns: g.skipPatterns?.filter(isSafePattern),
+    suppressPatterns: g.suppressPatterns?.filter(isSafePattern),
+    assertPattern: safe(g.assertPattern),
+    failureLine: safe(g.failureLine),
+    failureFormat: g.failureFormat,
   };
 }
 

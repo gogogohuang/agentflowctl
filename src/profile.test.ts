@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { anyOf, GO_PROFILE, isSourceFile, mergeProfile, NEUTRAL_PROFILE, NODE_PROFILE, profileGaps, PYTHON_PROFILE, RUST_PROFILE, testSourceOf, type EcosystemProfile } from "./profile.js";
+import { anyOf, compileOrUndefined, GO_PROFILE, isSafePattern, unsafePatternReason, isSourceFile, mergeProfile, NEUTRAL_PROFILE, NODE_PROFILE, profileGaps, PYTHON_PROFILE, RUST_PROFILE, testSourceOf, type EcosystemProfile } from "./profile.js";
 
 const ALL: [string, EcosystemProfile][] = [
   ["node", NODE_PROFILE], ["python", PYTHON_PROFILE], ["go", GO_PROFILE], ["rust", RUST_PROFILE], ["neutral", NEUTRAL_PROFILE],
@@ -73,5 +73,37 @@ describe("profileGaps／mergeProfile", () => {
     expect(merged.assertPattern).toBe(PYTHON_PROFILE.assertPattern); // 已有值不蓋
     expect(merged.depDirs).toEqual([".venv", "env"]);
     expect(mergeProfile(NEUTRAL_PROFILE, { assertPattern: "chk\\(" }).assertPattern).toBe("chk\\(");
+  });
+});
+
+describe("isSafePattern：agent 提案規則的回溯風險檢查", () => {
+  it.each(ALL)("%s：內建規則全部通過（避免檢查太嚴）", (_name, p) => {
+    const sources = [...p.skipPatterns, ...p.suppressPatterns, ...p.testSourcePairs.map((t) => t.re), p.assertPattern, p.testFilePattern, p.failureLine].filter((s): s is string => s !== undefined);
+    for (const s of sources) expect(unsafePatternReason(s), s).toBeUndefined();
+  });
+
+  it("擋下巢狀量詞、群組內交替再重複、反向參照、具名群組、lookbehind 內的量詞、太長與無法編譯的規則", () => {
+    const bad = [String.raw`(a+)+$`, String.raw`(a*)*`, String.raw`(\w+\s?)+`, String.raw`(.*)+`, String.raw`(a|aa)+`, String.raw`((a+)b)+`, String.raw`(?:x{2,})*`, String.raw`(a+){2,5}`,
+      String.raw`(a)\1`, String.raw`(?<n>a)\k<n>`, String.raw`(?<n>a)`, String.raw`(?<=a+)b`, String.raw`.*.*.*x`, "a".repeat(301), "(["];
+    for (const src of bad) expect(isSafePattern(src), src).toBe(false);
+  });
+
+  it("一般的規則照常通過：跳脫的反斜線、字元類別裡的括號與量詞、群組後面只接 ?", () => {
+    const good = [String.raw`\\1`, String.raw`[(a+)+]`, String.raw`(?:_eq|_ne)?`, String.raw`(?:ab)+`, String.raw`(a+)?`, String.raw`#\s*(?:noqa|type:\s*ignore)`, String.raw`(?=a+)b`, String.raw`x{2}`, "a{", "a".repeat(300)];
+    for (const src of good) expect(isSafePattern(src), src).toBe(true);
+  });
+});
+
+describe("規則編譯失敗時停用而不丟例外", () => {
+  it("anyOf 略過無法編譯的規則；全部無法編譯時回傳 undefined", () => {
+    expect(() => anyOf(["(", "@slow"])).not.toThrow();
+    expect(anyOf(["(", "@slow"])!.test("@slow")).toBe(true);
+    expect(anyOf(["(", "["])).toBeUndefined();
+  });
+
+  it("compileOrUndefined：無法編譯或沒有規則時回傳 undefined", () => {
+    expect(compileOrUndefined("(")).toBeUndefined();
+    expect(compileOrUndefined(undefined)).toBeUndefined();
+    expect(compileOrUndefined("a", "g")!.flags).toBe("g");
   });
 });

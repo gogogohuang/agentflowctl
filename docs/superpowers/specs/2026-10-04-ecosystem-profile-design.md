@@ -31,7 +31,7 @@ generated 觸發：
 
 驗證（程式查事實，不看 agent 的說法）：
 - 指令：沿用現行做法，在基底 commit 的臨時 worktree 執行，結束碼 0 才收。
-- 正規表示式：必須能編譯；`testPattern` 要比對到專案內至少一個檔案；其他附 `example`，必須比對得到自己的範例。
+- 正規表示式：必須能編譯；`testPattern` 要比對到專案內至少一個檔案；其他附 `example`，必須比對得到自己的範例。守門規則另外要過 `isSafePattern`（不超過 300 字元、沒有反向參照與具名群組、沒有巢狀量詞等會災難性回溯的形狀），`detected.json` 合併前再檢查一次；執行期無法編譯的規則讓該守門停用，每行只比對前 1000 個字元。
 - 目錄：`depDirs` 必須是已存在的真目錄且不是保留名稱（`.git`、`.flow`、`.agentflowctl` 等）；`skipDirs` 必須真實存在或被 `.gitignore` 忽略。
 - 不通過的欄位丟掉，記進 `detected.json` 的 `dropped`，該守門退到第 4 層。
 - 提案只能新增規則：`skipPatterns`、`suppressPatterns` 與 profile 取聯集，不能關掉內建規則或放寬。

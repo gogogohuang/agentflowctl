@@ -187,3 +187,21 @@ describe("validateProposal：依賴目錄的保留名稱", () => {
     expect(v.dropped.filter((d) => d.field === "depDirs")).toHaveLength(3);
   });
 });
+
+describe("validateProposal：有回溯風險的規則", () => {
+  it("巢狀量詞、反向參照、具名群組、太長的規則即使範例比對得到也被丟掉並附原因", async () => {
+    const pats = [
+      { pattern: "(a+)+$", example: "aaa" },
+      { pattern: "(a*)*", example: "aaa" },
+      { pattern: "(a)\\1", example: "aa" },
+      { pattern: "(?<n>skip)", example: "skip" },
+      { pattern: "a".repeat(400), example: "a".repeat(400) },
+    ];
+    const v = await validateProposal({ checks: [], skipPatterns: pats, failureLine: { pattern: "(x+)+y", example: "xxy" } }, deps());
+    expect(v.profileExtras.skipPatterns).toBeUndefined();
+    expect(v.profileExtras.failureLine).toBeUndefined();
+    const reasons = v.dropped.filter((d) => d.field === "skipPatterns" || d.field === "failureLine");
+    expect(reasons).toHaveLength(6);
+    for (const d of reasons) expect(d.reason).toMatch(/不安全/);
+  });
+});

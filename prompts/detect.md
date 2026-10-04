@@ -56,7 +56,7 @@
 所有欄位都可以省略。專案類型已知時只會採用下列規則欄位（install、test、checks、testPattern 會被忽略）：
 - depDirs／skipDirs：專案根目錄下單一層的目錄名稱（不能含 /）；depDirs 是依賴目錄（會共用給平行的 worktree），必須是已存在的目錄，不能是一般檔案、版控追蹤的目錄或 .git、.flow、.agentflowctl 這類保留名稱；skipDirs 是掃描檔案時要略過的目錄，必須存在或已被 .gitignore 忽略。
 - sourceExts：程式碼檔案的副檔名（含點）。
-- skipPatterns：新增「跳過測試」的語法；suppressPatterns：新增「抑制型別或 lint」的語法；assertPattern：斷言行；failureLine：測試輸出裡代表失敗的一行。這些都是 JavaScript 正規表示式字串，每個都必須附 example：一行專案內真的出現過或會出現的程式碼，規則必須比對得到它。
+- skipPatterns：新增「跳過測試」的語法；suppressPatterns：新增「抑制型別或 lint」的語法；assertPattern：斷言行；failureLine：測試輸出裡代表失敗的一行。這些都是 JavaScript 正規表示式字串，每個都必須附 example：一行專案內真的出現過或會出現的程式碼，規則必須比對得到它。規則最多 300 個字元，不要用反向參照（\1、\k<名稱>）、具名群組，也不要讓含量詞或 | 的群組再被 +、*、{n,} 重複（例如 (a+)+、(\w+\s?)+、(a|b)+），否則會被丟掉。
 - failureFormat：只能是 tap、pytest、go、cargo 之一，指失敗輸出最接近哪種格式。
 </output_format>
 

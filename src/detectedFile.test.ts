@@ -124,6 +124,16 @@ describe("mergeGeneratedProfile", () => {
     expect(p.skipDirs).not.toContain("a/b");
   });
 
+  it("detected.json 裡不安全或無法編譯的規則（手改或舊檔）在合併時被丟掉", () => {
+    const unk = project({ Makefile: "t:\n" });
+    writeDetected(unk, file(unk, { skipPatterns: ["(a+)+$", "(", "@slow\\b"], suppressPatterns: ["(?<n>x)"], assertPattern: "(a)\\1", failureLine: "[" }));
+    const p = effectiveDefaults(unk).profile;
+    expect(p.skipPatterns).toEqual(["@slow\\b"]);
+    expect(p.suppressPatterns).toEqual([]);
+    expect(p.assertPattern).toBeUndefined();
+    expect(p.failureLine).toBeUndefined();
+  });
+
   it("effectiveDefaults：已辨識的專案疊上 generated 的 profile 補充，未知類型則整個疊上", () => {
     const dir = project({ "requirements.txt": "pytest\n" });
     writeDetected(dir, file(dir, { suppressPatterns: ["NOLINT"] }));

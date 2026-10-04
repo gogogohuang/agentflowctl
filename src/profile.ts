@@ -162,9 +162,121 @@ export function isSafeDepDirName(d: string): boolean {
   return isSafeDirName(d) && !RESERVED_DEP_DIRS.has(d.toLowerCase());
 }
 
-/** 把多個規則字串合成一個 RegExp；沒有規則就是 undefined（該守門停用） */
+/** agent 提案的規則長度上限 */
+export const MAX_PATTERN_LENGTH = 300;
+/** 執行期每一行只比對前面這麼多字元：同步的正規表示式無法中斷，限制輸入長度是唯一能設上限的地方 */
+export const MAX_MATCH_LINE = 1000;
+
+/** 這個位置的量詞；repeats 表示能重複超過一次（*、+、{n,}、上限大於 1 的 {n,m}），? 與 {0,1} 不算 */
+function quantifierAt(src: string, i: number): { len: number; repeats: boolean } | undefined {
+  const c = src[i];
+  if (c === "*" || c === "+") return { len: 1, repeats: true };
+  if (c === "?") return { len: 1, repeats: false };
+  if (c !== "{") return undefined;
+  const m = /^\{(\d+)(,(\d*))?\}/.exec(src.slice(i));
+  if (!m) return undefined; // 非 unicode 模式下不成量詞的 { 是字面字元
+  const [whole, min = "0", comma, max] = m;
+  const repeats = comma ? max === "" || Number(max) > 1 : Number(min) > 1;
+  return { len: whole.length, repeats };
+}
+
+/**
+ * agent 提案的正規表示式是否可以放心在每一行 diff 與測試輸出上同步執行；不行時回傳原因。
+ * JS 的正規表示式無法中斷，也不能拿候選規則實際計時，所以只能用語法形狀的啟發式擋下已知會災難性回溯的寫法：
+ * - 超過 MAX_PATTERN_LENGTH 個字元、或無法編譯
+ * - 反向參照（\1–\9、\k<…>）與具名群組：anyOf 會把多條規則串成一條，編號與名稱會錯位甚至撞名而丟例外
+ * - lookbehind 裡有會重複的量詞
+ * - 群組裡有會重複的量詞或交替（|），群組本身又接會重複的量詞，例如 (a+)+、(a*)*、(\w+\s?)+、(.*)+、(a|aa)+、((a+)b)+
+ * - 超過兩個 .* 或 .+（例如 .*.*.*x 在比對失敗時是多項式回溯）
+ * 已知限制：擋不住所有多項式回溯（例如 \w*\w*\w*x、\s*\s*\s*$），也會誤擋少數安全的寫法（例如 (?:a|b)+、(ab+)+c 這類實際上不重疊的）；
+ * 前者靠執行期只比對每行前 MAX_MATCH_LINE 個字元限制傷害。內建 profile 的規則是可信的，不必經過這裡，但測試確認它們都通過。
+ */
+export function unsafePatternReason(src: string): string | undefined {
+  if (src.length > MAX_PATTERN_LENGTH) return `規則太長（${src.length} 個字元，上限 ${MAX_PATTERN_LENGTH}）`;
+  try {
+    new RegExp(src);
+  } catch {
+    return "不是合法的正規表示式";
+  }
+  if ((src.match(/\.[*+]/g) ?? []).length > 2) return "超過兩個 .* 或 .+，比對失敗時會大量回溯";
+  type Frame = { repeats: boolean; alternation: boolean; lookbehind: boolean };
+  const stack: Frame[] = [{ repeats: false, alternation: false, lookbehind: false }];
+  const top = () => stack[stack.length - 1]!;
+  let closed: Frame | undefined; // 剛結束的群組：緊接的量詞套用在它身上
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i]!;
+    if (c === "\\") {
+      const n = src[i + 1] ?? "";
+      if (/[1-9]/.test(n) || (n === "k" && src[i + 2] === "<")) return "含反向參照";
+      i += 2;
+      closed = undefined;
+      continue;
+    }
+    if (c === "[") {
+      // 字元類別：裡面的括號與量詞符號都是字面字元
+      i += src[i + 1] === "^" ? 2 : 1;
+      while (i < src.length && src[i] !== "]") i += src[i] === "\\" ? 2 : 1;
+      i++;
+      closed = undefined;
+      continue;
+    }
+    if (c === "(") {
+      const lookbehind = src.startsWith("(?<=", i) || src.startsWith("(?<!", i);
+      if (!lookbehind && src.startsWith("(?<", i)) return "含具名群組";
+      stack.push({ repeats: false, alternation: false, lookbehind: lookbehind || top().lookbehind });
+      i += lookbehind ? 4 : src.startsWith("(?", i) ? 3 : 1;
+      closed = undefined;
+      continue;
+    }
+    if (c === ")") {
+      closed = stack.length > 1 ? stack.pop() : undefined;
+      if (closed?.repeats) top().repeats = true; // 巢狀：外層群組也算含有會重複的量詞
+      i++;
+      continue;
+    }
+    if (c === "|") {
+      top().alternation = true;
+      i++;
+      closed = undefined;
+      continue;
+    }
+    const q = quantifierAt(src, i);
+    if (q) {
+      if (q.repeats) {
+        if (top().lookbehind) return "lookbehind 裡有會重複的量詞";
+        if (closed && (closed.repeats || closed.alternation)) return "群組裡有會重複的量詞或交替，群組本身又被重複（巢狀量詞）";
+        top().repeats = true;
+      }
+      i += q.len;
+      if (src[i] === "?") i++; // 非貪婪
+      closed = undefined;
+      continue;
+    }
+    i++;
+    closed = undefined;
+  }
+  return undefined;
+}
+
+export function isSafePattern(src: string): boolean {
+  return unsafePatternReason(src) === undefined;
+}
+
+/** 編譯規則；沒有規則或無法編譯時回傳 undefined（該守門停用，不讓整個步驟丟例外） */
+export function compileOrUndefined(src: string | undefined, flags?: string): RegExp | undefined {
+  if (src === undefined) return undefined;
+  try {
+    return new RegExp(src, flags);
+  } catch {
+    return undefined;
+  }
+}
+
+/** 把多個規則字串合成一個 RegExp；沒有可用的規則就是 undefined（該守門停用）。無法編譯的規則略過，不丟例外 */
 export function anyOf(patterns: readonly string[]): RegExp | undefined {
-  return patterns.length ? new RegExp(patterns.map((p) => `(?:${p})`).join("|")) : undefined;
+  const ok = patterns.filter((p) => compileOrUndefined(p) !== undefined);
+  return ok.length ? compileOrUndefined(ok.map((p) => `(?:${p})`).join("|")) : undefined;
 }
 
 /** 測試檔對應的被測檔；不符合任何命名規則時回傳 undefined */

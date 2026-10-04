@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { brokenPackageImport, foreignFailingTests, packageImports, sourceOfTest, violatingTestChanges, weakenedChecks, weakenedMessage } from "./testGuard.js";
-import { NEUTRAL_PROFILE, NODE_PROFILE, PYTHON_PROFILE, GO_PROFILE } from "./profile.js";
+import { NEUTRAL_PROFILE, NODE_PROFILE, PYTHON_PROFILE, GO_PROFILE, type EcosystemProfile } from "./profile.js";
 
 const re = /\.(test|spec)\.[cm]?[jt]sx?$/;
 
@@ -178,5 +178,30 @@ describe("pytest 專案", () => {
     const diff = ["+++ b/x.py", "+x = 1  # type: ignore"].join("\n");
     expect(weakenedChecks(diff, /x/, NEUTRAL_PROFILE)).toEqual([]);
     expect(foreignFailingTests("FAIL a.test.ts", [], NEUTRAL_PROFILE)).toEqual([]);
+  });
+});
+
+describe("profile 規則壞掉或輸入很長時", () => {
+  const broken: EcosystemProfile = { ...NODE_PROFILE, skipPatterns: ["("], suppressPatterns: ["["], assertPattern: "(", failureLine: "(", testFilePattern: "[" };
+
+  it("無法編譯的規則讓該守門停用，不丟例外", () => {
+    expect(() => weakenedChecks(diffOf("a.test.ts", [], ["it.skip('a', f)"]), re, broken)).not.toThrow();
+    expect(weakenedChecks(diffOf("a.test.ts", [], ["it.skip('a', f)"]), re, broken)).toEqual([]);
+    expect(() => foreignFailingTests("FAIL src/b.test.ts", ["src/a.test.ts"], broken)).not.toThrow();
+    expect(foreignFailingTests("FAIL src/b.test.ts", ["src/a.test.ts"], { ...NODE_PROFILE, testFilePattern: "[" })).toEqual([]);
+  });
+
+  it("十萬字元的一行很快處理完", () => {
+    const long = "x".repeat(100_000);
+    const start = Date.now();
+    weakenedChecks(diffOf("a.test.ts", [long], [long + "it.skip"]), re, NODE_PROFILE);
+    foreignFailingTests(`FAIL ${long}`, [], NODE_PROFILE);
+    foreignFailingTests(`FAILED ${long}`, [], PYTHON_PROFILE);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it("只比對每行前 1000 個字元", () => {
+    expect(weakenedChecks(diffOf("a.test.ts", [], ["x".repeat(2000) + "it.skip('a', f)"]), re, NODE_PROFILE)).toEqual([]);
+    expect(foreignFailingTests(`${"x".repeat(2000)} FAIL src/b.test.ts`, [], NODE_PROFILE)).toEqual([]);
   });
 });
