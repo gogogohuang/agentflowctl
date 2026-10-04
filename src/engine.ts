@@ -10,7 +10,7 @@ import { detectFingerprint, effectiveDefaults, readDetected, writeDetected } fro
 import { validateProposal } from "./generateDetected.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
 import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
-import { addWorktree, changedFiles, commitAll, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo } from "./git.js";
+import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo, restorePaths } from "./git.js";
 import { uncoveredAcceptanceCommands, uncoveredMessage } from "./acceptanceChecks.js";
 import { nextReviewStall, REVIEW_STALL_PAUSE_AFTER, unmetCriteriaKey } from "./reviewStall.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
@@ -42,7 +42,7 @@ import {
   type HandoffLedger,
   type Stage,
 } from "./schemas.js";
-import { addFlaky, addRetry, addSubstitution, addUsage, agentRuns, getRun, listRetries, releaseAgentRun, reserveAgentRun, resetAgentRunReservations, saveRun, type RetryCategory } from "./store.js";
+import { addFlaky, addRetry, addSideEffects, listSideEffects, addSubstitution, addUsage, agentRuns, getRun, listRetries, releaseAgentRun, reserveAgentRun, resetAgentRunReservations, saveRun, type RetryCategory } from "./store.js";
 import { doneSet, errorMessage, readyTasks, scheduleLanes, type AmendResolution, type LaneOutcome } from "./lanes.js";
 import { clearModelReviewFailure, clearModelReviewStage, recordModelReviewFailure, selectModel } from "./modelSelection.js";
 import {
@@ -1694,7 +1694,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       await resetTo(repo, before);
       return retry(run, key, planTamperedMessage(tampered), "implement", "plan_tampered");
     }
-    const commit = await commitAll(repo, `test(${task.id}): ${task.title} [${testsAuthor}]`);
+    const commit = await commitAgentWork(run, `test(${task.id}): ${task.title} [${testsAuthor}]`);
     if (!commit) {
       // 完全沒有變更：若現有測試已經通過，表示行為早就被既有測試涵蓋（例如前一個任務已寫過同樣的斷言），不必硬寫重複的測試
       const covered = await runCommand(target(run, redStepName(task.id), CMD_AGENT), testCmd);
@@ -1771,7 +1771,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     await resetTo(repo, testsCommit);
     return retry(run, key, planTamperedMessage(tampered), "implement", "plan_tampered");
   }
-  const codeCommit = await commitAll(repo, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
+  const codeCommit = await commitAgentWork(run, `feat(${task.id}): ${task.title} [${codeAuthor}]`);
   if (!tdd && !codeCommit) {
     info(run, `⏭️  [${progress}] 沒有檔案變更，略過這個任務`);
     noteSkippedTask(run, task, codeAuthor);
@@ -2178,9 +2178,32 @@ async function branchChangedFiles(run: FlowRun): Promise<string[] | undefined> {
 }
 
 /** 執行 install 與所有 checks，結果寫入 verify.json；有失敗時回傳給修正者的報告 */
+/**
+ * commit agent 的修改。測試或檢查指令自己會改動的路徑（`runChecks` 偵測到並記下）先還原成基底分支的樣子再 commit：
+ * agent 自己跑測試時同樣會被改掉，之後審查者看到的是「被清空的檔案」，要求還原、修正者還原、再跑測試又被改，變成迴圈。
+ */
+export async function commitAgentWork(run: FlowRun, message: string): Promise<string | undefined> {
+  const repo = worktreeDir(run.id);
+  const polluted = listSideEffects(ownerId(run.id));
+  if (polluted.length) {
+    const touched = (await dirtyPaths(repo)).filter((p) => polluted.includes(p));
+    const base = await git(repo, "merge-base", "HEAD", run.baseBranch).catch(() => run.baseBranch);
+    // 已被前一次 commit 帶進分支的也要還原，所以與基底不同的都算
+    const drifted = (await changedFiles(repo, base, "HEAD").catch(() => [])).filter((p) => polluted.includes(p));
+    const paths = [...new Set([...touched, ...drifted])];
+    if (paths.length) {
+      await restorePaths(repo, base, paths).catch(() => undefined);
+      info(run, `   ↩︎ ${paths.join("、")} 是測試／檢查指令的副作用，已還原成基底分支的內容後再 commit`);
+    }
+  }
+  return commitAll(repo, message);
+}
+
 export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "final" = "final"): Promise<string | undefined> {
   const cfg = loadRepoConfig();
   const results: { name: string; ok: boolean; output: string }[] = [];
+  const repo = worktreeDir(run.id);
+  const dirtyBefore = new Set(await dirtyPaths(repo).catch(() => []));
   const install = inLane(run) ? { ok: true as const, output: "", seq: 0 } : await runCommand(target(run, `${stepPrefix}install`, CMD_AGENT), cfg.install);
   if (!install.ok) {
     info(run, `   ✗ install${logHint(run, install.seq)}`);
@@ -2233,6 +2256,17 @@ export async function runChecks(run: FlowRun, stepPrefix = "", scope: "task" | "
       results.push({ name: check.name, ok: r.ok, output: tail(r.output, 3000) });
     });
   }
+  // 指令跑完工作樹多出變動：那是它們的副作用。記下來，之後 commit 時不帶進去，並在 verify.json 註明（審查者只認這份）
+  const sideEffects = (await dirtyPaths(repo).catch(() => [])).filter((p) => !dirtyBefore.has(p) && !/(^|\/)node_modules\//.test(p));
+  if (sideEffects.length) {
+    addSideEffects(ownerId(run.id), sideEffects);
+    info(run, `   ⚠️  檢查指令執行後改動了工作樹：${sideEffects.join("、")}`);
+    results.push({
+      name: "worktree-side-effects",
+      ok: true,
+      output: `測試或檢查指令執行後改動了這些檔案：${sideEffects.join("、")}。這是指令的副作用，不是作者的修改，程式會在 commit 前還原；請修正指令（例如改在暫存目錄操作），不要把它們當成作者的缺陷。`,
+    });
+  }
   writeFileSync(flowFile(run, "verify.json"), JSON.stringify(results, null, 2));
   const failed = results.filter((r) => !r.ok);
   if (failed.length === 0) return undefined;
@@ -2278,7 +2312,7 @@ async function applyFix(
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外：${planTamperedMessage(tampered)}`, "plan_tampered");
   }
-  await commitAll(repo, `${opts.commitScope}: ${why} [${actual}]`);
+  await commitAgentWork(run, `${opts.commitScope}: ${why} [${actual}]`);
   const stray = opts.scopeGuard?.(await changedFiles(repo, before, await headCommit(repo)));
   if (stray) {
     if ((run.attempts[opts.key] ?? 0) < SCOPE_GUARD_ATTEMPTS) {
@@ -2466,7 +2500,16 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
 
 async function prStage(run: FlowRun): Promise<FlowRun> {
   const pending = openActions(readHandoff(run.id));
-  if (pending.length) return { ...run, stage: "failed", failedStage: "pr", failureCategory: "open_handoff", failureReason: `仍有未結交接事項：${pending.map((item) => item.id).join("、")}` };
+  if (pending.length) {
+    // 不能直接失敗：resume 只會回到這裡再失敗一次，卡死。審查把額外發現降為參考（不擋關）時，審查者同一輪登記的 action 仍會留在帳本。
+    // 有還沒處理的（open）退回修正；全都是修正者已回報處理（proposed_resolved）、等審查者確認的，退回審查
+    const unhandled = pending.some((item) => item.status === "open");
+    const list = pending.map((item) => `- ${item.id}（${item.status}）${item.summary}`).join("\n");
+    const reason = `開 PR 前仍有未結交接事項：\n${list}`;
+    return unhandled
+      ? { ...retry(run, "pr-handoff", reason, "fix", "open_handoff"), fixSource: "review" }
+      : retry(run, "pr-handoff", reason, "review", "open_handoff");
+  }
   const repo = worktreeDir(run.id);
   const remotes = (await git(repo, "remote")).split("\n").filter(Boolean);
   if (!remotes.includes("origin")) {

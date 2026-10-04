@@ -17,7 +17,7 @@ export interface StopReportInput {
 }
 
 /** 沙箱限制造成 agent 無法執行或驗證的交接事項 */
-const SANDBOX_BLOCK = /sandbox|沙箱|mktemp|operation not permitted/i;
+const SANDBOX_BLOCK = /sandbox|沙箱|operation not permitted|permission denied|read-only file system|\bE(?:PERM|ACCES|ROFS)\b/i;
 const SANDBOX_HINT_MIN = 2;
 
 /** 多筆未結事項都是「沙箱擋住了」：環境問題，不是各自的缺陷，建議把指令改由 verify（程式在沙箱外）執行 */

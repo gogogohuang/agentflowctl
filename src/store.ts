@@ -186,6 +186,24 @@ export function listFlaky(id: string): (FlakyEntry & { at: string })[] {
   return readJsonl(flakyPath(id));
 }
 
+const sideEffectsPath = (id: string) => join(sharedRunDir(id), "side-effects.json");
+
+/** 測試或檢查指令執行後會改動工作樹的路徑（它們的副作用，不是 agent 的修改） */
+export function listSideEffects(id: string): string[] {
+  try {
+    return JSON.parse(readFileSync(sideEffectsPath(id), "utf8")) as string[];
+  } catch {
+    return [];
+  }
+}
+
+export function addSideEffects(id: string, paths: readonly string[]): string[] {
+  const all = [...new Set([...listSideEffects(id), ...paths])];
+  mkdirSync(sharedRunDir(id), { recursive: true });
+  writeFileSync(sideEffectsPath(id), JSON.stringify(all));
+  return all;
+}
+
 export interface Substitution {
   step: string;
   planned: string;

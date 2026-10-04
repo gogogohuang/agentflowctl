@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { exec } from "./proc.js";
@@ -94,4 +94,20 @@ export async function changedFiles(repo: string, from: string, to: string, filte
   const args = ["diff", "--name-only", ...(filter ? [`--diff-filter=${filter}`] : []), from, to];
   const out = await git(repo, ...args);
   return out ? out.split("\n") : [];
+}
+
+/** 工作樹目前有變動的路徑（已修改、新增、刪除與未追蹤；被 exclude 或 .gitignore 的不算） */
+export async function dirtyPaths(repo: string): Promise<string[]> {
+  const r = await exec("git", [...SAFE, "-C", repo, "status", "--porcelain", "-uall"]); // git() 會 trim，吃掉第一行開頭的狀態空白
+  if (r.code !== 0) throw new Error(`git status 失敗：${r.stderr.trim()}`);
+  return r.stdout.split("\n").filter(Boolean).map((l) => l.slice(3).replace(/^"|"$/g, "").replace(/^.* -> /, ""));
+}
+
+/** 把路徑還原成指定 commit 的樣子：該 commit 有就取回，沒有就刪掉 */
+export async function restorePaths(repo: string, ref: string, paths: string[]): Promise<void> {
+  for (const path of paths) {
+    const exists = await exec("git", [...SAFE, "-C", repo, "cat-file", "-e", `${ref}:${path}`]);
+    if (exists.code === 0) await git(repo, "checkout", ref, "--", path);
+    else rmSync(join(repo, path), { force: true, recursive: true });
+  }
 }
