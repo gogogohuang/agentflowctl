@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { tail } from "./util.js";
 import type { ProfileExtras } from "./profile.js";
 import type { DetectedFile, DetectionProposal } from "./schemas.js";
@@ -11,6 +14,27 @@ export interface ValidateDeps {
   hasExecutable(bin: string): boolean;
   /** 目錄存在，或已被 .gitignore 忽略（依賴目錄通常不進版控） */
   dirOk(dir: string): boolean;
+}
+
+/** 目錄提案只收單一層、看起來像一般目錄名的字串（例如 .venv、node_modules），擋掉空字串、.、..、路徑與以 - 開頭的值 */
+export function isSafeDirName(d: string): boolean {
+  return d !== "." && d !== ".." && /^[A-Za-z0-9_.][\w.-]*$/.test(d);
+}
+
+/** 真實的 dirOk：是目錄、或被 .gitignore 忽略（依賴目錄通常不進版控）；plain file 不算 */
+export function proposalDirOk(cwd: string, d: string): boolean {
+  if (!isSafeDirName(d)) return false;
+  try {
+    if (statSync(join(cwd, d)).isDirectory()) return true;
+  } catch {
+    // 不存在：再看是否被忽略
+  }
+  try {
+    execFileSync("git", ["check-ignore", "-q", "--", d], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export type Validated = Pick<DetectedFile, "install" | "test" | "checks" | "testPattern" | "dropped"> & { profileExtras: ProfileExtras };
@@ -94,10 +118,14 @@ export async function validateProposal(p: DetectionProposal, deps: ValidateDeps)
   if (failureLine) extras.failureLine = failureLine;
   if (p.failureFormat) extras.failureFormat = p.failureFormat;
   for (const field of ["depDirs", "skipDirs"] as const) {
-    const ok = (p[field] ?? []).filter((d) => deps.dirOk(d));
-    const bad = (p[field] ?? []).filter((d) => !deps.dirOk(d));
+    const ok: string[] = [];
+    for (const d of p[field] ?? []) {
+      if (!isSafeDirName(d)) dropped.push({ field, reason: `不是單一層的目錄名稱：${JSON.stringify(d)}` });
+      else if (field === "depDirs" && deps.files.some((f) => f === d || f.startsWith(`${d}/`))) dropped.push({ field, reason: `已被版控追蹤，不能當依賴目錄：${d}` });
+      else if (!deps.dirOk(d)) dropped.push({ field, reason: `不是目錄，也沒有被 .gitignore 忽略：${d}` });
+      else ok.push(d);
+    }
     if (ok.length) extras[field] = ok;
-    if (bad.length) dropped.push({ field, reason: `不存在也沒有被 .gitignore 忽略：${bad.join("、")}` });
   }
   if (p.sourceExts?.length) {
     const exts = p.sourceExts.filter((e) => /^\.\w+$/.test(e));

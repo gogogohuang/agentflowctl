@@ -7,7 +7,7 @@ import { decideAmend } from "./amend.js";
 import { arbitrationDecision } from "./arbitration.js";
 import { detectProjectDefaults, findFiles, usesTestFramework, withProjectDefaults } from "./detect.js";
 import { detectFingerprint, effectiveDefaults, readDetected, writeDetected } from "./detectedFile.js";
-import { validateProposal } from "./generateDetected.js";
+import { proposalDirOk, validateProposal } from "./generateDetected.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
 import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
 import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo, restorePaths } from "./git.js";
@@ -621,16 +621,6 @@ export async function linkDepDirs(root: string, from: string, to: string, depDir
   }
 }
 
-/** 被 .gitignore 忽略（依賴目錄通常不進版控）：check-ignore 不丟例外就是被忽略 */
-function gitIgnored(dir: string, path: string): boolean {
-  try {
-    execFileSync("git", ["check-ignore", "-q", path], { cwd: dir, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** 只留提案裡的新增規則欄位 */
 function pickProfileFields(p: DetectionProposal): DetectionProposal {
   const { depDirs, skipDirs, sourceExts, skipPatterns, suppressPatterns, assertPattern, failureLine, failureFormat } = p;
@@ -680,7 +670,7 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
       return validateProposal(proposal, {
         files,
-        dirOk: (d) => existsSync(join(ws.dir, d)) || gitIgnored(ws.dir, d),
+        dirOk: (d) => proposalDirOk(ws.dir, d),
         hasExecutable: (bin) => {
           try {
             execFileSync("sh", ["-c", 'command -v "$1"', "sh", bin], { cwd: ws.dir, stdio: "ignore" });

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { firstExecutable, isTrivialCommand, validateProposal, type ValidateDeps } from "./generateDetected.js";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { firstExecutable, isTrivialCommand, proposalDirOk, validateProposal, type ValidateDeps } from "./generateDetected.js";
 
 const deps = (over: Partial<ValidateDeps> & { fail?: string[] } = {}): ValidateDeps & { ran: string[] } => {
   const ran: string[] = [];
@@ -120,5 +124,34 @@ describe("validateProposal：profile 欄位", () => {
     expect(v.profileExtras.depDirs).toEqual([".venv"]);
     expect(v.profileExtras.failureFormat).toBe("pytest");
     expect(v.dropped.map((d) => d.field).sort()).toEqual(["assertPattern", "depDirs", "skipPatterns"]);
+  });
+});
+
+describe("validateProposal：目錄名稱限制", () => {
+  it("depDirs 擋掉空字串、.、..、路徑、-開頭、已追蹤的目錄，並逐項記錄原因", async () => {
+    const bad = ["", ".", "..", "../x", "-v", "a/b", "src"];
+    const v = await validateProposal({ checks: [], depDirs: [...bad, ".venv", "node_modules"] }, deps({ files: ["src/a.ts"], dirOk: () => true }));
+    expect(v.profileExtras.depDirs).toEqual([".venv", "node_modules"]);
+    expect(v.dropped.filter((d) => d.field === "depDirs")).toHaveLength(bad.length);
+  });
+
+  it("skipDirs 同樣擋不安全的名稱，但允許已追蹤的目錄", async () => {
+    const v = await validateProposal({ checks: [], skipDirs: ["..", "a/b", "src", "vendor"] }, deps({ files: ["src/a.ts"], dirOk: () => true }));
+    expect(v.profileExtras.skipDirs).toEqual(["src", "vendor"]);
+    expect(v.dropped).toHaveLength(2);
+  });
+});
+
+describe("proposalDirOk", () => {
+  const repo = mkdtempSync(join(tmpdir(), "agentflowctl-dirok-"));
+  execFileSync("git", ["init", "-q", repo]);
+  writeFileSync(join(repo, ".gitignore"), "ignored-thing\n");
+  mkdirSync(join(repo, ".venv"));
+  writeFileSync(join(repo, "package.json"), "{}");
+
+  it("目錄與被忽略的路徑通過；plain file、不安全名稱、像選項的值回傳 false 而不丟例外", () => {
+    expect(proposalDirOk(repo, ".venv")).toBe(true);
+    expect(proposalDirOk(repo, "ignored-thing")).toBe(true);
+    for (const d of ["package.json", "nope", "", "..", "-v", "--stdin"]) expect(proposalDirOk(repo, d), d).toBe(false);
   });
 });

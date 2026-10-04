@@ -271,7 +271,7 @@ export function withProjectDefaults(raw: unknown, detected: ProjectDefaults): un
 export function describeDetected(raw: Record<string, unknown>, detected: ProjectDefaults): string[] {
   const lines = describeDetectedCommands(raw, detected);
   const gaps = profileGaps(detected.profile);
-  if (gaps.length) lines.push(`ℹ️  未偵測到語言規則（${gaps.join("、")}），略過對應的 skip／抑制／斷言守門；可讓動態偵測補充，或之後在設定中補上`);
+  if (gaps.length) lines.push(`ℹ️  未偵測到語言規則（${gaps.join("、")}），略過對應的 skip／抑制／斷言守門；可讓動態偵測補充`);
   return lines;
 }
 
