@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { num, str, toolDetail, tryJson, type Adapter, type AgentEvent, type InvokeOptions } from "./types.js";
@@ -7,7 +8,27 @@ import { num, str, toolDetail, tryJson, type Adapter, type AgentEvent, type Invo
  * 版本控制交給 agentflowctl，並啟用內建沙箱限制 shell 指令。
  * 設定鍵名以 Claude Code 目前的格式撰寫，請依你安裝的版本確認。
  */
+let userTempDirCache: string | undefined | null = null;
+
+/**
+ * macOS 的 BSD `mktemp -d` 不看 TMPDIR，固定寫到 getconf 的使用者暫存目錄（/var/folders/…/T）；
+ * Claude 沙箱預設只放行它自己的 TMPDIR，測試腳本裡的 `mktemp -d` 會被擋成 Operation not permitted。
+ * 其他平台回傳 undefined。
+ */
+export function userTempDir(): string | undefined {
+  if (userTempDirCache !== null) return userTempDirCache;
+  userTempDirCache = undefined;
+  if (process.platform === "darwin") {
+    try {
+      const dir = execFileSync("getconf", ["DARWIN_USER_TEMP_DIR"], { encoding: "utf8", timeout: 5000 }).trim();
+      if (dir.startsWith("/var/folders/")) userTempDirCache = dir;
+    } catch { /* 取不到就維持沙箱預設 */ }
+  }
+  return userTempDirCache;
+}
+
 function settingsFile(o: InvokeOptions): string {
+  const tempDir = userTempDir();
   const settings = {
     permissions: {
       allow: ["Read", "Edit", "Write", "Glob", "Grep", "Bash(npm:*)", "Bash(npx:*)", "Bash(pnpm:*)", "Bash(node:*)",
@@ -16,7 +37,11 @@ function settingsFile(o: InvokeOptions): string {
         "Bash(git rebase:*)", "Bash(git merge:*)", "Bash(git worktree:*)", "Bash(git config:*)", "Bash(git stash:*)",
         "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/gh/**)", `Edit(/${join(o.projectRoot, ".git")}/**)`],
     },
-    sandbox: { enabled: true, autoAllowBashIfSandboxed: true },
+    sandbox: {
+      enabled: true,
+      autoAllowBashIfSandboxed: true,
+      ...(tempDir && { filesystem: { allowWrite: [tempDir] } }),
+    },
   };
   mkdirSync(o.runDir, { recursive: true });
   const path = join(o.runDir, "claude-settings.json");
