@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
@@ -452,6 +452,20 @@ async function staleRoundTests(repo: string, roundBase: string, files: string[])
     return files.filter((f) => !touched.has(f.replace(/^\.\//, "")));
   } catch {
     return [];
+  }
+}
+/**
+ * 這一輪的起點。iterate 有記 roundBase；舊 run（升級前 iterate）沒有，就用上一輪存檔目錄 `.flow/round-N/`
+ * 的建立時間當 iterate 的時間，取當時分支上最後一個 commit。推不出來就回 undefined（當作沒有前一輪的測試）。
+ */
+async function resolveRoundBase(run: FlowRun, repo: string): Promise<string | undefined> {
+  if (run.roundBase) return run.roundBase;
+  if (!run.round) return undefined;
+  try {
+    const savedAt = statSync(join(flowDir(ownerId(run.id)), `round-${run.round - 1}`)).mtime;
+    return (await git(repo, "rev-list", "-1", `--before=${savedAt.toISOString()}`, "HEAD")) || undefined;
+  } catch {
+    return undefined;
   }
 }
 const TESTS_NOT_RED_MARK = "請撰寫會因功能尚未實作而失敗的測試";
@@ -1879,7 +1893,8 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
       // 「連續」只算回歸本身：先前因其他原因失敗的嘗試不計入
       const streak = (run.regressions ?? 0) + 1;
       // 前一輪留下、這一輪沒有任何任務動過的測試：沒有任務可以修補，amend 這條路走不通，不能再建議
-      const stale = run.roundBase ? await staleRoundTests(repo, run.roundBase, regressed) : [];
+      const roundBase = await resolveRoundBase(run, repo);
+      const stale = roundBase ? await staleRoundTests(repo, roundBase, regressed) : [];
       const advice = stale.length
         ? `${stale.join("、")} 是前一輪留下的測試，這一輪沒有任何任務負責它，所以無法用 amend 修補。若是你的實作破壞了它們，修正實作；若新行為本來就必須改變它們，不要硬改，在 <result><concerns> 說明是哪條斷言與新行為衝突。`
         : "若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。";
