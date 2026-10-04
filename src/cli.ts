@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { MIN_ATTEMPTS, config } from "./config.js";
-import { advance, detectWithAgent, iterateRun, loadRepoConfig, replanRun } from "./engine.js";
+import { abandonRun, advance, detectWithAgent, iterateRun, loadRepoConfig, replanRun } from "./engine.js";
 import { exec } from "./proc.js";
 import { probeAgent, resolveAgent, runCommand } from "./runner.js";
 import { addWorktree, excludeDepDirs, git } from "./git.js";
@@ -18,7 +18,7 @@ import { ModelStage, ModelStrength, OrderedTaskList, StopAfterStage, type FlowRu
 import { computeInsights, failureLabel, HOTSPOT_MIN_COUNT, HOTSPOT_MIN_RUNS, retryLabel } from "./insights.js";
 import { computeUsageInsights } from "./usageInsights.js";
 import { computeStats, formatDuration } from "./stats.js";
-import { agentRuns, getRun, listFlaky, listRetries, listRuns, listSubstitutions, listUsage, saveRun, usageByAgent, usageByModelStage, usageByStage, usageByStrength, usageByTask, type UsageSummary } from "./store.js";
+import { agentRuns, getRun, listFlaky, listRetries, listRuns, listSubstitutions, listUsage, saveRun, roundOfTime, summarizeUsage, usageKeyAgent, usageKeyModelStage, usageKeyStage, usageKeyStrength, usageKeyTask, type UsageEntry, type UsageSummary } from "./store.js";
 import { confirmationLines, confirmationTasks } from "./tasks.js";
 import { padDisplay, readJsonFile, type JsonResult } from "./util.js";
 import { openActions, readHandoff } from "./handoff.js";
@@ -243,6 +243,14 @@ program
   });
 
 program
+  .command("abandon <id>")
+  .description("放棄目前這一輪：丟掉未 commit 的修改並直接標成 done，之後可用 iterate 開下一輪（已 commit 的程式碼保留）")
+  .action(async (id: string) => {
+    saveRun(await abandonRun(mustGetRun(id)));
+    console.log(`[${id}] 已放棄這一輪並標成 done；要開下一輪：agentflowctl iterate ${id} --req "..."`);
+  });
+
+program
   .command("iterate <id>")
   .description("在已完成 run 的同一個 worktree 開第二輪：帶入補充需求，從 spec 重來（程式碼與 PR 沿用）")
   .option("--req <text>", "第二輪的補充需求")
@@ -324,46 +332,60 @@ program
   .action((id: string) => {
     const run = mustGetRun(id);
     printSummary(run);
-    const byAgent = usageByAgent(id);
-    if (Object.keys(byAgent).length) {
-      console.log("\n各 agent 用量");
-      for (const [agent, c] of Object.entries(byAgent)) {
-        console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens${cacheNote(c)}（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}${c.legacyTokens ? `，原始數字 ${c.legacyTokens} tokens` : ""}）`);
+    const starts = run.roundStarts;
+    const rounds = starts ? starts.length + 1 : 1;
+    const inRound = (r: number) => <T extends { at?: string }>(e: T) => roundOfTime(e.at, starts) === r;
+    const allUsage = listUsage(id), allSubs = listSubstitutions(id), allRetries = listRetries(id);
+  const printRound = (usage: UsageEntry[], subs: ReturnType<typeof listSubstitutions>, retries: ReturnType<typeof listRetries>): void => {
+      const byAgent = summarizeUsage(usage, usageKeyAgent);
+      if (Object.keys(byAgent).length) {
+        console.log("\n各 agent 用量");
+        for (const [agent, c] of Object.entries(byAgent)) {
+          console.log(`  ${agent.padEnd(10)} ${String(c.runs).padStart(3)} 次  ${String(c.tokens).padStart(9)} 已回報 tokens${cacheNote(c)}（未回報 ${c.unreportedRuns}、舊紀錄不明 ${c.legacyRuns}${c.legacyTokens ? `，原始數字 ${c.legacyTokens} tokens` : ""}）`);
+        }
       }
-    }
-    const byStage = usageByStage(id);
-    const stageOrder = [...Object.keys(DEFAULT_STAGE_STRENGTH), "其他"];
-    printUsage("各階段用量（同一步驟的所有任務合計）", Object.entries(byStage).sort(([a], [b]) => stageOrder.indexOf(a) - stageOrder.indexOf(b)));
-    const taskNo = (key: string) => /^T-(\d+)$/.exec(key) ? Number(key.slice(2)) : Infinity;
-    printUsage("各任務用量（寫測試、實作、任務審查、任務修正）", Object.entries(usageByTask(id)).sort(([a], [b]) => taskNo(a) - taskNo(b)));
-    printUsage("各模型與步驟用量（只加總明確回報）", Object.entries(usageByModelStage(id)));
-    const byStrength = usageByStrength(id);
-    const reportedTotal = Object.values(byStrength).reduce((sum, entry) => sum + entry.tokens, 0);
-    if (Object.keys(byStrength).length) {
-      console.log("\n模型強度用量（占比只計入明確回報）");
-      for (const strength of ["low", "medium", "high", "未知"]) {
-        const entry = byStrength[strength];
-        if (!entry) continue;
-        const share = reportedTotal ? `${(entry.tokens / reportedTotal * 100).toFixed(1)}%` : "無法計算";
-        console.log(`  ${strength}: ${entry.tokens} tokens，占比 ${share}，呼叫 ${entry.runs} 次（未回報 ${entry.unreportedRuns}、舊紀錄不明 ${entry.legacyRuns}）`);
+      const byStage = summarizeUsage(usage, usageKeyStage);
+      const stageOrder = [...Object.keys(DEFAULT_STAGE_STRENGTH), "其他"];
+      printUsage("各階段用量（同一步驟的所有任務合計）", Object.entries(byStage).sort(([a], [b]) => stageOrder.indexOf(a) - stageOrder.indexOf(b)));
+      const taskNo = (key: string) => /^T-(\d+)$/.exec(key) ? Number(key.slice(2)) : Infinity;
+      printUsage("各任務用量（寫測試、實作、任務審查、任務修正）", Object.entries(summarizeUsage(usage, usageKeyTask)).sort(([a], [b]) => taskNo(a) - taskNo(b)));
+      printUsage("各模型與步驟用量（只加總明確回報）", Object.entries(summarizeUsage(usage, usageKeyModelStage)));
+      const byStrength = summarizeUsage(usage, usageKeyStrength);
+      const reportedTotal = Object.values(byStrength).reduce((sum, entry) => sum + entry.tokens, 0);
+      if (Object.keys(byStrength).length) {
+        console.log("\n模型強度用量（占比只計入明確回報）");
+        for (const strength of ["low", "medium", "high", "未知"]) {
+          const entry = byStrength[strength];
+          if (!entry) continue;
+          const share = reportedTotal ? `${(entry.tokens / reportedTotal * 100).toFixed(1)}%` : "無法計算";
+          console.log(`  ${strength}: ${entry.tokens} tokens，占比 ${share}，呼叫 ${entry.runs} 次（未回報 ${entry.unreportedRuns}、舊紀錄不明 ${entry.legacyRuns}）`);
+        }
+        console.log(`  高強度呼叫：${byStrength.high?.runs ?? 0} 次`);
       }
-      console.log(`  高強度呼叫：${byStrength.high?.runs ?? 0} 次`);
-    }
-    const subs = listSubstitutions(id);
-    if (subs.length) {
-      console.log("\n代打紀錄");
-      for (const sub of subs) console.log(`  ${sub.at.slice(0, 16)}  ${sub.step.padEnd(14)} ${sub.planned} → ${sub.actual}${sub.note ? `（${sub.note}）` : ""}`);
-    }
-    const retries = listRetries(id);
-    if (retries.length) {
-      console.log("\n重試紀錄");
-      for (const r of retries) {
-        console.log(`  ${r.key.padEnd(19)}  ${retryLabel(r.category)}${r.final ? "（達上限）" : `（第 ${r.attempt} 次）`}`);
+      if (subs.length) {
+        console.log("\n代打紀錄");
+        for (const sub of subs) console.log(`  ${sub.at.slice(0, 16)}  ${sub.step.padEnd(14)} ${sub.planned} → ${sub.actual}${sub.note ? `（${sub.note}）` : ""}`);
+      }
+      if (retries.length) {
+        console.log("\n重試紀錄");
+        for (const r of retries) {
+          console.log(`  ${r.key.padEnd(19)}  ${retryLabel(r.category)}${r.final ? "（達上限）" : `（第 ${r.attempt} 次）`}`);
+        }
+      }
+  };
+    if (rounds === 1) printRound(allUsage, allSubs, allRetries);
+    else {
+      for (let r = 1; r <= rounds; r++) {
+        const at = r === 1 ? undefined : starts![r - 2];
+        console.log(`\n══ 第 ${r} 輪${r === rounds ? "（目前）" : ""}${at ? `　開始於 ${at.slice(0, 16).replace("T", " ")}` : ""} ══`);
+        const usage = allUsage.filter(inRound(r));
+        console.log(`  agent 執行 ${usage.length} 次`);
+        printRound(usage, allSubs.filter(inRound(r)), allRetries.filter(inRound(r)));
       }
     }
     const tasks = readJsonFile(join(flowDir(id), "tasks.ordered.json"), OrderedTaskList);
     if (tasks.ok && tasks.data.some((t) => t.kind !== "confirm")) {
-      console.log("\n任務");
+      console.log(run.round ? `\n任務（第 ${run.round} 輪）` : "\n任務");
       const merged = new Set(run.doneTasks ?? []);
       tasks.data.forEach((t, i) => {
         if (t.kind === "confirm") return;

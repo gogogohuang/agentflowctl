@@ -38,6 +38,8 @@ export function listRuns(): FlowRun[] {
 
 /** 用量只 append、不改寫，多個寫入者同時寫也不會互相覆蓋 */
 export interface UsageEntry {
+  /** 寫入時間（addUsage 加上，舊紀錄也有） */
+  at?: string;
   stage: string;
   agent: string;
   inputTokens?: number;
@@ -255,4 +257,10 @@ export function addRetry(id: string, entry: RetryEntry, savedAt?: string): void 
 
 export function listRetries(id: string): (RetryEntry & { at: string })[] {
   return readJsonl(retryPath(id));
+}
+
+/** 時間 `at` 屬於第幾輪：roundStarts 是第 2、3… 輪的開始時間；沒有時間或沒有分輪資料一律算第 1 輪 */
+export function roundOfTime(at: string | undefined, roundStarts: readonly string[] | undefined): number {
+  if (!at || !roundStarts) return 1;
+  return 1 + roundStarts.filter((start) => start <= at).length;
 }

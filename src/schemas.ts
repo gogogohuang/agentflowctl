@@ -425,6 +425,8 @@ export const FlowRun = z.object({
   prUrl: z.string().optional(),
   /** 第幾輪：iterate 在同一個 worktree 開下一輪時加一；沒有此欄位視為第 1 輪（舊 state.json） */
   round: z.number().int().min(2).optional(),
+  /** 第 2 輪起各輪開始的時間（ISO），依序是第 2、3… 輪；status 用它把用量與重試紀錄分輪顯示。舊 run 沒有 */
+  roundStarts: z.array(z.string()).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

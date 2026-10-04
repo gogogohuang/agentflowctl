@@ -1319,6 +1319,19 @@ export function replanRun(run: FlowRun, opts: { note?: string; noReview?: boolea
   return { ...reset, stage: "plan_review", skipPlanReview: undefined };
 }
 
+/**
+ * 放棄目前這一輪：把還沒完成的 run（等待核准、暫停、失敗或任何階段）直接標成 done，之後就能 `iterate` 開下一輪。
+ * worktree 內未 commit 的半成品會丟掉，已 commit 的程式碼與分支保留；不跑 verify、review 與 pr。
+ */
+export async function abandonRun(run: FlowRun): Promise<FlowRun> {
+  if (run.stage === "done") throw new Error("run 已經是 done，不需要放棄；要開下一輪請用 iterate");
+  if (existsSync(worktreeDir(run.id))) await discardChanges(worktreeDir(run.id));
+  return {
+    ...run, stage: "done", stopAfter: undefined,
+    pausedStage: undefined, pauseReason: undefined, failedStage: undefined, failureReason: undefined, failureCategory: undefined,
+  };
+}
+
 /** 第二輪開始前要存進 .flow/round-N/ 的規格與計畫檔 */
 const ROUND_ARCHIVE_FILES = [...LOCKED_FILES, "plan-replies.md"] as const;
 
@@ -1356,6 +1369,7 @@ export async function iterateRun(run: FlowRun, opts: { requirement: string; maxA
   const requirement = `${run.requirement}\n\n## 第 ${round} 輪補充需求\n\n${extra}\n\n（前一輪的規格與計畫存放在 .flow/round-${previous}/，其程式碼已在這個分支上；這一輪只處理補充需求要求的變更，以及必要的修正。）`;
   return {
     ...run, requirement, round, stage: "spec", stopAfter: undefined,
+    roundStarts: [...(run.roundStarts ?? []), new Date().toISOString()],
     maxAgentRuns: agentRuns(run.id) + quota, maxAgentRunsExplicit: explicit ? true : undefined,
     attempts: {}, modelRetryAttempts: {}, taskIndex: 0, ...TASK_RESET, doneTasks: undefined, amendments: undefined,
     fixSource: undefined, skipPlanReview: undefined,

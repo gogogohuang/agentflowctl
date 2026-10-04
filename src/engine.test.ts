@@ -37,7 +37,7 @@ writeFileSync(join(root, "flow.config.json"), JSON.stringify({ diverge: { enable
 }));
 
 const { addWorktree, commitAll, git } = await import("./git.js");
-const { advance, canReplan, commitAgentWork, iterateRun, NO_WRITER_CONTEXT, replanRun, resetQuotaState, runChecks, TASK_RESET, withFiles } = await import("./engine.js");
+const { abandonRun, advance, canReplan, commitAgentWork, iterateRun, NO_WRITER_CONTEXT, replanRun, resetQuotaState, runChecks, TASK_RESET, withFiles } = await import("./engine.js");
 const { mergeHandoff, prepareHandoff, readHandoff } = await import("./handoff.js");
 const { confirmationsPath, flowDir, handoffPath, logDir, planReviewStatePath, runDir, worktreeDir } = await import("./paths.js");
 const { addRetry, agentRuns, getRun, listFlaky, listRetries, listSideEffects, listSubstitutions, listUsage, saveRun } = await import("./store.js");
@@ -1913,6 +1913,8 @@ describe("iterate：在同一個 worktree 開第二輪", () => {
     expect([next.taskIndex, next.taskPhase, next.doneTasks]).toEqual([0, "tests", undefined]);
     expect(next.amendments).toBeUndefined();
     expect([next.taskBase, next.testsCommit, next.testsRedos, next.lastTestsAuthor, next.fixSource, next.stopAfter]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(next.roundStarts).toHaveLength(1);
+    expect(Number.isNaN(Date.parse(next.roundStarts![0]))).toBe(false);
     expect(next.prUrl).toBe(run.prUrl);
     for (const f of ["confirmations.json", "plan-arbitration.json", "diverge.json", "parallel-review", "lanes"]) expect(existsSync(join(runDir(run.id), f))).toBe(false);
   });
@@ -1926,12 +1928,32 @@ describe("iterate：在同一個 worktree 開第二輪", () => {
     expect(readdirSync(flow).sort()).toEqual(["round-1"]);
   });
 
+  it("abandon：非 done 的 run 直接標成 done、清掉暫停與失敗欄位，丟掉未 commit 的修改，之後可以 iterate", async () => {
+    const run = await doneRun("f-abandon", { stage: "paused", pausedStage: "review", pauseReason: "額度", stopAfter: "pr" });
+    writeFileSync(join(worktreeDir(run.id), "half-done.txt"), "半成品");
+    const done = await abandonRun(run);
+    expect(done.stage).toBe("done");
+    expect([done.pausedStage, done.pauseReason, done.failedStage, done.failureReason, done.failureCategory, done.stopAfter]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(existsSync(join(worktreeDir(run.id), "half-done.txt"))).toBe(false);
+    expect(done.prUrl).toBe(run.prUrl);
+    const next = await iterateRun(done, { requirement: "補充" });
+    expect([next.stage, next.round]).toEqual(["spec", 2]);
+  });
+
+  it("abandon：failed 的 run 也行；已經是 done 的不用放棄", async () => {
+    const run = await doneRun("f-abandon-failed", { stage: "failed", failedStage: "verify", failureReason: "x", failureCategory: "error" });
+    expect((await abandonRun(run)).stage).toBe("done");
+    await expect(abandonRun({ ...run, stage: "done" })).rejects.toThrow("已經是 done");
+  });
+
   it("第三輪把第二輪存成 round-2，round-1 保留", async () => {
     const run = await doneRun("f-iter-third", { round: 2 });
     mkdirSync(join(flowDir(run.id), "round-1"));
     writeFileSync(join(flowDir(run.id), "round-1", "spec.md"), "更早");
-    const next = await iterateRun(run, { requirement: "補充" });
+    const next = await iterateRun({ ...run, roundStarts: ["2026-01-01T00:00:00.000Z"] }, { requirement: "補充" });
     expect(next.round).toBe(3);
+    expect(next.roundStarts).toHaveLength(2);
+    expect(next.roundStarts![0]).toBe("2026-01-01T00:00:00.000Z");
     expect(readdirSync(flowDir(run.id)).sort()).toEqual(["round-1", "round-2"]);
     expect(readFileSync(join(flowDir(run.id), "round-1", "spec.md"), "utf8")).toBe("更早");
   });
