@@ -1364,7 +1364,7 @@ const ROUND_ARCHIVE_FILES = [...LOCKED_FILES, "plan-replies.md"] as const;
  * 上一輪的規格與計畫存進 .flow/round-N/（讓這一輪的 agent 讀得到），其餘交接檔與第一輪的確認項目、
  * 仲裁、平行審查與車道紀錄都清掉，狀態回到 spec；程式碼與 PR 連結保留，開 PR 階段只會推送更新同一個 PR。
  */
-export async function iterateRun(run: FlowRun, opts: { requirement: string; maxAgentRuns?: number }): Promise<FlowRun> {
+export async function iterateRun(run: FlowRun, opts: { requirement: string; maxAgentRuns?: number; fast?: boolean }): Promise<FlowRun> {
   if (run.stage !== "done") throw new Error(`run 目前在 ${run.stage}，只有已完成（done）的 run 可以開下一輪`);
   const extra = opts.requirement.trim();
   if (!extra) throw new Error("請用 --req 或 --req-file 提供第二輪的補充需求");
@@ -1393,7 +1393,7 @@ export async function iterateRun(run: FlowRun, opts: { requirement: string; maxA
   const quota = opts.maxAgentRuns ?? (run.maxAgentRunsExplicit ? run.maxAgentRuns : loadRepoConfig().maxAgentRuns);
   const requirement = `${run.requirement}\n\n## 第 ${round} 輪補充需求\n\n${extra}\n\n（前一輪的規格與計畫存放在 .flow/round-${previous}/，其程式碼已在這個分支上；這一輪只處理補充需求要求的變更，以及必要的修正。）`;
   return {
-    ...run, requirement, round, roundBase, stage: "spec", stopAfter: undefined,
+    ...run, requirement, round, roundBase, stage: "spec", stopAfter: undefined, fast: opts.fast ? true : run.fast,
     roundStarts: [...(run.roundStarts ?? []), new Date().toISOString()],
     maxAgentRuns: agentRuns(run.id) + quota, maxAgentRunsExplicit: explicit ? true : undefined,
     attempts: {}, modelRetryAttempts: {}, taskIndex: 0, ...TASK_RESET, doneTasks: undefined, amendments: undefined,

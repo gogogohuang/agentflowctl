@@ -256,7 +256,8 @@ program
   .option("--req <text>", "第二輪的補充需求")
   .option("--req-file <file>", "從檔案讀取補充需求")
   .option("--max-agent-runs <n>", "這一輪最多再執行幾次 agent（預設取 flow.config.json 的 maxAgentRuns，從目前已執行的次數起算）")
-  .action(async (id: string, opts: { req?: string; reqFile?: string; maxAgentRuns?: string }) => {
+  .option("--fast", "這一輪走快速流程：一次 agent 呼叫寫完規格與計畫，略過計畫審查與任務審查（同 run --fast）", false)
+  .action(async (id: string, opts: { req?: string; reqFile?: string; maxAgentRuns?: string; fast: boolean }) => {
     const requirement = opts.reqFile ? readFileSync(opts.reqFile, "utf8") : opts.req;
     if (!requirement?.trim()) throw new Error("請用 --req 或 --req-file 提供第二輪的補充需求");
     const run = mustGetRun(id);
@@ -269,7 +270,7 @@ program
       }
     }
     if (run.modelMode === "adaptive") validateAdaptiveConfig(loadRepoConfig(), run.cycle);
-    const next = await iterateRun(run, { requirement, maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : undefined });
+    const next = await iterateRun(run, { requirement, maxAgentRuns: opts.maxAgentRuns ? Number(opts.maxAgentRuns) : undefined, fast: opts.fast || undefined });
     console.log(`[${id}] 🔁 開始第 ${next.round} 輪，沿用 worktree 與分支 ${next.branch}`);
     await drive(saveRun(next));
   });
