@@ -427,6 +427,8 @@ export const FlowRun = z.object({
   round: z.number().int().min(2).optional(),
   /** iterate 開下一輪時分支的 HEAD：比對「這一輪沒有任何任務動過」的前一輪測試；舊 run 與第 1 輪沒有 */
   roundBase: z.string().optional(),
+  /** 第 2 輪起各輪開始的時間（ISO），依序是第 2、3… 輪；status 用它把用量與重試紀錄分輪顯示。舊 run 沒有 */
+  roundStarts: z.array(z.string()).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

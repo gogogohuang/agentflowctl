@@ -8,7 +8,7 @@ const root = mkdtempSync(join(tmpdir(), "agentflowctl-store-"));
 execFileSync("git", ["init", "-q", root]);
 process.chdir(root);
 const { runDir } = await import("./paths.js");
-const { releaseAgentRun, reserveAgentRun, resetAgentRunReservations, addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage, usageKeyModelStageKind } = await import("./store.js");
+const { releaseAgentRun, reserveAgentRun, resetAgentRunReservations, addRetry, addSubstitution, addUsage, agentRuns, listRetries, listSubstitutions, listUsage, getRun, listRuns, saveRun, roundOfTime, summarizeUsage, totalUsage, usageByAgent, usageByStage, usageByStrength, usageByTask, usageKeyAgent, usageKeyModelStage, usageKeyModelStageKind } = await import("./store.js");
 
 describe("檔案儲存", () => {
   it("儲存、讀取、列出 run，並累加用量", () => {
@@ -143,5 +143,17 @@ describe("檔案儲存", () => {
     expect(reserveAgentRun("f-r", 2)).toBe(true); // 已有 1 筆用量
     expect(reserveAgentRun("f-r+T-1", 2)).toBe(false);
     resetAgentRunReservations();
+  });
+});
+
+describe("roundOfTime：紀錄時間屬於第幾輪", () => {
+  it("沒有分輪資料或沒有時間都算第 1 輪；每個開始時間之後（含）進下一輪", () => {
+    expect(roundOfTime("2026-01-01T00:00:00Z", undefined)).toBe(1);
+    expect(roundOfTime(undefined, ["2026-01-02T00:00:00Z"])).toBe(1);
+    const starts = ["2026-01-02T00:00:00Z", "2026-01-05T00:00:00Z"];
+    expect(roundOfTime("2026-01-01T23:59:59Z", starts)).toBe(1);
+    expect(roundOfTime("2026-01-02T00:00:00Z", starts)).toBe(2);
+    expect(roundOfTime("2026-01-04T00:00:00Z", starts)).toBe(2);
+    expect(roundOfTime("2026-01-06T00:00:00Z", starts)).toBe(3);
   });
 });
