@@ -146,6 +146,22 @@ export const RUST_PROFILE: EcosystemProfile = {
   },
 };
 
+/** 目錄提案只收單一層、看起來像一般目錄名的字串（例如 .venv、node_modules），擋掉空字串、.、..、路徑與以 - 開頭的值 */
+export function isSafeDirName(d: string): boolean {
+  return d !== "." && d !== ".." && /^[A-Za-z0-9_.][\w.-]*$/.test(d);
+}
+
+/**
+ * 引擎自己會建立或依賴的目錄，不能當依賴目錄：臨時 worktree 會先複製 .flow/ 再建 symlink，撞名會讓每次審查都失敗；
+ * symlink 到 .git 或 .agentflowctl 則會讓審查者與車道碰到引擎的資料。比對不分大小寫（macOS 預設的檔案系統不分）。
+ */
+const RESERVED_DEP_DIRS = new Set([".git", ".flow", ".agentflowctl", ".worktree", ".worktrees", "tmp-review"]);
+
+/** 依賴目錄名稱：單一層的一般目錄名，而且不是引擎保留的名稱 */
+export function isSafeDepDirName(d: string): boolean {
+  return isSafeDirName(d) && !RESERVED_DEP_DIRS.has(d.toLowerCase());
+}
+
 /** 把多個規則字串合成一個 RegExp；沒有規則就是 undefined（該守門停用） */
 export function anyOf(patterns: readonly string[]): RegExp | undefined {
   return patterns.length ? new RegExp(patterns.map((p) => `(?:${p})`).join("|")) : undefined;

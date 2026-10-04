@@ -150,8 +150,40 @@ describe("proposalDirOk", () => {
   writeFileSync(join(repo, "package.json"), "{}");
 
   it("目錄與被忽略的路徑通過；plain file、不安全名稱、像選項的值回傳 false 而不丟例外", () => {
-    expect(proposalDirOk(repo, ".venv")).toBe(true);
-    expect(proposalDirOk(repo, "ignored-thing")).toBe(true);
-    for (const d of ["package.json", "nope", "", "..", "-v", "--stdin"]) expect(proposalDirOk(repo, d), d).toBe(false);
+    expect(proposalDirOk(repo, ".venv", "skipDirs")).toBe(true);
+    expect(proposalDirOk(repo, "ignored-thing", "skipDirs")).toBe(true);
+    for (const d of ["package.json", "nope", "", "..", "-v", "--stdin"]) expect(proposalDirOk(repo, d, "skipDirs"), d).toBe(false);
+  });
+});
+
+describe("proposalDirOk：依賴目錄", () => {
+  const repo = mkdtempSync(join(tmpdir(), "agentflowctl-depdir-"));
+  execFileSync("git", ["init", "-q", repo]);
+  writeFileSync(join(repo, ".gitignore"), ".env\nnot-yet\n.venv\n");
+  writeFileSync(join(repo, ".env"), "SECRET=1\n");
+  mkdirSync(join(repo, ".venv"));
+  mkdirSync(join(repo, ".flow"));
+  mkdirSync(join(repo, ".agentflowctl"));
+
+  it("依賴目錄必須是已存在的真目錄：被忽略的一般檔案（.env）與還不存在的被忽略名稱都不算", () => {
+    expect(proposalDirOk(repo, ".venv", "depDirs")).toBe(true);
+    expect(proposalDirOk(repo, ".env", "depDirs")).toBe(false);
+    expect(proposalDirOk(repo, "not-yet", "depDirs")).toBe(false);
+  });
+
+  it("引擎自己的目錄（.git、.flow、.agentflowctl…）不能當依賴目錄，即使它們真的是目錄", () => {
+    for (const d of [".git", ".flow", ".agentflowctl", ".FLOW", ".worktree", ".worktrees", "tmp-review"]) expect(proposalDirOk(repo, d, "depDirs"), d).toBe(false);
+  });
+
+  it("skipDirs 仍接受被忽略但不存在的名稱", () => {
+    expect(proposalDirOk(repo, "not-yet", "skipDirs")).toBe(true);
+  });
+});
+
+describe("validateProposal：依賴目錄的保留名稱", () => {
+  it(".flow、.agentflowctl、.git 即使 dirOk 為真也被丟掉並記錄原因", async () => {
+    const v = await validateProposal({ checks: [], depDirs: [".flow", ".agentflowctl", ".git", ".venv"] }, deps({ dirOk: () => true }));
+    expect(v.profileExtras.depDirs).toEqual([".venv"]);
+    expect(v.dropped.filter((d) => d.field === "depDirs")).toHaveLength(3);
   });
 });

@@ -32,7 +32,7 @@ generated 觸發：
 驗證（程式查事實，不看 agent 的說法）：
 - 指令：沿用現行做法，在基底 commit 的臨時 worktree 執行，結束碼 0 才收。
 - 正規表示式：必須能編譯；`testPattern` 要比對到專案內至少一個檔案；其他附 `example`，必須比對得到自己的範例。
-- 目錄：必須真實存在或被 `.gitignore` 忽略。
+- 目錄：`depDirs` 必須是已存在的真目錄且不是保留名稱（`.git`、`.flow`、`.agentflowctl` 等）；`skipDirs` 必須真實存在或被 `.gitignore` 忽略。
 - 不通過的欄位丟掉，記進 `detected.json` 的 `dropped`，該守門退到第 4 層。
 - 提案只能新增規則：`skipPatterns`、`suppressPatterns` 與 profile 取聯集，不能關掉內建規則或放寬。
 
@@ -117,7 +117,7 @@ generated 觸發：
 - Node 偵測維持現狀：`typecheck`、`lint` 只在專案有對應 script 時加入，不因 `tsconfig.json`／eslint 設定自動補指令。`node:test` 專案靠 `test` script 辨識；沒有 `test` script 時只認依賴裡的 vitest、jest、mocha、ava、jasmine，其他框架視為沒有測試框架。
 - `DetectionProposal` 的失敗區塊欄位是列舉 `failureFormat`（`tap`／`pytest`／`go`／`cargo`），沒有 `failureBlock`；agent 只能挑格式，不能提供任意區塊規則。`failureTail(s, max, format?)` 的 `format` 沒有預設值，沒有格式就只取尾端。
 - `acceptanceChecks.ts` 的工具清單已含 pytest、ruff、clippy 等，不需要改。
-- agent 提案的 `depDirs`／`skipDirs` 由 `isSafeDirName`（單一層路徑、不是 `.`／`..`、不以 `-` 開頭）與 `proposalDirOk`（真實目錄，或 `git check-ignore -q --` 判定被忽略；`depDirs` 還不能是版控追蹤的路徑）驗證。
+- agent 提案的 `depDirs`／`skipDirs` 由 `isSafeDirName`（單一層路徑、不是 `.`／`..`、不以 `-` 開頭）與 `proposalDirOk` 驗證：`depDirs` 只收已存在的真目錄（`git check-ignore` 對被忽略的一般檔案與不存在的名稱也會成功，不能當證據），還不能是版控追蹤的路徑或保留名稱（`isSafeDepDirName`）；`skipDirs` 可以是真實目錄或被忽略的名稱。`detected.json` 合併前重做名稱檢查，建 symlink 時來源不是目錄或目標已存在就略過。
 - `describeDetected` 在守門規則為空時印出提示：未辨識專案一定印，已辨識專案只有欄位為空才印。
 - `NEUTRAL_PROFILE.skipDirs` 是舊 `SKIP_DIRS` 的超集合基線，確保沒有偵測結果時略過的目錄不比以前少。
 - `withProjectDefaults`：使用者手寫 `test`、偵測結果沒有 `test` 檢查時，補上一筆 `test` 檢查，verify 才會跑它。

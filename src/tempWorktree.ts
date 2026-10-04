@@ -1,7 +1,8 @@
-import { cpSync, existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join, sep } from "node:path";
 import { git, removeWorktree } from "./git.js";
 import { flowDir, projectRoot, tempWorktreesDir, worktreeDir } from "./paths.js";
+import { isSafeDepDirName } from "./profile.js";
 
 export { tempWorktreesDir };
 
@@ -14,6 +15,31 @@ export interface Workspace {
 }
 
 let created = 0;
+
+/**
+ * 把 from 底下的依賴目錄各建一個 symlink 到 to。只連「來源是真目錄、目標還不存在」的名稱：
+ * 名稱不安全（例如 detected.json 被手改成 .flow）、來源是一般檔案（例如 .env）或目標已存在時一律略過，
+ * 一個壞掉的項目不能讓每次審查或每條車道都失敗。
+ */
+export function symlinkDepDirs(from: string, to: string, depDirs: readonly string[]): void {
+  for (const dir of depDirs) {
+    if (!isSafeDepDirName(dir)) continue;
+    const deps = join(from, dir);
+    try {
+      if (!statSync(deps).isDirectory()) continue;
+    } catch {
+      continue; // 來源不存在
+    }
+    const target = join(to, dir);
+    try {
+      lstatSync(target);
+      continue; // 目標已存在（含壞掉的 symlink）：不覆蓋
+    } catch {
+      // 不存在才建
+    }
+    symlinkSync(deps, target, process.platform === "win32" ? "junction" : "dir");
+  }
+}
 
 const warn = (what: string, err: unknown) =>
   console.warn(`⚠️  ${what}失敗（下次執行或 clean 會再清）：${(err as Error).message}`);
@@ -51,10 +77,7 @@ export async function createTempWorktree(runId: string, name: string, depDirs: r
   try {
     if (existsSync(flowDir(runId))) cpSync(flowDir(runId), ws.flow, { recursive: true });
     else mkdirSync(ws.flow, { recursive: true });
-    for (const dir of depDirs) {
-      const deps = join(worktreeDir(runId), dir);
-      if (existsSync(deps)) symlinkSync(deps, join(ws.dir, dir), process.platform === "win32" ? "junction" : "dir");
-    }
+    symlinkDepDirs(worktreeDir(runId), ws.dir, depDirs);
   } catch (err) {
     await removeTempWorktree(runId, ws); // 不會丟例外，不會蓋掉原本的錯誤
     throw err;

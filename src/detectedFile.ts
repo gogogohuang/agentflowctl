@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import { detectProjectDefaults, NO_INSTALL, type ProjectDefaults } from "./detect.js";
 import { detectedPathIn } from "./paths.js";
-import { mergeProfile } from "./profile.js";
+import { isSafeDepDirName, isSafeDirName, mergeProfile, type ProfileExtras } from "./profile.js";
 import { DetectedFile } from "./schemas.js";
 
 /** 判斷未知類型專案「有沒有變」的特徵檔：內容都納入指紋 */
@@ -69,8 +69,20 @@ export function overlayGenerated(base: ProjectDefaults, g: DetectedFile): Projec
   };
 }
 
+/**
+ * detected.json 是一般檔案，可能被手改或是舊版寫的：合併前重做一次名稱檢查，不合格的項目直接略過，
+ * 不能靠它繞過 validateProposal 的限制。
+ */
+export function trustedExtras(g: DetectedFile): ProfileExtras {
+  return {
+    ...g,
+    depDirs: g.depDirs?.filter(isSafeDepDirName),
+    skipDirs: g.skipDirs?.filter(isSafeDirName),
+  };
+}
+
 export function mergeGeneratedProfile(base: ProjectDefaults, g: DetectedFile): ProjectDefaults {
-  return { ...base, profile: mergeProfile(base.profile, g) };
+  return { ...base, profile: mergeProfile(base.profile, trustedExtras(g)) };
 }
 
 /** 內建偵測；detected.json 的指紋相符時才疊上動態結果：未知類型整個疊上，已辨識的只補 profile 的缺欄位 */

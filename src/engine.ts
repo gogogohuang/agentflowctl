@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
@@ -21,7 +21,7 @@ import { missingPackageExports } from "./packageExports.js";
 import { divergeExclude, divergeStamp, formatDivergeFeedback, selectFrames, shouldDiverge } from "./diverge.js";
 import { arbiterPanel, availableAgent, divergeCritic, fixAgent, pick, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid, type StoredCall } from "./parallelReview.js";
-import { cleanupTempWorktrees, withTempWorktree, type Workspace } from "./tempWorktree.js";
+import { cleanupTempWorktrees, symlinkDepDirs, withTempWorktree, type Workspace } from "./tempWorktree.js";
 import { profileGaps, type EcosystemProfile } from "./profile.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
 import {
@@ -620,10 +620,7 @@ const DETECT_COMMAND_TIMEOUT_MS = 5 * 60_000;
 /** 把 run worktree 的依賴目錄 symlink 給車道；symlink 不是目錄，.gitignore 的 `dir/` 擋不住，commitAll 會把它加進去，所以另外 exclude */
 export async function linkDepDirs(root: string, from: string, to: string, depDirs: readonly string[]): Promise<void> {
   await excludePaths(root, depDirs.map((d) => `/${d}`));
-  for (const dir of depDirs) {
-    const deps = join(from, dir);
-    if (existsSync(deps)) symlinkSync(deps, join(to, dir), process.platform === "win32" ? "junction" : "dir");
-  }
+  symlinkDepDirs(from, to, depDirs);
 }
 
 /** 只留提案裡的新增規則欄位 */
@@ -675,7 +672,7 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
       return validateProposal(proposal, {
         files,
-        dirOk: (d) => proposalDirOk(ws.dir, d),
+        dirOk: (d, field) => proposalDirOk(ws.dir, d, field),
         hasExecutable: (bin) => {
           try {
             execFileSync("sh", ["-c", 'command -v "$1"', "sh", bin], { cwd: ws.dir, stdio: "ignore" });

@@ -115,6 +115,15 @@ describe("mergeGeneratedProfile", () => {
     expect(merged.profile.skipPatterns).toHaveLength(2);
   });
 
+  it("detected.json 裡不安全的目錄名稱（手改或舊檔）在合併時被丟掉", () => {
+    const unk = project({ Makefile: "t:\n" });
+    writeDetected(unk, file(unk, { depDirs: [".flow", ".agentflowctl", ".git", "../x", ".venv"], skipDirs: ["a/b", "vendor"] }));
+    const p = effectiveDefaults(unk).profile;
+    expect(p.depDirs).toEqual([".venv"]);
+    expect(p.skipDirs).toContain("vendor");
+    expect(p.skipDirs).not.toContain("a/b");
+  });
+
   it("effectiveDefaults：已辨識的專案疊上 generated 的 profile 補充，未知類型則整個疊上", () => {
     const dir = project({ "requirements.txt": "pytest\n" });
     writeDetected(dir, file(dir, { suppressPatterns: ["NOLINT"] }));

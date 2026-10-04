@@ -227,6 +227,41 @@ describe("臨時 worktree", () => {
   });
 });
 
+describe("依賴目錄的目標已存在", () => {
+  it("createTempWorktree 遇到已存在的目標（例如 .flow）略過，不丟例外", async () => {
+    await setupRun("t-exists");
+    const ws = await createTempWorktree("t-exists", "slot-0", [".flow"]);
+    try {
+      expect(lstatSync(join(ws.dir, ".flow")).isSymbolicLink()).toBe(false);
+      expect(readFileSync(join(ws.flow, "spec.md"), "utf8")).toBe("# spec\n");
+    } finally {
+      await removeTempWorktree("t-exists", ws);
+    }
+  });
+
+  it("createTempWorktree 不替一般檔案建 symlink", async () => {
+    await setupRun("t-file");
+    writeFileSync(join(worktreeDir("t-file"), ".env"), "SECRET=1\n");
+    const ws = await createTempWorktree("t-file", "slot-0", [".env"]);
+    try {
+      expect(existsSync(join(ws.dir, ".env"))).toBe(false);
+    } finally {
+      await removeTempWorktree("t-file", ws);
+    }
+  });
+
+  it("linkDepDirs 遇到已存在的目標略過，也不替一般檔案建 symlink", async () => {
+    const from = mkdtempSync(join(tmpdir(), "agentflowctl-dep-from-"));
+    const to = mkdtempSync(join(tmpdir(), "agentflowctl-dep-to-"));
+    mkdirSync(join(from, ".venv"));
+    mkdirSync(join(to, ".venv"));
+    writeFileSync(join(from, ".env"), "SECRET=1\n");
+    await expect(linkDepDirs(root, from, to, [".venv", ".env"])).resolves.toBeUndefined();
+    expect(lstatSync(join(to, ".venv")).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(to, ".env"))).toBe(false);
+  });
+});
+
 describe("linkDepDirs", () => {
   it("只替存在的依賴目錄建 symlink，並寫入 exclude", async () => {
     const from = mkdtempSync(join(tmpdir(), "agentflowctl-dep-from-"));

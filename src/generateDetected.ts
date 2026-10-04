@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { tail } from "./util.js";
-import type { ProfileExtras } from "./profile.js";
+import { isSafeDepDirName, isSafeDirName, type ProfileExtras } from "./profile.js";
 import type { DetectedFile, DetectionProposal } from "./schemas.js";
 
 export interface ValidateDeps {
@@ -12,23 +12,26 @@ export interface ValidateDeps {
   files: string[];
   /** 指令的第一個可執行檔是否存在 */
   hasExecutable(bin: string): boolean;
-  /** 目錄存在，或已被 .gitignore 忽略（依賴目錄通常不進版控） */
-  dirOk(dir: string): boolean;
+  /** depDirs：必須是已存在的目錄；skipDirs：目錄存在，或已被 .gitignore 忽略 */
+  dirOk(dir: string, field: "depDirs" | "skipDirs"): boolean;
 }
 
-/** 目錄提案只收單一層、看起來像一般目錄名的字串（例如 .venv、node_modules），擋掉空字串、.、..、路徑與以 - 開頭的值 */
-export function isSafeDirName(d: string): boolean {
-  return d !== "." && d !== ".." && /^[A-Za-z0-9_.][\w.-]*$/.test(d);
-}
+export { isSafeDirName };
 
-/** 真實的 dirOk：是目錄、或被 .gitignore 忽略（依賴目錄通常不進版控）；plain file 不算 */
-export function proposalDirOk(cwd: string, d: string): boolean {
-  if (!isSafeDirName(d)) return false;
+/**
+ * 真實的 dirOk。依賴目錄會被 symlink 進每位審查者與每條車道，所以只收「已存在的真目錄」：
+ * git check-ignore 對被忽略的一般檔案（例如 .env）與根本不存在的名稱也回傳成功，不能拿來證明它是目錄。
+ * skipDirs 只影響 findFiles 略過哪些名稱，才退而接受「不存在但被 .gitignore 忽略」。
+ */
+export function proposalDirOk(cwd: string, d: string, field: "depDirs" | "skipDirs"): boolean {
+  if (!(field === "depDirs" ? isSafeDepDirName(d) : isSafeDirName(d))) return false;
   try {
     if (statSync(join(cwd, d)).isDirectory()) return true;
+    return false; // 存在但不是目錄（一般檔案）：兩種欄位都不收
   } catch {
-    // 不存在：再看是否被忽略
+    // 不存在：依賴目錄一律不收；skipDirs 再看是否被忽略
   }
+  if (field === "depDirs") return false;
   try {
     execFileSync("git", ["check-ignore", "-q", "--", d], { cwd, stdio: "ignore" });
     return true;
@@ -121,8 +124,9 @@ export async function validateProposal(p: DetectionProposal, deps: ValidateDeps)
     const ok: string[] = [];
     for (const d of p[field] ?? []) {
       if (!isSafeDirName(d)) dropped.push({ field, reason: `不是單一層的目錄名稱：${JSON.stringify(d)}` });
+      else if (field === "depDirs" && !isSafeDepDirName(d)) dropped.push({ field, reason: `是 agentflowctl 或 git 保留的目錄，不能當依賴目錄：${d}` });
       else if (field === "depDirs" && deps.files.some((f) => f === d || f.startsWith(`${d}/`))) dropped.push({ field, reason: `已被版控追蹤，不能當依賴目錄：${d}` });
-      else if (!deps.dirOk(d)) dropped.push({ field, reason: `不是目錄，也沒有被 .gitignore 忽略：${d}` });
+      else if (!deps.dirOk(d, field)) dropped.push({ field, reason: field === "depDirs" ? `不是已存在的目錄：${d}` : `不是目錄，也沒有被 .gitignore 忽略：${d}` });
       else ok.push(d);
     }
     if (ok.length) extras[field] = ok;

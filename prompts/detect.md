@@ -29,7 +29,7 @@
 - 不確定的欄位就省略，不要猜。專案沒有測試時省略 test 與 testPattern。
 - 不要提出永遠成功的指令（true、echo 等）。
 - testPattern 是 JavaScript 正規表示式字串，比對對象是以 / 分隔的相對路徑。
-- 只提案專案實際使用的語法；規則只能新增、不能放寬，目錄必須真實存在（或被 .gitignore 忽略）。
+- 只提案專案實際使用的語法；規則只能新增、不能放寬；depDirs 必須是已存在的目錄，skipDirs 必須存在或被 .gitignore 忽略。
 - 只有 lint、型別檢查這類不必每個任務都跑的檢查才標 finalOnly: true。
 </constraints>
 
@@ -42,7 +42,7 @@
   "test": "跑測試的指令",
   "checks": [{ "name": "build", "cmd": "make build" }, { "name": "lint", "cmd": "make lint", "finalOnly": true }],
   "testPattern": "_spec\\.rb$",
-  "depDirs": ["vendor/bundle"],
+  "depDirs": ["vendor"],
   "skipDirs": ["vendor"],
   "sourceExts": [".rb"],
   "skipPatterns": [{ "pattern": "\\bskip\\s*\\(", "example": "    skip('later')" }],
@@ -54,7 +54,7 @@
 ```
 
 所有欄位都可以省略。專案類型已知時只會採用下列規則欄位（install、test、checks、testPattern 會被忽略）：
-- depDirs／skipDirs：相對於專案根目錄的目錄，必須真的存在或已被 .gitignore 忽略；depDirs 是依賴目錄（會共用給平行的 worktree），skipDirs 是掃描檔案時要略過的目錄。
+- depDirs／skipDirs：專案根目錄下單一層的目錄名稱（不能含 /）；depDirs 是依賴目錄（會共用給平行的 worktree），必須是已存在的目錄，不能是一般檔案、版控追蹤的目錄或 .git、.flow、.agentflowctl 這類保留名稱；skipDirs 是掃描檔案時要略過的目錄，必須存在或已被 .gitignore 忽略。
 - sourceExts：程式碼檔案的副檔名（含點）。
 - skipPatterns：新增「跳過測試」的語法；suppressPatterns：新增「抑制型別或 lint」的語法；assertPattern：斷言行；failureLine：測試輸出裡代表失敗的一行。這些都是 JavaScript 正規表示式字串，每個都必須附 example：一行專案內真的出現過或會出現的程式碼，規則必須比對得到它。
 - failureFormat：只能是 tap、pytest、go、cargo 之一，指失敗輸出最接近哪種格式。
