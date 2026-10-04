@@ -3,7 +3,7 @@
 </role>
 
 <context>
-目前的工作目錄就是專案（agentflowctl 為這次任務建立的專用 git worktree）。agentflowctl 需要你從專案本身找出答案：專案類型未知（沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等）時是安裝、測試、檢查指令與測試檔命名；專案類型已知但守門規則不完整時是下面 output_format 裡的規則欄位。
+目前的工作目錄就是專案（agentflowctl 為這次任務建立的專用 git worktree）。agentflowctl 需要你從專案本身找出答案：專案類型未知（沒有 go.mod、Cargo.toml、pyproject.toml 等已知的專案檔）時是安裝、測試、檢查指令與測試檔命名；專案類型已知但守門規則不完整時是下面 output_format 裡的規則欄位。
 </context>
 
 <handoff>

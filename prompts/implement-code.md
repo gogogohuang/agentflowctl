@@ -59,7 +59,7 @@
 
 <constraints>
 - 只改這個任務需要的檔案。任務清單裡其他任務描述寫明要改的檔案，不要順手做掉，越界的變更會被還原並要求重做；認為任務切分有誤時寫進 .flow/handoff-response.json 的 newIssues。
-- **不可修改任何測試檔**，修改會被自動還原並視為失敗。唯一例外：任務要求移除某個檔案時，可以連同它對應的測試檔（`foo.ts` 與 `foo.test.ts`）一起刪除；只刪測試檔、被測檔還在，一樣會被還原。若認為測試本身有誤，請寫在回覆的 `<concerns>`。
+- **不可修改任何測試檔**，修改會被自動還原並視為失敗。唯一例外：任務要求移除某個檔案時，可以連同它對應的測試檔（`{{exampleSource}}` 與 `{{exampleTest}}`）一起刪除；只刪測試檔、被測檔還在，一樣會被還原。若認為測試本身有誤，請寫在回覆的 `<concerns>`。
 - 不要執行 git commit（權限設定已禁止）。
 - 沒有修改任何檔案時，不要重跑同一個指令（測試、`type-check`、`lint`、`git diff --check`）；修改後可以再跑一次確認。外部流程會用 `{{testCmd}}` 驗證全部測試。
 - **不可修改** .flow/spec.md、.flow/acceptance.json、.flow/plan.md、.flow/tasks.json、.flow/tasks.ordered.json，修改會被自動還原並視為失敗。若認為規格或驗收條件有誤，請寫進 .flow/handoff-response.json 的 newIssues。

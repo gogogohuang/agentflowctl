@@ -296,7 +296,7 @@ async function settleHandoff(
     // pinned 不找代打，額度用完直接暫停，所以不需要 reset；善後一律交給 finally
     repair = await agentStep(
       run, outcome.agent, outcome.step,
-      renderPrompt("handoff-repair", { step: outcome.step, error: first, range: `${base ?? settled}..${settled}` }),
+      renderStage("handoff-repair", { step: outcome.step, error: first, range: `${base ?? settled}..${settled}` }),
       { kind: "write", pinned: true, reset: () => {} },
     );
   } catch (error) {
@@ -397,6 +397,11 @@ export function loadRepoConfig(): RepoConfig {
 /** 目前專案的生態系統資料（守門、依賴目錄、失敗輸出格式、prompt 範例） */
 function projectProfile(): EcosystemProfile {
   return effectiveDefaults(projectRoot()).profile;
+}
+
+/** renderPrompt 加上目前專案生態系統的範例字串（hints）；呼叫端自己給的同名變數優先 */
+function renderStage(name: string, vars: Record<string, string> = {}): string {
+  return renderPrompt(name, { ...projectProfile().hints, ...vars });
 }
 
 /** 專案有測試框架（偵測到或手動設定 test） */
@@ -585,7 +590,7 @@ async function fastPlanStage(run: FlowRun): Promise<FlowRun> {
   const agent = specAgent(run.cycle, run.id);
   info(run, `⚡ fast：一次產生規格與計畫（${agent}）`);
   const cfg = loadRepoConfig();
-  const outcome = await agentStep(run, agent, "spec", renderPrompt("fast-plan", { requirement: run.requirement, testPattern: cfg.testPattern, maxTasks: String(FAST_MAX_TASKS) }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "spec", renderStage("fast-plan", { requirement: run.requirement, testPattern: cfg.testPattern, maxTasks: String(FAST_MAX_TASKS) }), { kind: "write" });
   const { r, agent: actual } = outcome;
   await discardChanges(worktreeDir(run.id));
   if (!r.ok) return retry(run, "spec", `Agent 執行失敗：${r.summary}`, "spec", "agent_error");
@@ -650,7 +655,7 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
     if (readDetected(root)?.fingerprint === fingerprint) return;
     const agent = specAgent(run.cycle, run.id);
     info(run, unknown ? `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查` : `🔎 ${base.manager} 專案的守門規則不完整，請 ${agent} 補充（${gaps.join("、")}）`);
-    const outcome = await agentStep(run, agent, "detect", renderPrompt("detect", {}), { kind: "write", pinned: true });
+    const outcome = await agentStep(run, agent, "detect", renderStage("detect", {}), { kind: "write", pinned: true });
     await discardChanges(worktreeDir(run.id)); // 只允許寫 .flow/
     let proposal: DetectionProposal = { checks: [] };
     const dropped: { field: string; reason: string }[] = [];
@@ -709,7 +714,7 @@ async function specStage(run: FlowRun): Promise<FlowRun> {
   if (run.fast) return fastPlanStage(run);
   const agent = specAgent(run.cycle, run.id);
   info(run, `📝 產生規格（${agent}）`);
-  const outcome = await agentStep(run, agent, "spec", renderPrompt("spec", { requirement: run.requirement }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "spec", renderStage("spec", { requirement: run.requirement }), { kind: "write" });
   const { r } = outcome;
   await discardChanges(worktreeDir(run.id)); // 這個階段只允許寫 .flow/
   if (!r.ok) return retry(run, "spec", `Agent 執行失敗：${r.summary}`, "spec", "agent_error");
@@ -827,7 +832,7 @@ async function planStage(run: FlowRun): Promise<FlowRun> {
   const agent = planAgent(run.cycle, run.id);
   info(run, `🗺️  拆解任務（${agent}）`);
   const cfg = loadRepoConfig();
-  const outcome = await agentStep(run, agent, "plan", renderPrompt("plan", { testPattern: cfg.testPattern }), { kind: "write" });
+  const outcome = await agentStep(run, agent, "plan", renderStage("plan", { testPattern: cfg.testPattern }), { kind: "write" });
   const { r, agent: actual } = outcome;
   await discardChanges(worktreeDir(run.id));
   if (!r.ok) return retry(run, "plan", `Agent 執行失敗：${r.summary}`, "plan", "agent_error");
@@ -1059,7 +1064,7 @@ async function planReviewFull(run: FlowRun, cfg: RepoConfig): Promise<FlowRun> {
 
   const specs: PlanReviewCallSpec[] = panel.map((reviewer, slot) => ({
     key: `full:${reviewer}`, reviewer, step: "plan-review", slot, gated: true, subject: "計畫",
-    prompt: renderPrompt("plan-review", { reviewer, author, requirement: run.requirement }),
+    prompt: renderStage("plan-review", { reviewer, author, requirement: run.requirement }),
     output: "plan-review.json", archive: `plan-review-${round}-${reviewer}.json`,
   }));
   for (const spec of specs) info(run, `🧐 計畫審查第 ${round} 輪（${spec.reviewer}，作者 ${author}）`);
@@ -1155,7 +1160,7 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
   for (const reviewer of panel) {
     add(`index:${reviewer}`, undefined, "計畫索引審查", {
       reviewer, step: "plan-review", gated: true, subject: "計畫索引",
-      prompt: renderPrompt("plan-review-index", {
+      prompt: renderStage("plan-review-index", {
         reviewer, author, requirement: run.requirement,
         index: planReviewIndex(layered.tasks),
         acceptance: JSON.stringify(layered.acceptance, null, 2),
@@ -1173,7 +1178,7 @@ async function planReviewLayered(run: FlowRun, layered: LayeredPlan, cfg: RepoCo
     for (const reviewer of groupPanel) {
       add(`group:${group.id}:${group.taskIds.join(",")}:${reviewer}`, group.taskIds, `計畫群 ${group.id} 審查`, {
         reviewer, step: "plan-review-group", gated: false, subject: `任務群 ${group.id}`, scope: group.id,
-        prompt: renderPrompt("plan-review-group", {
+        prompt: renderStage("plan-review-group", {
           reviewer, author, groupId: group.id,
           files: group.files.join("、") || "（這群的描述沒有點名檔案）",
           tasks: JSON.stringify(groupTasks, null, 2),
@@ -1234,7 +1239,7 @@ async function planFixStage(run: FlowRun): Promise<FlowRun> {
   try {
     outcome = await agentStep(
       run, agent, "plan-fix",
-      renderPrompt("plan-fix", { requirement: run.requirement, testPattern: cfg.testPattern }),
+      renderStage("plan-fix", { requirement: run.requirement, testPattern: cfg.testPattern }),
       { kind: "write", reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); clearReplies(); } },
     );
   } catch (err) {
@@ -1375,7 +1380,7 @@ async function arbitratePlan(run: FlowRun): Promise<FlowRun> {
     info(run, `⚖️  ${mode}（${arbiter}）`);
     const snap = snapshotPlan(run, PLAN_REPLY_FILES);
     rmSync(flowFile(run, "plan-arbiter.json"), { force: true });
-    const outcome = await agentStep(run, arbiter, "plan-arbiter", renderPrompt("plan-arbiter", { requirement: run.requirement }), {
+    const outcome = await agentStep(run, arbiter, "plan-arbiter", renderStage("plan-arbiter", { requirement: run.requirement }), {
       kind: "review", slot, blind: true,
       reset: async () => { await discardChanges(worktreeDir(run.id)); restorePlan(run, snap); },
     });
@@ -1534,7 +1539,7 @@ async function maybeDiverge(run: FlowRun, task: TaskItem, cfg: RepoConfig): Prom
   for (const frame of frames) {
     const outcome = await agentStep(
       run, pick(run.cycle, `${run.id}:${stamp}:${frame}`), `${task.id}-diverge-${frame}`,
-      renderPrompt("diverge-branch", {
+      renderStage("diverge-branch", {
         frame, framePrompt: DIVERGE_FRAME_PROMPT[frame], task: taskJson, acceptance: acceptanceJson,
         feedback, category,
       }),
@@ -1554,7 +1559,7 @@ async function maybeDiverge(run: FlowRun, task: TaskItem, cfg: RepoConfig): Prom
   const critic = divergeCritic(run.cycle, excluded, `${run.id}:${stamp}`);
   const outcome = await agentStep(
     run, critic, `${task.id}-diverge-critic`,
-    renderPrompt("diverge-critic", {
+    renderStage("diverge-critic", {
       task: taskJson, acceptance: acceptanceJson, feedback, category,
       branches: JSON.stringify(branches, null, 2),
     }),
@@ -1712,7 +1717,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     const snap = snapshotPlan(run, LOCKED_FILES);
     const outcome = await agentStep(
       run, agents.tests, `${task.id}-tests`,
-      renderPrompt("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd, ...testsRedGuidance(testCmd, waiveRed) }),
+      renderStage("implement-tests", { task: taskJson, acceptance: acceptanceJson, testPattern: cfg.testPattern, testCmd, ...testsRedGuidance(testCmd, waiveRed) }),
       { kind: "write", reset: async () => { await resetTo(repo, before); restorePlan(run, snap); } },
     );
     const { r, agent: testsAuthor } = outcome;
@@ -1791,8 +1796,8 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   const outcome = await agentStep(
     run, agents.code, `${task.id}-code`,
     tdd
-      ? renderPrompt("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) })
-      : renderPrompt("implement-direct", { task: taskJson, acceptance: acceptanceJson, testCmd: framework ? testCmd : "" }),
+      ? renderStage("implement-code", { task: taskJson, acceptance: acceptanceJson, testCmd, redOutput: tail(redOutput, 3000) })
+      : renderStage("implement-direct", { task: taskJson, acceptance: acceptanceJson, testCmd: framework ? testCmd : "" }),
     { kind: "write", reset: async () => { await resetTo(repo, testsCommit); restorePlan(run, snap); } },
   );
   const { r, agent: codeAuthor } = outcome;
@@ -2076,7 +2081,7 @@ async function taskReviewStep(run: FlowRun, task: TaskItem, progress: string, ta
     seed: `${run.id}:review:${task.id}:${run.attempts[key] ?? 0}`,
     label: `[${progress}] 任務審查`,
     step: `${task.id}-review`,
-    prompt: (reviewer, authors) => renderPrompt("task-review", { reviewer, authors, task: taskJson, acceptance: acceptanceJson }),
+    prompt: (reviewer, authors) => renderStage("task-review", { reviewer, authors, task: taskJson, acceptance: acceptanceJson }),
     saveAs: (reviewer) => `review-${task.id}-${reviewer}.json`,
     testAuthor: run.lastTestsAuthor,
     // 輪流交換角色：優先由排定的審查者審查，讓各家用量平均
@@ -2334,7 +2339,7 @@ async function applyFix(
   const feedback = readFeedback(run);
   const before = await headCommit(repo);
   const snap = snapshotPlan(run, LOCKED_FILES);
-  const outcome = await agentStep(run, agent, opts.step, renderPrompt("fix", { testPattern: cfg.testPattern }), {
+  const outcome = await agentStep(run, agent, opts.step, renderStage("fix", { testPattern: cfg.testPattern }), {
     kind: "write",
     reset: async () => { await resetTo(repo, before); restorePlan(run, snap); },
   });
@@ -2508,7 +2513,7 @@ async function reviewStage(run: FlowRun): Promise<FlowRun> {
     seed: `${run.id}:review:${run.attempts.review ?? 0}`,
     label: "程式碼審查",
     step: "review",
-    prompt: (reviewer, authors) => renderPrompt("review", { reviewer, authors }),
+    prompt: (reviewer, authors) => renderStage("review", { reviewer, authors }),
     saveAs: (reviewer) => `review-${reviewer}.json`,
     gate: true,
     runKey: "review-run",

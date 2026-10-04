@@ -1,6 +1,7 @@
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { renderPrompt } from "./util.js";
+import { GO_PROFILE, NEUTRAL_PROFILE, NODE_PROFILE, PYTHON_PROFILE, RUST_PROFILE } from "./profile.js";
 
 const names = readdirSync(new URL("../prompts/", import.meta.url))
   .filter((f) => f.endsWith(".md"))
@@ -37,6 +38,7 @@ const vars = {
   feedback: "測試仍未通過",
   category: "tests_not_green",
   branches: "[]",
+  ...NODE_PROFILE.hints,
 };
 
 describe("prompts", () => {
@@ -140,5 +142,21 @@ describe("prompts", () => {
     const text = renderPrompt(name, vars);
     expect(text).toContain("沒有修改任何檔案時，不要重跑同一個指令");
     expect(text).toContain("修改後可以再跑一次確認");
+  });
+});
+
+describe("prompt 與 profile hints", () => {
+  it("prompts 不寫死特定框架或專案檔：範例一律由 profile 的 hints 代入", () => {
+    const forbidden = /vitest|package\.json|tsconfig|@testing-library|\bsrc\/form\.ts\b|foo\.test\.ts/;
+    for (const file of readdirSync(new URL("../prompts/", import.meta.url))) {
+      const text = readFileSync(new URL(`../prompts/${file}`, import.meta.url), "utf8");
+      expect(forbidden.test(text), `${file} 含有寫死的框架字樣`).toBe(false);
+    }
+  });
+
+  it("hints 的變數齊全：所有 profile 都能代入每個 prompt", () => {
+    for (const p of [NODE_PROFILE, PYTHON_PROFILE, GO_PROFILE, RUST_PROFILE, NEUTRAL_PROFILE]) {
+      expect(Object.keys(p.hints).sort()).toEqual(["dependencyNote", "exampleSource", "exampleTest", "manifestFiles"]);
+    }
   });
 });
