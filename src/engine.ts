@@ -1647,6 +1647,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
   }
   const repo = worktreeDir(run.id);
   const testRe = new RegExp(cfg.testPattern);
+  const profile = projectProfile();
   // 車道共用所屬 run 的依賴目錄（symlink），各自安裝會互相覆寫，所以車道裡只跑測試
   const testCmd = inLane(run) ? cfg.test : `${cfg.install} && ${cfg.test}`;
   const progress = inLane(run) ? `平行 ${task.id} ${task.title}` : `${run.taskIndex + 1}/${tasks.length} ${task.id} ${task.title}`;
@@ -1732,13 +1733,13 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     }
     // 紅燈跑在實作之前：失敗的若是別的測試檔，就是分支上早就壞了（例如平行車道合併後語意衝突）。
     // 這不是這個任務的測試或實作能修的，繼續只會在綠燈原地打轉，先還原並停下等人處理
-    const foreign = red.ok ? [] : foreignFailingTests(red.output, changed.filter((f) => testRe.test(f)));
+    const foreign = red.ok ? [] : foreignFailingTests(red.output, changed.filter((f) => testRe.test(f)), profile);
     if (foreign.length) {
       await resetTo(repo, before);
       throw new BaselineRedPause(`${key} 的紅燈階段，失敗的是別的測試檔：${foreign.join("、")}（分支上原本就壞了，不是這個任務造成的）；請先修好那些測試，或用 replan／手動修正後 resume${logHint(run, red.seq)}`);
     }
     // 紅燈只看得出「失敗」，看不出失敗的原因：測試呼叫了套件沒有的匯出時，實作者再怎麼改都不會綠，現在就退回給測試作者
-    const missing = await missingPackageExports(repo, changed.filter((f) => testRe.test(f)));
+    const missing = profile.packageProbe ? await missingPackageExports(repo, changed.filter((f) => testRe.test(f))) : [];
     if (missing.length) {
       await resetTo(repo, before);
       return retry(
@@ -1797,6 +1798,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
         await changedFiles(repo, testsCommit, await headCommit(repo)),
         await changedFiles(repo, testsCommit, await headCommit(repo), "D"),
         testRe,
+        profile,
       )
     : [];
   if (touched.length) {
@@ -1804,7 +1806,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     return retry(run, key, `實作階段不可修改測試檔，已還原你的變更：${touched.join(", ")}`, "implement", "tests_modified");
   }
   // 實作可以新增程式碼，但不可以用 @ts-ignore、eslint-disable 之類的方式讓型別與 lint 檢查閉嘴
-  const suppressed = weakenedChecks(await git(repo, "diff", testsCommit, await headCommit(repo)), testRe).filter((w) => w.kind === "suppress");
+  const suppressed = weakenedChecks(await git(repo, "diff", testsCommit, await headCommit(repo)), testRe, profile).filter((w) => w.kind === "suppress");
   if (suppressed.length) {
     await resetTo(repo, testsCommit);
     return retry(run, key, weakenedMessage(suppressed), "implement", "checks_weakened");
@@ -1826,12 +1828,12 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     // 實作者不能改既有測試，要嘛改實作別破壞它們，要嘛提 amend；第二次還是這樣就停下，不再重試
     // 非 TDD 任務沒有「自己的測試」可比對，實作者本來就可以改測試，不做這項判斷
     const own = tdd && run.taskBase ? (await changedFiles(repo, run.taskBase, testsCommit)).filter((f) => testRe.test(f)) : [];
-    const regressed = tdd && run.taskBase ? foreignFailingTests(green.output, own) : [];
+    const regressed = tdd && run.taskBase ? foreignFailingTests(green.output, own, profile) : [];
     if (!regressed.length) run = { ...run, regressions: undefined };
     if (regressed.length) {
       // 「連續」只算回歸本身：先前因其他原因失敗的嘗試不計入
       const streak = (run.regressions ?? 0) + 1;
-      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${failureTail(green.output)}\n\`\`\``;
+      const reason = `全套測試失敗的是別的測試檔：${regressed.join("、")}。它們不是這個任務的測試，不可修改。若是你的實作破壞了它們，修正實作；若這個任務必須改變前面已合併任務的行為，不要硬改，寫 .flow/amend-request.json 請求修補。\n\n\`\`\`\n${failureTail(green.output, undefined, profile.failureFormat)}\n\`\`\``;
       if (streak >= REGRESSION_PAUSE_AFTER) {
         const attempts = { ...run.attempts };
         delete attempts[key];
@@ -1845,7 +1847,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
     // 實作者沒有任何變更、或同樣的測試一再失敗，表示問題多半出在測試本身（用了專案沒有的 API、斷言互相矛盾……），
     // 再叫實作者重試只會原地打轉：丟掉這一輪，回到測試階段重寫
     // 失敗是「測試呼叫了套件沒有的匯出」時與實作無關，不必等第二次就退回
-    const brokenImport = tdd && run.taskBase ? brokenPackageImport(green.output, await testPackageImports(repo, run.taskBase, testsCommit, testRe)) : undefined;
+    const brokenImport = tdd && profile.packageProbe && run.taskBase ? brokenPackageImport(green.output, await testPackageImports(repo, run.taskBase, testsCommit, testRe)) : undefined;
     const suspectTests = Boolean(brokenImport) || !codeCommit || failures >= TESTS_REDO_AFTER_FAILURES;
     if (tdd && run.taskBase && (run.testsRedos ?? 0) >= TESTS_REDO_LIMIT && suspectTests) {
       // 已退回測試階段達上限仍然過不了：再自動重試只會燒用量，停下來等人處理（改依賴、補充意見或 replan 之後 resume）
@@ -1859,7 +1861,7 @@ async function implementStage(run: FlowRun): Promise<FlowRun> {
         false, authorConcerns(outcome),
       );
     }
-    return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${failureTail(green.output)}\n\`\`\``, "implement", "tests_not_green");
+    return retry(run, key, `測試仍未通過：\n\n\`\`\`\n${failureTail(green.output, undefined, profile.failureFormat)}\n\`\`\``, "implement", "tests_not_green");
   }
   const handoffError = await settleHandoff(run, outcome, LOCKED_FILES, testsCommit);
   if (handoffError) {
@@ -2123,7 +2125,7 @@ async function redoTests(
     "測試輸出：",
     "",
     "```",
-    failureTail(output),
+    failureTail(output, undefined, projectProfile().failureFormat),
     "```",
     "",
   ].join("\n"));
@@ -2337,13 +2339,14 @@ async function applyFix(
     info(run, "   ⚠️  修正動到後面任務負責的檔案，已達守衛次數上限，放行");
   }
   const testRe = new RegExp(cfg.testPattern);
+  const profile = projectProfile();
   const deleted = (await changedFiles(repo, before, await headCommit(repo), "D")).filter((f) => testRe.test(f));
   if (deleted.length) {
     await resetTo(repo, before);
     return again(`${feedback}\n\n另外：不可刪除測試檔來讓檢查通過，已還原：${deleted.join(", ")}`, "tests_deleted");
   }
   // skip／suppress 沒有正當理由，一律退回；斷言變少可能是合理地刪掉重複的，只在前幾次嘗試擋下
-  const weak = weakenedChecks(await git(repo, "diff", before, await headCommit(repo)), testRe);
+  const weak = weakenedChecks(await git(repo, "diff", before, await headCommit(repo)), testRe, profile);
   const blocking = weak.filter((w) => w.kind !== "assertions" || (run.attempts[opts.key] ?? 0) < SCOPE_GUARD_ATTEMPTS);
   if (blocking.length) {
     await resetTo(repo, before);

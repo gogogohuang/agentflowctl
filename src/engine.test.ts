@@ -8,7 +8,9 @@ import type { FlowRun } from "./schemas.js";
 const root = mkdtempSync(join(tmpdir(), "agentflowctl-engine-"));
 execFileSync("git", ["init", "-q", "-b", "main", root]);
 writeFileSync(join(root, "base.txt"), "base\n");
-execFileSync("git", ["-C", root, "add", "base.txt"]);
+// 偵測為 Node 專案，守門與失敗輸出格式才用 Node 的規則
+writeFileSync(join(root, "package.json"), JSON.stringify({ name: "engine-test" }));
+execFileSync("git", ["-C", root, "add", "base.txt", "package.json"]);
 execFileSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]);
 process.chdir(root);
 
@@ -1127,7 +1129,7 @@ writeFileSync(".flow/handoff-response.json", JSON.stringify({ newIssues: [], dis
     const feedback = readFileSync(join(flowDir(id), "feedback.md"), "utf8");
     expect(feedback).toContain("測試失敗");
     expect(feedback).toContain("answer.test.ts（新增 skip／only／todo 1 處）");
-    expect(feedback).toContain("answer.ts（新增 @ts-ignore／@ts-nocheck／eslint-disable 1 處）");
+    expect(feedback).toContain("answer.ts（新增抑制型別或 lint 的註解 1 處）");
     expect(run.attempts.fix).toBe(1);
   });
 

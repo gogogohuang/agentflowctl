@@ -26,7 +26,7 @@ describe("failureTail", () => {
   });
 
   it("太長時保留失敗區塊（不只尾端），並標示前略", () => {
-    const out = failureTail(tap(60), 1500);
+    const out = failureTail(tap(60), 1500, "tap");
     expect(out).toContain("not ok 99 - the broken one");
     expect(out).toContain("Cannot read properties of null");
     expect(out).toContain("# fail 1");
@@ -35,12 +35,25 @@ describe("failureTail", () => {
   });
 
   it("尾端本來就含失敗區塊時不重複", () => {
-    const out = failureTail(`${"x\n".repeat(3000)}not ok 1 - last\n  ---\n  error: 'boom'\n  ...\n# fail 1`, 500);
+    const out = failureTail(`${"x\n".repeat(3000)}not ok 1 - last\n  ---\n  error: 'boom'\n  ...\n# fail 1`, 500, "tap");
     expect(out.match(/not ok 1 - last/g)).toHaveLength(1);
   });
 
   it("沒有 TAP 失敗區塊時行為同 tail", () => {
     const s = "y".repeat(5000);
+    expect(failureTail(s, 100, "tap")).toBe(`…（前略）\n${s.slice(-100)}`);
+  });
+
+  it("沒有指定格式時只截尾端", () => {
+    const s = `not ok 1 - a\n${"y".repeat(5000)}`;
     expect(failureTail(s, 100)).toBe(`…（前略）\n${s.slice(-100)}`);
+  });
+
+  it("pytest 格式在輸出太長時保留被擠出尾端的失敗區塊", () => {
+    const head = ["_____ test_bad _____", "    def test_bad():", ">       assert 1 == 2", "E       assert 1 == 2"].join("\n");
+    const noise = Array.from({ length: 400 }, (_, i) => `tests/test_ok.py::test_${i} PASSED`).join("\n");
+    const shown = failureTail(`${head}\n${noise}`, 600, "pytest");
+    expect(shown).toContain("test_bad");
+    expect(shown).toContain("assert 1 == 2");
   });
 });
