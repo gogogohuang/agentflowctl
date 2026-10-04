@@ -213,6 +213,6 @@ Codex 另有幾點差異：
 
 審查意見的處理寫在 `.flow/plan-replies.md`，每輪覆寫，不寫進 `plan.md` 文末。下一輪索引會看到整份回應；任務群只看到自己的 `## T-<數字>` 節。
 
-`install`、`test`、`checks` 未設定時，會依專案類型偵測（Node 看 `packageManager`、lockfile 和 `package.json` scripts；Python、Go、Rust 看各自的專案檔，細節見[執行流程細節](workflow.md)）；`testPattern` 未設定時，Node、Python、Go、Rust 也由偵測補上。完整範例見 [examples/flow.config.json](examples/flow.config.json)。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
+`install`、`test`、`checks` 未設定時，會依專案類型偵測（Node 看 `packageManager`、lockfile 和 `package.json` scripts；Python、Go、Rust 看各自的專案檔，細節見[執行流程細節](workflow.md)）；`testPattern` 未設定時，Node、Python、Go、Rust 也由偵測補上。完整範例見 [examples/flow.config.json](examples/flow.config.json)（其中的 `npx vitest run`、`tsc`、`eslint`、`vite build` 只是 Node 專案的示例寫法，不是預設值）。專案設定每一步都會重新讀取，但已建立 run 的參與 agent 與執行次數上限會沿用建立時的值；要調高後者請用 `resume --max-agent-runs`。
 
 agentflowctl 不讀取任何 `AGENTFLOWCTL_*` 環境變數，設定都寫在 `flow.config.json`。`maxAttempts`（預設 5、至少 3；設得更小會直接報設定錯誤）是單一關卡的重試上限（至少 3），單一 run 可用 `run`／`resume` 的 `--max-attempts` 覆蓋；計畫審查何時交付仲裁與它無關：意見沒有變化，或第 2 輪（修訂過一次）仍被要求修改時就交付，兩家 agent 時自動進入雙盲交叉仲裁，有第三方時由第三方單獨仲裁；`maxAgentRuns` 則是整次 run 的 agent 執行次數上限。修正成功、或計畫審查與程式碼審查整組完成一輪有效審查後，該關的失敗次數會歸零，所以上限只計算連續失敗。分層計畫審查時，同一輪裡只要有一次審查呼叫真的執行成功，計畫審查的失敗次數也會歸零；所以索引與各群輪流各失敗一次、每次重跑都有進展時，不會因累計達上限而失敗。

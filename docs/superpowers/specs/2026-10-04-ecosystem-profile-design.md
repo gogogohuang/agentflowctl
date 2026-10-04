@@ -104,15 +104,26 @@ generated 觸發：
 
 ## 實作順序
 
-每個 commit 都過 `pnpm run typecheck` 與 `pnpm test`：
+每個 commit 都過 `pnpm run typecheck` 與 `pnpm test`。實際為 5 個 commit（外加審查後的修正）：
 
+0. 基礎：`src/profile.ts`（`EcosystemProfile` 與各生態系統資料，行為不變）。
 1. A：中性預設、Node 偵測依據、pip venv。
 2. B：`depDirs`、`skipDirs`。
 3. C：守門與輸出格式的 profile 化、`DetectionProposal` 擴充、generated 補缺。
 4. D：prompt 變數注入。
 
+## 實作時與原設計的差異
+
+- Node 偵測維持現狀：`typecheck`、`lint` 只在專案有對應 script 時加入，不因 `tsconfig.json`／eslint 設定自動補指令。`node:test` 專案靠 `test` script 辨識；沒有 `test` script 時只認依賴裡的 vitest、jest、mocha、ava、jasmine，其他框架視為沒有測試框架。
+- `DetectionProposal` 的失敗區塊欄位是列舉 `failureFormat`（`tap`／`pytest`／`go`／`cargo`），沒有 `failureBlock`；agent 只能挑格式，不能提供任意區塊規則。`failureTail(s, max, format?)` 的 `format` 沒有預設值，沒有格式就只取尾端。
+- `acceptanceChecks.ts` 的工具清單已含 pytest、ruff、clippy 等，不需要改。
+- agent 提案的 `depDirs`／`skipDirs` 由 `isSafeDirName`（單一層路徑、不是 `.`／`..`、不以 `-` 開頭）與 `proposalDirOk`（真實目錄，或 `git check-ignore -q --` 判定被忽略；`depDirs` 還不能是版控追蹤的路徑）驗證。
+- `describeDetected` 在守門規則為空時印出提示：未辨識專案一定印，已辨識專案只有欄位為空才印。
+- `NEUTRAL_PROFILE.skipDirs` 是舊 `SKIP_DIRS` 的超集合基線，確保沒有偵測結果時略過的目錄不比以前少。
+- `withProjectDefaults`：使用者手寫 `test`、偵測結果沒有 `test` 檢查時，補上一筆 `test` 檢查，verify 才會跑它。
+
 ## 風險
 
 - C 讓 generated 影響守門：已限制為只能新增規則並由程式驗證範例，仍需在 review 時留意放寬的可能。
 - pip 改用 venv 會改變既有 Python 專案的安裝指令；有手動設定的專案不受影響。
-- 未實際用 pytest／Go／Rust 專案跑過；實作後要各拿一個真實專案做一次端到端驗證。
+- 只以暫存專案驗證過偵測輸出（`config doctor`）；pytest／Go／Rust 專案的完整 run 仍需拿真實專案做一次端到端驗證。
