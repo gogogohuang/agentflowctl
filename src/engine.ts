@@ -22,6 +22,7 @@ import { divergeExclude, divergeStamp, formatDivergeFeedback, selectFrames, shou
 import { arbiterPanel, availableAgent, divergeCritic, fixAgent, pick, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid, type StoredCall } from "./parallelReview.js";
 import { cleanupTempWorktrees, withTempWorktree, type Workspace } from "./tempWorktree.js";
+import type { EcosystemProfile } from "./profile.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
 import {
   AcceptanceList,
@@ -391,6 +392,11 @@ export function loadRepoConfig(): RepoConfig {
   const r = readJsonFile(p, z.preprocess((raw) => withProjectDefaults(raw, detected), RepoConfig));
   if (!r.ok) throw new Error(r.error);
   return r.data;
+}
+
+/** 目前專案的生態系統資料（守門、依賴目錄、失敗輸出格式、prompt 範例） */
+function projectProfile(): EcosystemProfile {
+  return effectiveDefaults(projectRoot()).profile;
 }
 
 /** 專案有測試框架（偵測到或手動設定 test） */

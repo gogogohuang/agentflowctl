@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
+import { GO_PROFILE, NEUTRAL_PROFILE, NODE_PROFILE, PYTHON_PROFILE, RUST_PROFILE, type EcosystemProfile } from "./profile.js";
 import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
 /**
@@ -25,6 +26,8 @@ export interface ProjectDefaults {
   testFramework: boolean;
   /** 這類專案的測試檔命名；Node 不填，沿用 schema 預設 */
   testPattern?: string;
+  /** 這個生態系統的守門、依賴目錄與 prompt 資料 */
+  profile: EcosystemProfile;
 }
 
 /** 不需要安裝時的指令：install 在 `&&` 串接裡也要是合法的 shell */
@@ -142,17 +145,15 @@ function detectNode(root: string): ProjectDefaults {
   const testScript = scripts.test;
   const hasRealScript = typeof testScript === "string" && !/no test specified/i.test(testScript);
   const test = hasRealScript ? (checks.find((c) => c.name === "test")?.cmd ?? withExec(defaults.test, manager)) : withExec(defaults.test, manager);
-  return { ecosystem: "node", manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg) };
+  return { ecosystem: "node", manager, source, install: INSTALL[manager], test, checks, testFramework: hasTestFramework(pkg), profile: NODE_PROFILE };
 }
 
 const GO_TEST_PATTERN = String.raw`_test\.go$`;
 const RUST_TEST_PATTERN = String.raw`(^|/)tests/.*\.rs$|_test\.rs$`;
 const PYTHON_TEST_PATTERN = String.raw`(^|/)(test_[^/]*|[^/]*_test)\.py$`;
 
-const SKIP_DIRS = new Set(["node_modules", ".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "venv", ".venv", "target", "dist", "build", "__pycache__"]);
-
 /** 有界遞迴找出符合的檔案（深度 6、最多看 5000 個檔），略過依賴與建置產物目錄 */
-export function findFiles(root: string, re: RegExp, max = 5000): string[] {
+export function findFiles(root: string, re: RegExp, skipDirs: readonly string[], max = 5000): string[] {
   const found: string[] = [];
   let visited = 0;
   const walk = (dir: string, rel: string, depth: number) => {
@@ -167,7 +168,7 @@ export function findFiles(root: string, re: RegExp, max = 5000): string[] {
       if (visited >= max) return;
       const path = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name), path, depth + 1);
+        if (!skipDirs.includes(entry.name)) walk(join(dir, entry.name), path, depth + 1);
       } else {
         visited++;
         if (re.test(path)) found.push(path);
@@ -187,8 +188,9 @@ function detectGo(root: string): ProjectDefaults {
       { name: "vet", cmd: "go vet ./...", finalOnly: true },
       { name: "build", cmd: "go build ./..." },
     ],
-    testFramework: findFiles(root, new RegExp(GO_TEST_PATTERN)).length > 0,
+    testFramework: findFiles(root, new RegExp(GO_TEST_PATTERN), GO_PROFILE.skipDirs).length > 0,
     testPattern: GO_TEST_PATTERN,
+    profile: GO_PROFILE,
   };
 }
 
@@ -201,8 +203,9 @@ function detectRust(root: string): ProjectDefaults {
       { name: "clippy", cmd: "cargo clippy", finalOnly: true },
       { name: "build", cmd: "cargo build" },
     ],
-    testFramework: findFiles(root, new RegExp(RUST_TEST_PATTERN)).length > 0,
+    testFramework: findFiles(root, new RegExp(RUST_TEST_PATTERN), RUST_PROFILE.skipDirs).length > 0,
     testPattern: RUST_TEST_PATTERN,
+    profile: RUST_PROFILE,
   };
 }
 
@@ -226,17 +229,17 @@ function detectPython(root: string): ProjectDefaults {
         : ["pip", "pyproject.toml／setup.py", "python3 -m pip install -e .", ""];
   const pytest = /\bpytest\b/.test(config) || has("pytest.ini") || has("conftest.py");
   const unittest = /\bunittest\b/.test(config);
-  const testFiles = findFiles(root, new RegExp(PYTHON_TEST_PATTERN));
+  const testFiles = findFiles(root, new RegExp(PYTHON_TEST_PATTERN), PYTHON_PROFILE.skipDirs);
   const test = `${run}${pytest ? "pytest" : "python3 -m unittest discover"}`;
   const checks: Check[] = [{ name: "test", cmd: test }];
   if (/\[tool\.ruff/.test(text("pyproject.toml")) || has("ruff.toml") || has(".ruff.toml")) {
     checks.push({ name: "lint", cmd: `${run}ruff check .`, finalOnly: true });
   }
-  return { ecosystem: "python", manager, source, install, test, checks, testFramework: pytest || unittest || testFiles.length > 0, testPattern: PYTHON_TEST_PATTERN };
+  return { ecosystem: "python", manager, source, install, test, checks, testFramework: pytest || unittest || testFiles.length > 0, testPattern: PYTHON_TEST_PATTERN, profile: PYTHON_PROFILE };
 }
 
 function detectUnknown(): ProjectDefaults {
-  return { ecosystem: "unknown", manager: "（未辨識）", source: "沒有可辨識的專案檔", install: NO_INSTALL, test: NO_INSTALL, checks: [], testFramework: false };
+  return { ecosystem: "unknown", manager: "（未辨識）", source: "沒有可辨識的專案檔", install: NO_INSTALL, test: NO_INSTALL, checks: [], testFramework: false, profile: NEUTRAL_PROFILE };
 }
 
 export function detectProjectDefaults(root: string): ProjectDefaults {

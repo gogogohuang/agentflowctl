@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { describeDetected, detectProjectDefaults, findFiles, NO_INSTALL, withProjectDefaults } from "./detect.js";
+import { NODE_PROFILE } from "./profile.js";
 import { ESLINT_IGNORE_ARGS, RepoConfig, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
 function project(files: Record<string, string | object>): string {
@@ -14,6 +15,14 @@ function project(files: Record<string, string | object>): string {
 }
 
 describe("detectProjectDefaults", () => {
+  it("profile：各生態系統帶對應的資料", () => {
+    expect(detectProjectDefaults(project({ "package.json": "{}" })).profile.depDirs).toEqual(["node_modules"]);
+    expect(detectProjectDefaults(project({ "go.mod": "module x\n" })).profile.failureFormat).toBe("go");
+    expect(detectProjectDefaults(project({ "Cargo.toml": "[package]\n" })).profile.depDirs).toEqual(["target"]);
+    expect(detectProjectDefaults(project({ "requirements.txt": "pytest\n" })).profile.failureFormat).toBe("pytest");
+    expect(detectProjectDefaults(project({ "README.md": "x" })).profile.sourceExts).toEqual([]);
+  });
+
   it("沒有 lockfile 也沒有 scripts 時，結果與 schema 的預設值相同", () => {
     const d = detectProjectDefaults(project({ "package.json": {} }));
     const defaults = RepoConfig.parse({});
@@ -160,7 +169,7 @@ describe("detectProjectDefaults", () => {
     writeFileSync(join(dir, "pkg", "b_test.go"), "");
     mkdirSync(join(dir, "node_modules"));
     writeFileSync(join(dir, "node_modules", "c_test.go"), "");
-    expect(findFiles(dir, /_test\.go$/).sort()).toEqual(["a_test.go", "pkg/b_test.go"]);
+    expect(findFiles(dir, /_test\.go$/, NODE_PROFILE.skipDirs).sort()).toEqual(["a_test.go", "pkg/b_test.go"]);
   });
 });
 
