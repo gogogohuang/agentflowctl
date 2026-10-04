@@ -357,6 +357,20 @@ describe("describeDetected", () => {
     expect(lines.join("\n")).not.toContain("install：true");
   });
 
+  it("守門欄位有缺口時多印一行提示；欄位齊全時不印", () => {
+    const unknown = detectProjectDefaults(project({}));
+    const unknownLines = describeDetected({}, unknown);
+    expect(unknownLines).toHaveLength(2);
+    expect(unknownLines[1]).toContain("未偵測到語言規則");
+    expect(unknownLines[1]).toContain("assertPattern");
+    // 手動設好 test 也仍有守門缺口，提示照印；不重複未辨識訊息
+    expect(describeDetected({ test: "make test" }, unknown).filter((l) => l.includes("未偵測到語言規則"))).toHaveLength(1);
+    const py = detectProjectDefaults(project({ "requirements.txt": "pytest\n" }));
+    const gapped = { ...py, profile: { ...py.profile, assertPattern: undefined } };
+    expect(describeDetected({ install: "x", test: "y", checks: [], testPattern: "x" }, gapped)).toEqual([expect.stringContaining("assertPattern")]);
+    expect(describeDetected({}, py).join("\n")).not.toContain("未偵測到語言規則");
+  });
+
   it("非 Node 專案會列出偵測到的 testPattern", () => {
     const go = detectProjectDefaults(project({ "go.mod": "module x\n" }));
     expect(describeDetected({}, go).some((l) => l.includes("testPattern") && l.includes("_test"))).toBe(true);

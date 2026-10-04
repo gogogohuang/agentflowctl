@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import { detectProjectDefaults, NO_INSTALL, type ProjectDefaults } from "./detect.js";
 import { detectedPathIn } from "./paths.js";
+import { mergeProfile } from "./profile.js";
 import { DetectedFile } from "./schemas.js";
 
 /** 判斷未知類型專案「有沒有變」的特徵檔：內容都納入指紋 */
@@ -26,6 +27,7 @@ export function detectFingerprint(root: string): string {
     // 讀不到目錄就只看固定的檔名
   }
   const parts = [...names].sort().map((name) => `${name}\n${readText(join(root, name))}`);
+  parts.push(`eco:${detectProjectDefaults(root).ecosystem}`);
   const workflows = join(root, ".github", "workflows");
   try {
     for (const f of readdirSync(workflows).filter((f) => /\.ya?ml$/.test(f)).sort()) parts.push(`.github/workflows/${f}\n${readText(join(workflows, f))}`);
@@ -67,10 +69,14 @@ export function overlayGenerated(base: ProjectDefaults, g: DetectedFile): Projec
   };
 }
 
-/** 內建偵測；只有未知類型且 detected.json 的指紋相符時，才疊上動態產生的結果 */
+export function mergeGeneratedProfile(base: ProjectDefaults, g: DetectedFile): ProjectDefaults {
+  return { ...base, profile: mergeProfile(base.profile, g) };
+}
+
+/** 內建偵測；detected.json 的指紋相符時才疊上動態結果：未知類型整個疊上，已辨識的只補 profile 的缺欄位 */
 export function effectiveDefaults(root: string): ProjectDefaults {
   const base = detectProjectDefaults(root);
-  if (base.ecosystem !== "unknown") return base;
   const generated = readDetected(root);
-  return generated && generated.fingerprint === detectFingerprint(root) ? overlayGenerated(base, generated) : base;
+  if (!generated || generated.fingerprint !== detectFingerprint(root)) return base;
+  return base.ecosystem === "unknown" ? mergeGeneratedProfile(overlayGenerated(base, generated), generated) : mergeGeneratedProfile(base, generated);
 }

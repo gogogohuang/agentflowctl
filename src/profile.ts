@@ -164,3 +164,32 @@ export function testSourceOf(profile: EcosystemProfile, file: string): string | 
 export function isSourceFile(profile: EcosystemProfile, file: string): boolean {
   return profile.sourceExts.some((ext) => file.endsWith(ext));
 }
+
+export type ProfileExtras = Partial<Pick<EcosystemProfile, "depDirs" | "skipDirs" | "sourceExts" | "skipPatterns" | "suppressPatterns" | "assertPattern" | "failureLine" | "failureFormat">>;
+
+/** 空著的守門欄位：有這些缺口且專案有測試檔時，才值得請 agent 補 */
+export function profileGaps(p: EcosystemProfile): string[] {
+  const gaps: string[] = [];
+  if (!p.skipPatterns.length) gaps.push("skipPatterns");
+  if (!p.suppressPatterns.length) gaps.push("suppressPatterns");
+  if (!p.assertPattern) gaps.push("assertPattern");
+  if (!p.failureLine) gaps.push("failureLine");
+  return gaps;
+}
+
+const union = (a: readonly string[], b: readonly string[] = []) => [...new Set([...a, ...b])];
+
+/** 只補不蓋：陣列取聯集，單值欄位只在原本沒有時才採用；提案不能關掉或放寬內建規則 */
+export function mergeProfile(base: EcosystemProfile, extra: ProfileExtras): EcosystemProfile {
+  return {
+    ...base,
+    depDirs: union(base.depDirs, extra.depDirs),
+    skipDirs: union(base.skipDirs, extra.skipDirs),
+    sourceExts: union(base.sourceExts, extra.sourceExts),
+    skipPatterns: union(base.skipPatterns, extra.skipPatterns),
+    suppressPatterns: union(base.suppressPatterns, extra.suppressPatterns),
+    assertPattern: base.assertPattern ?? extra.assertPattern,
+    failureLine: base.failureLine ?? extra.failureLine,
+    failureFormat: base.failureFormat ?? extra.failureFormat,
+  };
+}

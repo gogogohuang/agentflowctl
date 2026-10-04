@@ -5,7 +5,7 @@ import { z } from "zod";
 import { config } from "./config.js";
 import { decideAmend } from "./amend.js";
 import { arbitrationDecision } from "./arbitration.js";
-import { detectProjectDefaults, usesTestFramework, withProjectDefaults } from "./detect.js";
+import { detectProjectDefaults, findFiles, usesTestFramework, withProjectDefaults } from "./detect.js";
 import { detectFingerprint, effectiveDefaults, readDetected, writeDetected } from "./detectedFile.js";
 import { validateProposal } from "./generateDetected.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
@@ -22,7 +22,7 @@ import { divergeExclude, divergeStamp, formatDivergeFeedback, selectFrames, shou
 import { arbiterPanel, availableAgent, divergeCritic, fixAgent, pick, planAgent, planFixAgent, reviewers, specAgent, taskAgents } from "./roles.js";
 import { dropCall, loadCalls, openRound, runPool, saveCall, storedCallValid, type StoredCall } from "./parallelReview.js";
 import { cleanupTempWorktrees, withTempWorktree, type Workspace } from "./tempWorktree.js";
-import type { EcosystemProfile } from "./profile.js";
+import { profileGaps, type EcosystemProfile } from "./profile.js";
 import { resolveAgent, runAgent, runCommand, type AgentResult, type AgentTarget } from "./runner.js";
 import {
   AcceptanceList,
@@ -621,23 +621,45 @@ export async function linkDepDirs(root: string, from: string, to: string, depDir
   }
 }
 
+/** 被 .gitignore 忽略（依賴目錄通常不進版控）：check-ignore 不丟例外就是被忽略 */
+function gitIgnored(dir: string, path: string): boolean {
+  try {
+    execFileSync("git", ["check-ignore", "-q", path], { cwd: dir, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 只留提案裡的新增規則欄位 */
+function pickProfileFields(p: DetectionProposal): DetectionProposal {
+  const { depDirs, skipDirs, sourceExts, skipPatterns, suppressPatterns, assertPattern, failureLine, failureFormat } = p;
+  return { checks: [], depDirs, skipDirs, sourceExts, skipPatterns, suppressPatterns, assertPattern, failureLine, failureFormat };
+}
+
 /**
  * 認不出專案類型時（沒有 package.json、go.mod、Cargo.toml、pyproject.toml 等），請一位 agent 讀專案提出
  * install／test／checks／testPattern，再由程式在基底 commit 的臨時 worktree 逐欄位驗證，通過的存進 detected.json。
  * 這只是選配的偵測：額度不足、agent 失敗、格式不合都只印警告，不讓 run 失敗；
  * 指紋沒變就不重做，全部無效也會記錄（避免每個 run 重複花用量）。
+ * 已辨識的專案在守門規則（skip／抑制／斷言／失敗行）有缺口、且有測試檔時也會請 agent 補：
+ * 只收新增的規則欄位（經範例與目錄驗證），指令一律忽略，且只能新增、不能放寬內建規則。
  */
 export async function detectWithAgent(run: FlowRun): Promise<void> {
   const root = projectRoot();
   try {
-    if (detectProjectDefaults(root).ecosystem !== "unknown") return;
-    // 手寫設定已經四個欄位都有：偵測結果用不到，不花 agent 次數
+    const base = detectProjectDefaults(root);
+    const unknown = base.ecosystem === "unknown";
+    // 已辨識的專案只在守門欄位有缺口、而且有測試檔時才請 agent 補
+    const gaps = profileGaps(base.profile);
+    if (!unknown && (!gaps.length || !findFiles(root, new RegExp(base.testPattern ?? RepoConfig.parse({}).testPattern), base.profile.skipDirs, 2000).length)) return;
+    // 手寫設定已經四個欄位都有：偵測結果用不到，不花 agent 次數（只適用未知類型；已辨識的專案補的是 profile 規則）
     const rawConfig = existsSync(join(root, "flow.config.json")) ? readJsonFile(join(root, "flow.config.json"), z.record(z.string(), z.unknown())) : undefined;
-    if (rawConfig?.ok && ["install", "test", "checks", "testPattern"].every((k) => k in rawConfig.data)) return;
+    if (unknown && rawConfig?.ok && ["install", "test", "checks", "testPattern"].every((k) => k in rawConfig.data)) return;
     const fingerprint = detectFingerprint(root);
     if (readDetected(root)?.fingerprint === fingerprint) return;
     const agent = specAgent(run.cycle, run.id);
-    info(run, `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查`);
+    info(run, unknown ? `🔎 專案類型未知，請 ${agent} 分析怎麼安裝、測試與檢查` : `🔎 ${base.manager} 專案的守門規則不完整，請 ${agent} 補充（${gaps.join("、")}）`);
     const outcome = await agentStep(run, agent, "detect", renderPrompt("detect", {}), { kind: "write", pinned: true });
     await discardChanges(worktreeDir(run.id)); // 只允許寫 .flow/
     let proposal: DetectionProposal = { checks: [] };
@@ -646,7 +668,8 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       dropped.push({ field: "proposal", reason: `Agent 執行失敗：${outcome.r.summary}` });
     } else {
       const read = readJsonFile(flowFile(run, "detect-proposal.json"), DetectionProposal);
-      if (read.ok) proposal = read.data;
+      // 已辨識的專案只收新增的規則欄位，指令與測試檔命名一律忽略，避免蓋掉內建指令
+      if (read.ok) proposal = unknown ? read.data : pickProfileFields(read.data);
       else dropped.push({ field: "proposal", reason: read.error });
     }
     // 提案的指令會在主機上直接執行（不在 agent 沙箱內），先印出來讓使用者看得到
@@ -657,6 +680,7 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       const files = (await git(ws.dir, "ls-files")).split("\n").filter(Boolean);
       return validateProposal(proposal, {
         files,
+        dirOk: (d) => existsSync(join(ws.dir, d)) || gitIgnored(ws.dir, d),
         hasExecutable: (bin) => {
           try {
             execFileSync("sh", ["-c", 'command -v "$1"', "sh", bin], { cwd: ws.dir, stdio: "ignore" });
@@ -676,10 +700,13 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
       });
     });
     const allDropped = [...dropped, ...validated.dropped];
-    writeDetected(root, { ...validated, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
-    const kept = [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
-      ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`].filter(Boolean);
-    info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}（可複製進 flow.config.json 固定下來）` : "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈");
+    const { profileExtras, ...validatedFields } = validated;
+    writeDetected(root, { ...validatedFields, ...profileExtras, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
+    const extraKept = Object.keys(profileExtras).map((k) => `profile.${k}`);
+    const kept = [...(unknown ? [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
+      ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`] : []), ...extraKept].filter(Boolean);
+    const none = unknown ? "ℹ️  動態偵測沒有可用的結果，略過安裝、檢查與紅綠燈" : "ℹ️  動態偵測沒有可用的規則補充";
+    info(run, kept.length ? `✅ 動態偵測保留：${kept.join("；")}${unknown ? "（可複製進 flow.config.json 固定下來）" : ""}` : none);
     for (const d of allDropped) info(run, `   ✗ ${d.field}：${d.reason}（可在 flow.config.json 手動設定）`);
   } catch (error) {
     // 選配功能：任何失敗都只警告，不寫指紋（下次 run 會再試）；額度或次數不足則安靜略過

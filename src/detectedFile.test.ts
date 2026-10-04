@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { detectFingerprint, effectiveDefaults, overlayGenerated, readDetected, writeDetected } from "./detectedFile.js";
+import { detectFingerprint, effectiveDefaults, mergeGeneratedProfile, overlayGenerated, readDetected, writeDetected } from "./detectedFile.js";
 import { detectProjectDefaults, NO_INSTALL, withProjectDefaults } from "./detect.js";
 import type { DetectedFile } from "./schemas.js";
 
@@ -102,5 +102,27 @@ describe("overlayGenerated", () => {
     const d = overlayGenerated(detectProjectDefaults(dir), file(dir, { test: "t" }));
     expect(d.ecosystem).toBe("generated");
     expect(d.source).toContain("detected.json");
+  });
+});
+
+describe("mergeGeneratedProfile", () => {
+  it("已辨識的專案：generated 只補 profile 的空欄位，不改 install／test／checks", () => {
+    const dir = project({ "requirements.txt": "pytest\n" });
+    const base = detectProjectDefaults(dir);
+    const merged = mergeGeneratedProfile(base, file(dir, { assertPattern: "SHOULD_NOT_WIN", skipPatterns: ["@slow\\b"] }));
+    expect(merged.install).toBe(base.install);
+    expect(merged.profile.assertPattern).toBe(base.profile.assertPattern);
+    expect(merged.profile.skipPatterns).toHaveLength(2);
+  });
+
+  it("effectiveDefaults：已辨識的專案疊上 generated 的 profile 補充，未知類型則整個疊上", () => {
+    const dir = project({ "requirements.txt": "pytest\n" });
+    writeDetected(dir, file(dir, { suppressPatterns: ["NOLINT"] }));
+    const eff = effectiveDefaults(dir);
+    expect(eff.ecosystem).toBe("python");
+    expect(eff.profile.suppressPatterns).toContain("NOLINT");
+    const unk = project({ Makefile: "t:\n" });
+    writeDetected(unk, file(unk, { assertPattern: "chk\\(" }));
+    expect(effectiveDefaults(unk).profile.assertPattern).toBe("chk\\(");
   });
 });

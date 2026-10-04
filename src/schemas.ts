@@ -320,17 +320,34 @@ export const RepoConfig = z.object({
 });
 export type RepoConfig = z.infer<typeof RepoConfig>;
 
-/** agent 對未知類型專案提出的指令；尚未經程式驗證 */
+/** agent 提出的規則：附一行範例，程式用它驗證規則真的比對得到 */
+export const PatternProposal = z.object({ pattern: z.string(), example: z.string() });
+export const FailureFormat = z.enum(["tap", "pytest", "go", "cargo"]);
+
+/** agent 對未知類型專案提出的指令、以及對任何專案的語言規則補充；尚未經程式驗證 */
 export const DetectionProposal = z.object({
   install: z.string().optional(),
   test: z.string().optional(),
   checks: z.array(z.object({ name: z.string(), cmd: z.string(), finalOnly: z.boolean().optional() })).default([]),
   testPattern: z.string().optional(),
+  depDirs: z.array(z.string()).optional(),
+  skipDirs: z.array(z.string()).optional(),
+  sourceExts: z.array(z.string()).optional(),
+  skipPatterns: z.array(PatternProposal).optional(),
+  suppressPatterns: z.array(PatternProposal).optional(),
+  assertPattern: PatternProposal.optional(),
+  failureLine: PatternProposal.optional(),
+  failureFormat: FailureFormat.optional(),
 });
 export type DetectionProposal = z.infer<typeof DetectionProposal>;
 
 /** `.agentflowctl/detected.json`：通過驗證的欄位，以及被丟掉的欄位與原因；沒有的欄位代表沒有可用的結果 */
-export const DetectedFile = DetectionProposal.extend({
+export const DetectedFile = DetectionProposal.omit({ skipPatterns: true, suppressPatterns: true, assertPattern: true, failureLine: true }).extend({
+  /** 已驗證的規則字串（不含 example） */
+  skipPatterns: z.array(z.string()).optional(),
+  suppressPatterns: z.array(z.string()).optional(),
+  assertPattern: z.string().optional(),
+  failureLine: z.string().optional(),
   fingerprint: z.string(),
   generatedAt: z.string(),
   dropped: z.array(z.object({ field: z.string(), reason: z.string() })).default([]),

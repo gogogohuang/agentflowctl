@@ -7,6 +7,7 @@ const deps = (over: Partial<ValidateDeps> & { fail?: string[] } = {}): ValidateD
     ran,
     files: [],
     hasExecutable: () => true,
+    dirOk: () => true,
     run: async (cmd) => { ran.push(cmd); return { ok: !over.fail?.includes(cmd), output: "" }; },
     ...over,
   };
@@ -58,7 +59,7 @@ describe("validateProposal", () => {
   it("全部通過時原樣保留，且先 install 再 test 再 checks", async () => {
     const d = deps();
     const out = await validateProposal({ install: "make deps", test: "make test", checks: [{ name: "lint", cmd: "make lint", finalOnly: true }], testPattern: "_spec\\.rb$" }, d);
-    expect(out).toEqual({ install: "make deps", test: "make test", checks: [{ name: "lint", cmd: "make lint", finalOnly: true }], testPattern: "_spec\\.rb$", dropped: [] });
+    expect(out).toEqual({ install: "make deps", test: "make test", checks: [{ name: "lint", cmd: "make lint", finalOnly: true }], testPattern: "_spec\\.rb$", dropped: [], profileExtras: {} });
     expect(d.ran).toEqual(["make deps", "make test", "make lint"]);
   });
 
@@ -104,5 +105,20 @@ describe("validateProposal", () => {
     expect(hit.testPattern).toBe("_test\\.rb$");
     const none = await validateProposal({ testPattern: "_spec\\.rb$" }, deps({ files: ["src/a.rb"] }));
     expect(none.testPattern).toBe("_spec\\.rb$");
+  });
+});
+
+describe("validateProposal：profile 欄位", () => {
+  it("範例比對不到的正規表示式、不存在的目錄會被丟掉", async () => {
+    const v = await validateProposal(
+      { checks: [], skipPatterns: [{ pattern: "@slow\\b", example: "@slow" }, { pattern: "@fast\\b", example: "@slow" }], assertPattern: { pattern: "(", example: "x" },
+        depDirs: [".venv", "nope"], failureFormat: "pytest" },
+      deps({ dirOk: (d) => d === ".venv" }),
+    );
+    expect(v.profileExtras.skipPatterns).toEqual(["@slow\\b"]);
+    expect(v.profileExtras.assertPattern).toBeUndefined();
+    expect(v.profileExtras.depDirs).toEqual([".venv"]);
+    expect(v.profileExtras.failureFormat).toBe("pytest");
+    expect(v.dropped.map((d) => d.field).sort()).toEqual(["assertPattern", "depDirs", "skipPatterns"]);
   });
 });

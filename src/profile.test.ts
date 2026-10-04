@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { anyOf, GO_PROFILE, isSourceFile, NEUTRAL_PROFILE, NODE_PROFILE, PYTHON_PROFILE, RUST_PROFILE, testSourceOf, type EcosystemProfile } from "./profile.js";
+import { anyOf, GO_PROFILE, isSourceFile, mergeProfile, NEUTRAL_PROFILE, NODE_PROFILE, profileGaps, PYTHON_PROFILE, RUST_PROFILE, testSourceOf, type EcosystemProfile } from "./profile.js";
 
 const ALL: [string, EcosystemProfile][] = [
   ["node", NODE_PROFILE], ["python", PYTHON_PROFILE], ["go", GO_PROFILE], ["rust", RUST_PROFILE], ["neutral", NEUTRAL_PROFILE],
@@ -58,5 +58,20 @@ describe("profile 資料", () => {
     expect(isSourceFile(NODE_PROFILE, "README.md")).toBe(false);
     expect(isSourceFile(PYTHON_PROFILE, "a.py")).toBe(true);
     expect(isSourceFile(NEUTRAL_PROFILE, "a.py")).toBe(false);
+  });
+});
+
+describe("profileGaps／mergeProfile", () => {
+  it("profileGaps：列出空著的守門欄位", () => {
+    expect(profileGaps(NODE_PROFILE)).toEqual([]);
+    expect(profileGaps(NEUTRAL_PROFILE).sort()).toEqual(["assertPattern", "failureLine", "skipPatterns", "suppressPatterns"]);
+  });
+
+  it("mergeProfile：只補不蓋，規則取聯集", () => {
+    const merged = mergeProfile(PYTHON_PROFILE, { skipPatterns: [String.raw`@slow\b`], assertPattern: "SHOULD_NOT_WIN", depDirs: ["env"] });
+    expect(merged.skipPatterns).toHaveLength(2);
+    expect(merged.assertPattern).toBe(PYTHON_PROFILE.assertPattern); // 已有值不蓋
+    expect(merged.depDirs).toEqual([".venv", "env"]);
+    expect(mergeProfile(NEUTRAL_PROFILE, { assertPattern: "chk\\(" }).assertPattern).toBe("chk\\(");
   });
 });

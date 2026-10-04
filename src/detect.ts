@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
-import { GO_PROFILE, NEUTRAL_PROFILE, NODE_PROFILE, PYTHON_PROFILE, RUST_PROFILE, type EcosystemProfile } from "./profile.js";
+import { GO_PROFILE, NEUTRAL_PROFILE, NODE_PROFILE, profileGaps, PYTHON_PROFILE, RUST_PROFILE, type EcosystemProfile } from "./profile.js";
 import { ESLINT_IGNORE_ARGS, VITEST_WORKTREE_EXCLUDES } from "./schemas.js";
 
 /**
@@ -269,6 +269,13 @@ export function withProjectDefaults(raw: unknown, detected: ProjectDefaults): un
 
 /** run 開始時印出的說明：只列出這次用了偵測結果的欄位 */
 export function describeDetected(raw: Record<string, unknown>, detected: ProjectDefaults): string[] {
+  const lines = describeDetectedCommands(raw, detected);
+  const gaps = profileGaps(detected.profile);
+  if (gaps.length) lines.push(`ℹ️  未偵測到語言規則（${gaps.join("、")}），略過對應的 skip／抑制／斷言守門；可讓動態偵測補充，或之後在設定中補上`);
+  return lines;
+}
+
+function describeDetectedCommands(raw: Record<string, unknown>, detected: ProjectDefaults): string[] {
   const nothingDetected = detected.ecosystem === "unknown"
     || (detected.ecosystem === "generated" && detected.install === NO_INSTALL && !detected.testFramework && !detected.checks.length && !detected.testPattern);
   const framework = usesTestFramework(raw, detected);

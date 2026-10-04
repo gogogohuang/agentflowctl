@@ -1,4 +1,5 @@
 import { tail } from "./util.js";
+import type { ProfileExtras } from "./profile.js";
 import type { DetectedFile, DetectionProposal } from "./schemas.js";
 
 export interface ValidateDeps {
@@ -8,9 +9,11 @@ export interface ValidateDeps {
   files: string[];
   /** 指令的第一個可執行檔是否存在 */
   hasExecutable(bin: string): boolean;
+  /** 目錄存在，或已被 .gitignore 忽略（依賴目錄通常不進版控） */
+  dirOk(dir: string): boolean;
 }
 
-export type Validated = Pick<DetectedFile, "install" | "test" | "checks" | "testPattern" | "dropped">;
+export type Validated = Pick<DetectedFile, "install" | "test" | "checks" | "testPattern" | "dropped"> & { profileExtras: ProfileExtras };
 
 /** 空指令與永遠會成功的指令：拿來當檢查等於沒有檢查 */
 export function isTrivialCommand(cmd: string): boolean {
@@ -40,7 +43,7 @@ async function tryCommand(cmd: string, deps: ValidateDeps): Promise<Verdict> {
  */
 export async function validateProposal(p: DetectionProposal, deps: ValidateDeps): Promise<Validated> {
   const dropped: Validated["dropped"] = [];
-  const out: Validated = { checks: [], dropped };
+  const out: Validated = { checks: [], dropped, profileExtras: {} };
   if (p.install !== undefined) {
     const v = await tryCommand(p.install, deps);
     if (v.ok) out.install = p.install;
@@ -70,6 +73,37 @@ export async function validateProposal(p: DetectionProposal, deps: ValidateDeps)
       dropped.push({ field: "testPattern", reason: `不是合法的正規表示式：${p.testPattern}` });
     }
   }
+  const extras: ProfileExtras = {};
+  const checkPattern = (field: string, x: { pattern: string; example: string }): string | undefined => {
+    try {
+      if (new RegExp(x.pattern).test(x.example)) return x.pattern;
+      dropped.push({ field, reason: `範例沒有被這個規則比對到：${x.pattern}` });
+    } catch {
+      dropped.push({ field, reason: `不是合法的正規表示式：${x.pattern}` });
+    }
+    return undefined;
+  };
+  const listOf = (field: "skipPatterns" | "suppressPatterns") => (p[field] ?? []).map((x) => checkPattern(field, x)).filter((x): x is string => x !== undefined);
+  const skip = listOf("skipPatterns");
+  if (skip.length) extras.skipPatterns = skip;
+  const suppress = listOf("suppressPatterns");
+  if (suppress.length) extras.suppressPatterns = suppress;
+  const assertPattern = p.assertPattern && checkPattern("assertPattern", p.assertPattern);
+  if (assertPattern) extras.assertPattern = assertPattern;
+  const failureLine = p.failureLine && checkPattern("failureLine", p.failureLine);
+  if (failureLine) extras.failureLine = failureLine;
+  if (p.failureFormat) extras.failureFormat = p.failureFormat;
+  for (const field of ["depDirs", "skipDirs"] as const) {
+    const ok = (p[field] ?? []).filter((d) => deps.dirOk(d));
+    const bad = (p[field] ?? []).filter((d) => !deps.dirOk(d));
+    if (ok.length) extras[field] = ok;
+    if (bad.length) dropped.push({ field, reason: `不存在也沒有被 .gitignore 忽略：${bad.join("、")}` });
+  }
+  if (p.sourceExts?.length) {
+    const exts = p.sourceExts.filter((e) => /^\.\w+$/.test(e));
+    if (exts.length) extras.sourceExts = exts;
+  }
+  out.profileExtras = extras;
   if (passedTest !== undefined) {
     if (out.testPattern !== undefined) {
       out.test = passedTest;
