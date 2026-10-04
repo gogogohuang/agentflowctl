@@ -10,7 +10,7 @@ import { detectFingerprint, effectiveDefaults, readDetected, writeDetected } fro
 import { proposalDirOk, validateProposal } from "./generateDetected.js";
 import { escapeXml, extraFinding, opinion, reviewIssue } from "./feedback.js";
 import { checkReviewCoverage, splitUnmet } from "./reviewCoverage.js";
-import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, excludePaths, git, headCommit, mergeBranch, removeWorktree, resetTo, restorePaths } from "./git.js";
+import { addWorktree, changedFiles, commitAll, dirtyPaths, discardChanges, excludeDepDirs, git, headCommit, mergeBranch, removeWorktree, resetTo, restorePaths } from "./git.js";
 import { uncoveredAcceptanceCommands, uncoveredMessage } from "./acceptanceChecks.js";
 import { nextReviewStall, REVIEW_STALL_PAUSE_AFTER, unmetCriteriaKey } from "./reviewStall.js";
 import { acceptHandoff, openActions, prepareHandoff, previewHandoff, readHandoff, recoverHandoff, responsePath, reviewHandoffGate, validateHandoffResponse } from "./handoff.js";
@@ -619,7 +619,7 @@ const DETECT_COMMAND_TIMEOUT_MS = 5 * 60_000;
 
 /** 把 run worktree 的依賴目錄 symlink 給車道；symlink 不是目錄，.gitignore 的 `dir/` 擋不住，commitAll 會把它加進去，所以另外 exclude */
 export async function linkDepDirs(root: string, from: string, to: string, depDirs: readonly string[]): Promise<void> {
-  await excludePaths(root, depDirs.map((d) => `/${d}`));
+  await excludeDepDirs(root, depDirs);
   symlinkDepDirs(from, to, depDirs);
 }
 
@@ -694,6 +694,7 @@ export async function detectWithAgent(run: FlowRun): Promise<void> {
     const allDropped = [...dropped, ...validated.dropped];
     const { profileExtras, ...validatedFields } = validated;
     writeDetected(root, { ...validatedFields, ...profileExtras, fingerprint, generatedAt: new Date().toISOString(), dropped: allDropped });
+    await excludeProjectDepDirs(run); // 動態偵測可能新增依賴目錄，install 之前就要排除
     const extraKept = Object.keys(profileExtras).map((k) => `profile.${k}`);
     const kept = [...(unknown ? [validated.install && `install：${validated.install}`, validated.test && `test：${validated.test}`,
       ...validated.checks.map((c) => `checks.${c.name}：${c.cmd}`), validated.testPattern && `testPattern：${validated.testPattern}`] : []), ...extraKept].filter(Boolean);
@@ -2596,11 +2597,22 @@ const STAGES: Record<ActiveStage, (run: FlowRun) => Promise<FlowRun>> = {
   pr: prStage,
 };
 
+/** 把目前 profile 的依賴目錄寫進 info/exclude；只是保護措施，失敗只警告 */
+async function excludeProjectDepDirs(run: FlowRun): Promise<void> {
+  try {
+    await excludeDepDirs(projectRoot(), projectProfile().depDirs);
+  } catch (err) {
+    info(run, `⚠️  無法把依賴目錄寫進 .git/info/exclude：${errorMessage(err)}`);
+  }
+}
+
 /** 一路推進到需要人介入（awaiting_approval、paused）或結束（done / failed）為止；每一步都寫回檔案，中斷後可接續 */
 export async function advance(initial: FlowRun): Promise<FlowRun> {
   let run = initial;
   recoverHandoff(run.id);
   await cleanupTempWorktrees(run.id); // 上次被中斷（Ctrl-C、SIGTERM、當機）時留下的平行審查臨時 worktree
+  // 依賴目錄（例如 .venv）在 run worktree 內安裝：排除後才不會被 commit 或被 reset 清掉；既有的 run 在 resume 時也補上
+  await excludeProjectDepDirs(run);
   for (;;) {
     if (["done", "failed", "awaiting_approval", "paused"].includes(run.stage)) return run;
     const stage = run.stage as ActiveStage;
