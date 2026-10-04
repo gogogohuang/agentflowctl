@@ -32,6 +32,12 @@ describe("profile 資料", () => {
     expect(anyOf(RUST_PROFILE.suppressPatterns)!.test("#[allow(dead_code)]")).toBe(true);
   });
 
+  it.each(ALL)("%s：skipDirs 涵蓋舊版共用的略過目錄", (_name, p) => {
+    for (const d of [".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "dist", "build", "node_modules", "venv", ".venv", "target", "__pycache__"]) {
+      expect(p.skipDirs, d).toContain(d);
+    }
+  });
+
   it("anyOf：空陣列回傳 undefined", () => {
     expect(anyOf([])).toBeUndefined();
   });

@@ -54,7 +54,7 @@ export const NEUTRAL_HINTS: PromptHints = {
 /** 什麼都不知道：所有依賴語言的守門停用 */
 export const NEUTRAL_PROFILE: EcosystemProfile = {
   depDirs: [],
-  skipDirs: [".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "dist", "build"],
+  skipDirs: [".git", ".agentflowctl", ".flow", ".worktree", ".worktrees", "dist", "build", "node_modules", "venv", ".venv", "target", "__pycache__"],
   sourceExts: [],
   skipPatterns: [],
   suppressPatterns: [],
@@ -66,7 +66,7 @@ export const NEUTRAL_PROFILE: EcosystemProfile = {
 export const NODE_PROFILE: EcosystemProfile = {
   ...NEUTRAL_PROFILE,
   depDirs: ["node_modules"],
-  skipDirs: [...NEUTRAL_PROFILE.skipDirs, "node_modules"],
+  skipDirs: NEUTRAL_PROFILE.skipDirs,
   sourceExts: [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte", ".astro"],
   skipPatterns: [String.raw`\b(?:it|test|describe|context)\.(?:skip|todo|only)\b|\b(?:xit|xtest|xdescribe)\s*\(|\.only\s*\(`],
   suppressPatterns: ["@ts-ignore|@ts-nocheck|eslint-disable"],
@@ -87,7 +87,7 @@ export const NODE_PROFILE: EcosystemProfile = {
 export const PYTHON_PROFILE: EcosystemProfile = {
   ...NEUTRAL_PROFILE,
   depDirs: [".venv"],
-  skipDirs: [...NEUTRAL_PROFILE.skipDirs, "venv", ".venv", "__pycache__", ".pytest_cache"],
+  skipDirs: [...NEUTRAL_PROFILE.skipDirs, ".pytest_cache"],
   sourceExts: [".py"],
   skipPatterns: [String.raw`@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.(?:skip|skipIf|skipUnless|expectedFailure)\b|\bpytest\.(?:skip|xfail)\s*\(|\bself\.skipTest\s*\(`],
   suppressPatterns: [String.raw`#\s*(?:noqa|type:\s*ignore|pylint:\s*disable)`],
@@ -129,7 +129,7 @@ export const GO_PROFILE: EcosystemProfile = {
 export const RUST_PROFILE: EcosystemProfile = {
   ...NEUTRAL_PROFILE,
   depDirs: ["target"],
-  skipDirs: [...NEUTRAL_PROFILE.skipDirs, "target"],
+  skipDirs: NEUTRAL_PROFILE.skipDirs,
   sourceExts: [".rs"],
   skipPatterns: [String.raw`#\[ignore\b`],
   suppressPatterns: [String.raw`#!?\[allow\(`],
