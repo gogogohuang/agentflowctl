@@ -2,6 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/agentflowctl.svg)](https://www.npmjs.com/package/agentflowctl)
 
+> **開發暫緩**：agentflowctl 目前暫緩開發，不再主動新增功能。後續請參考 [@gogogohuang/agent-team](https://github.com/gogogohuang/agent-team)。
+
 讓 Claude Code、Codex、Gemini CLI 等 agent 在同一個專案裡分工：整理需求、規劃、寫測試與程式、交叉審查，最後建立 PR。agentflowctl 負責推進流程，並用檔案、測試和檢查結果決定能否進到下一步。
 
 每次執行都會建立獨立的 git worktree 與 `flow/<id>` 分支，不會直接修改你目前的工作目錄。兩個 agent 就能運作；只有一個也能執行，但無法跨 agent 審查。
