@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/agentflowctl.svg)](https://www.npmjs.com/package/agentflowctl)
 
-> **開發暫緩**：agentflowctl 目前暫緩開發，不再主動新增功能。後續請參考 [@gogogohuang/agent-team](https://github.com/gogogohuang/agent-team)。
+> **開發暫緩**：agentflowctl 目前暫緩開發，不再主動新增功能。後續請參考 [agent-lyceum](https://github.com/gogogohuang/agent-lyceum)。
 
 讓 Claude Code、Codex、Gemini CLI 等 agent 在同一個專案裡分工：整理需求、規劃、寫測試與程式、交叉審查，最後建立 PR。agentflowctl 負責推進流程，並用檔案、測試和檢查結果決定能否進到下一步。
 
@@ -133,11 +133,11 @@ agentflowctl config selection mode adaptive    # 依階段與任務難度自動�
 
 ## 相關專案
 
-- [@gogogohuang/agent-team](https://github.com/gogogohuang/agent-team)（[npm](https://www.npmjs.com/package/@gogogohuang/agent-team)）：Claude Code／Codex 的 agent 團隊設定與調度器，每位 agent 只拿到限定範圍的上下文，並用檔案信箱交換訊息。安裝與使用方式見其 README：
+- [agent-lyceum](https://github.com/gogogohuang/agent-lyceum)（[npm](https://www.npmjs.com/package/agent-lyceum)）：Claude Code／Codex 的 agent 團隊設定與調度器，每位 agent 只拿到限定範圍的上下文，並用檔案信箱交換訊息。安裝與使用方式見其 README：
 
   ```bash
-  npm install -g @gogogohuang/agent-team   # 安裝後可用 agent-team 指令
-  npx @gogogohuang/agent-team --help       # 或不安裝直接執行
+  npm install -g agent-lyceum   # 安裝後可用 agent-lyceum 指令
+  npx agent-lyceum --help       # 或不安裝直接執行
   ```
 
 ## 授權
