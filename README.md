@@ -129,6 +129,15 @@ agentflowctl config selection mode adaptive    # 依階段與任務難度自動�
 - [完整指令、設定與流程說明](docs/reference.md)：角色分配、審查規則、log、額度處理與技術細節。
 - [各階段讀寫的檔案](docs/engine-stage-files.md)：`.flow/`、回饋與審查檔案如何交接。
 
+## 相關專案
+
+- [@gogogohuang/agent-team](https://github.com/gogogohuang/agent-team)（[npm](https://www.npmjs.com/package/@gogogohuang/agent-team)）：Claude Code／Codex 的 agent 團隊設定與調度器，每位 agent 只拿到限定範圍的上下文，並用檔案信箱交換訊息。安裝與使用方式見其 README：
+
+  ```bash
+  npm install -g @gogogohuang/agent-team   # 安裝後可用 agent-team 指令
+  npx @gogogohuang/agent-team --help       # 或不安裝直接執行
+  ```
+
 ## 授權
 
 MIT，詳見 [LICENSE](LICENSE)。
