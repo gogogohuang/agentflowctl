@@ -2,6 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/agentflowctl.svg)](https://www.npmjs.com/package/agentflowctl)
 
+> **開發暫緩**：agentflowctl 目前暫緩開發，不再主動新增功能。後續請參考 [@gogogohuang/agent-team](https://github.com/gogogohuang/agent-team)。
+
 讓 Claude Code、Codex、Gemini CLI 等 agent 在同一個專案裡分工：整理需求、規劃、寫測試與程式、交叉審查，最後建立 PR。agentflowctl 負責推進流程，並用檔案、測試和檢查結果決定能否進到下一步。
 
 每次執行都會建立獨立的 git worktree 與 `flow/<id>` 分支，不會直接修改你目前的工作目錄。兩個 agent 就能運作；只有一個也能執行，但無法跨 agent 審查。
@@ -128,6 +130,15 @@ agentflowctl config selection mode adaptive    # 依階段與任務難度自動�
 - [設定詳解](docs/configuration.md)：指令與選項、agent、選模、專案設定欄位、平行任務與平行審查。
 - [完整指令、設定與流程說明](docs/reference.md)：角色分配、審查規則、log、額度處理與技術細節。
 - [各階段讀寫的檔案](docs/engine-stage-files.md)：`.flow/`、回饋與審查檔案如何交接。
+
+## 相關專案
+
+- [@gogogohuang/agent-team](https://github.com/gogogohuang/agent-team)（[npm](https://www.npmjs.com/package/@gogogohuang/agent-team)）：Claude Code／Codex 的 agent 團隊設定與調度器，每位 agent 只拿到限定範圍的上下文，並用檔案信箱交換訊息。安裝與使用方式見其 README：
+
+  ```bash
+  npm install -g @gogogohuang/agent-team   # 安裝後可用 agent-team 指令
+  npx @gogogohuang/agent-team --help       # 或不安裝直接執行
+  ```
 
 ## 授權
 
